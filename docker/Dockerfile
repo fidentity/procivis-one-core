@@ -40,4 +40,4 @@ EXPOSE 3000
 USER $USER
 
 # Set entrypoint
-ENTRYPOINT ["/app/core-server"]
+ENTRYPOINT ["/app/core-server", "--config", "config/config-procivis-base.yml", "--config", "config/config-local.yml"]

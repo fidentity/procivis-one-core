@@ -24,7 +24,7 @@ use crate::model::identifier::{Identifier, IdentifierRelations};
 use crate::model::key::KeyRelations;
 use crate::model::list_filter::ListFilterValue;
 use crate::model::trust_entry::{
-    TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryStatusEnum,
+    TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryStateEnum,
     UpdateTrustEntryRequest,
 };
 use crate::model::trust_list_publication::{
@@ -163,7 +163,7 @@ impl TrustListPublisher for EtsiLotePublisher {
             id: entry_id,
             created_date: self.clock.now_utc(),
             last_modified: self.clock.now_utc(),
-            status: TrustEntryStatusEnum::Active,
+            state: TrustEntryStateEnum::Active,
             metadata,
             trust_list_publication_id: publication.id,
             identifier_id: identifier.id,
@@ -184,7 +184,7 @@ impl TrustListPublisher for EtsiLotePublisher {
     async fn update_entry(
         &self,
         entry: TrustEntry,
-        state: Option<TrustEntryStatusEnum>,
+        state: Option<TrustEntryStateEnum>,
         params: Option<serde_json::Value>,
     ) -> Result<(), TrustListPublisherError> {
         if state.is_none() && params.is_none() {
@@ -198,13 +198,7 @@ impl TrustListPublisher for EtsiLotePublisher {
             .transpose()?;
 
         self.trust_entry_repository
-            .update(
-                entry.id,
-                UpdateTrustEntryRequest {
-                    status: state,
-                    metadata,
-                },
-            )
+            .update(entry.id, UpdateTrustEntryRequest { state, metadata })
             .await
             .error_while("updating trust entry")?;
 
@@ -314,8 +308,7 @@ impl EtsiLotePublisher {
                 publication_id,
                 TrustEntryListQuery {
                     filtering: Some(
-                        TrustEntryFilterValue::Status(vec![TrustEntryStatusEnum::Active])
-                            .condition(),
+                        TrustEntryFilterValue::State(vec![TrustEntryStateEnum::Active]).condition(),
                     ),
                     ..Default::default()
                 },

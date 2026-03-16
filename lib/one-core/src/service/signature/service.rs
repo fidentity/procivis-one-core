@@ -203,7 +203,7 @@ impl SignatureService {
             result.insert(
                 entry.id.into(),
                 SignatureStatusInfo {
-                    state: entry.status.try_into()?,
+                    state: entry.state.try_into()?,
                     r#type,
                 },
             );

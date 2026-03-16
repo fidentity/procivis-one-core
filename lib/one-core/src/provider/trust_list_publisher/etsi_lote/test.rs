@@ -82,7 +82,7 @@ fn dummy_entry(metadata: Vec<u8>) -> TrustEntry {
         id: Uuid::new_v4().into(),
         created_date: datetime!(2025-01-01 0:00 UTC),
         last_modified: datetime!(2025-01-01 0:00 UTC),
-        status: TrustEntryStatusEnum::Active,
+        state: TrustEntryStateEnum::Active,
         metadata,
         trust_list_publication_id: Uuid::new_v4().into(),
         identifier_id: Uuid::new_v4().into(),
@@ -233,8 +233,8 @@ fn mock_entry_repo() -> MockTrustEntryRepository {
     repo.expect_update().returning(move |id, request| {
         let mut entries = store.lock().unwrap();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-            if let Some(state) = request.status {
-                entry.status = state;
+            if let Some(state) = request.state {
+                entry.state = state;
             }
             if let Some(metadata) = request.metadata {
                 entry.metadata = metadata;
@@ -621,7 +621,7 @@ async fn test_lifecycle_create_add_update_remove() {
         ..dummy_entry(vec![])
     };
     publisher
-        .update_entry(entry, Some(TrustEntryStatusEnum::Active), None)
+        .update_entry(entry, Some(TrustEntryStateEnum::Active), None)
         .await
         .unwrap();
 

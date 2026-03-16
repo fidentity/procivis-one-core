@@ -134,7 +134,7 @@ impl TrustListPublicationService {
             .await?;
 
         Ok(trust_list_publisher
-            .update_entry(trust_entry, request.status, request.params)
+            .update_entry(trust_entry, request.state, request.params)
             .await
             .error_while("updating trust list entry")?)
     }
@@ -442,7 +442,7 @@ mod tests {
     use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
     use crate::model::key::Key;
     use crate::model::organisation::Organisation;
-    use crate::model::trust_entry::TrustEntryStatusEnum;
+    use crate::model::trust_entry::TrustEntryStateEnum;
     use crate::model::trust_list_role::TrustListRoleEnum;
     use crate::proto::session_provider::MockSessionProvider;
     use crate::provider::trust_list_publisher::provider::MockTrustListPublisherProvider;
@@ -929,7 +929,7 @@ mod tests {
             last_modified: now,
             trust_list_publication_id,
             identifier_id: Uuid::new_v4().into(),
-            status: TrustEntryStatusEnum::Active,
+            state: TrustEntryStateEnum::Active,
             metadata: Default::default(),
             trust_list_publication: None,
             identifier: None,

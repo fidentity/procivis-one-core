@@ -3,7 +3,7 @@ use std::sync::Arc;
 use one_core::model::certificate::Certificate;
 use one_core::model::identifier::Identifier;
 use one_core::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryState,
     RevocationListPurpose, RevocationListRelations, StatusListCredentialFormat,
     UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
@@ -112,12 +112,12 @@ impl RevocationListsDB {
         &self,
         list_id: RevocationListId,
         index_on_status_list: usize,
-        status: Option<RevocationListEntryStatus>,
+        state: Option<RevocationListEntryState>,
     ) {
         self.repository
             .update_entry(
                 UpdateRevocationListEntryId::Index(list_id, index_on_status_list),
-                UpdateRevocationListEntryRequest { status },
+                UpdateRevocationListEntryRequest { state },
             )
             .await
             .unwrap();

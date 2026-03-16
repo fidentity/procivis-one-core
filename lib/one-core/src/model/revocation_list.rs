@@ -54,11 +54,11 @@ pub struct RevocationListEntry {
     pub last_modified: OffsetDateTime,
     pub entity_info: RevocationListEntityInfo,
     pub index: Option<usize>,
-    pub status: RevocationListEntryStatus,
+    pub state: RevocationListEntryState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RevocationListEntryStatus {
+pub enum RevocationListEntryState {
     Active,
     Revoked,
     Suspended,
@@ -87,5 +87,5 @@ pub enum UpdateRevocationListEntryId {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UpdateRevocationListEntryRequest {
-    pub status: Option<RevocationListEntryStatus>,
+    pub state: Option<RevocationListEntryState>,
 }

@@ -5,7 +5,7 @@ use sea_orm::sea_query::{Alias, ColumnRef, IntoCondition, IntoIden, SimpleExpr};
 use sea_orm::{ColumnTrait, IntoSimpleExpr};
 
 use crate::entity::trust_entry;
-use crate::entity::trust_entry::TrustEntryStatus;
+use crate::entity::trust_entry::TrustEntryState;
 use crate::list_query_generic::{
     IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_equals_condition,
 };
@@ -16,7 +16,7 @@ impl From<trust_entry::Model> for TrustEntry {
             id: value.id,
             created_date: value.created_date,
             last_modified: value.last_modified,
-            status: value.status.into(),
+            state: value.state.into(),
             metadata: value.metadata,
             trust_list_publication_id: value.trust_list_publication_id,
             identifier_id: value.identifier_id,
@@ -32,7 +32,7 @@ impl From<TrustEntry> for trust_entry::ActiveModel {
             id: Set(value.id),
             created_date: Set(value.created_date),
             last_modified: Set(value.last_modified),
-            status: Set(value.status.into()),
+            state: Set(value.state.into()),
             metadata: Set(value.metadata),
             trust_list_publication_id: Set(value.trust_list_publication_id),
             identifier_id: Set(value.identifier_id),
@@ -44,7 +44,7 @@ impl IntoSortingColumn for SortableTrustEntryColumn {
     fn get_column(&self) -> SimpleExpr {
         match self {
             Self::CreatedDate => trust_entry::Column::CreatedDate.into_simple_expr(),
-            Self::Status => trust_entry::Column::Status.into_simple_expr(),
+            Self::State => trust_entry::Column::State.into_simple_expr(),
             Self::LastModified => trust_entry::Column::LastModified.into_simple_expr(),
             Self::Identifier => {
                 SimpleExpr::Column(ColumnRef::Column(Alias::new("identifier_name").into_iden()))
@@ -62,12 +62,12 @@ impl IntoFilterCondition for TrustEntryFilterValue {
             Self::TrustListPublicationId(id) => {
                 get_equals_condition(trust_entry::Column::TrustListPublicationId, id)
             }
-            Self::Status(string_match) => {
+            Self::State(string_match) => {
                 let statuses = string_match
                     .into_iter()
-                    .map(TrustEntryStatus::from)
+                    .map(TrustEntryState::from)
                     .collect::<Vec<_>>();
-                trust_entry::Column::Status.is_in(statuses).into_condition()
+                trust_entry::Column::State.is_in(statuses).into_condition()
             }
             Self::CreatedDate(value) => {
                 get_comparison_condition(trust_entry::Column::CreatedDate, value)

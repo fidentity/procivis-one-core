@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use one_core::model::identifier::Identifier;
-use one_core::model::trust_entry::{TrustEntry, TrustEntryRelations, TrustEntryStatusEnum};
+use one_core::model::trust_entry::{TrustEntry, TrustEntryRelations, TrustEntryStateEnum};
 use one_core::model::trust_list_publication::TrustListPublication;
 use one_core::repository::trust_entry_repository::TrustEntryRepository;
 use shared_types::TrustEntryId;
@@ -19,7 +19,7 @@ impl TrustEntryDB {
 
     pub async fn create(
         &self,
-        status: TrustEntryStatusEnum,
+        state: TrustEntryStateEnum,
         metadata: Vec<u8>,
         trust_list_publication: TrustListPublication,
         identifier: Identifier,
@@ -28,7 +28,7 @@ impl TrustEntryDB {
             id: TrustEntryId::from(Uuid::new_v4()),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
-            status,
+            state,
             metadata,
             trust_list_publication_id: trust_list_publication.id,
             identifier_id: identifier.id,

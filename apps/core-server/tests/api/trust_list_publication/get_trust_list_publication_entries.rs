@@ -4,7 +4,7 @@ use one_core::model::certificate::{Certificate, CertificateState};
 use one_core::model::identifier::{Identifier, IdentifierType};
 use one_core::model::key::Key;
 use one_core::model::organisation::Organisation;
-use one_core::model::trust_entry::TrustEntryStatusEnum;
+use one_core::model::trust_entry::TrustEntryStateEnum;
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use time::Duration;
 use uuid::Uuid;
@@ -37,7 +37,7 @@ async fn test_get_trust_list_publication_entries() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             identifier.clone(),
@@ -48,7 +48,7 @@ async fn test_get_trust_list_publication_entries() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Suspended,
+            TrustEntryStateEnum::Suspended,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             identifier.clone(),
@@ -157,7 +157,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             f_identifier,
@@ -168,7 +168,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             a_identifier,
@@ -179,7 +179,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             z_identifier,

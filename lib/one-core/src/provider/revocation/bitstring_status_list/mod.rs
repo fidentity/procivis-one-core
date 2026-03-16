@@ -20,7 +20,7 @@ use crate::model::credential::Credential;
 use crate::model::did::KeyRole;
 use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryState,
     RevocationListPurpose, StatusListCredentialFormat, UpdateRevocationListEntryId,
     UpdateRevocationListEntryRequest,
 };
@@ -210,7 +210,7 @@ impl RevocationMethod for BitstringStatusList {
             .update_entry(
                 UpdateRevocationListEntryId::Credential(credential.id),
                 UpdateRevocationListEntryRequest {
-                    status: Some(new_state.into()),
+                    state: Some(new_state.into()),
                 },
             )
             .await
@@ -756,7 +756,7 @@ async fn generate_bitstring_from_entries(
                 entry.index.ok_or(RevocationError::MappingError(
                     "revocation list entry index missing".to_string(),
                 ))?,
-                get_revocation_entry_state(entry.status, purpose),
+                get_revocation_entry_state(entry.state, purpose),
             ))
         })
         .collect::<Result<Vec<_>, RevocationError>>()?;
@@ -778,15 +778,15 @@ fn get_revocation_list_url(
 }
 
 fn get_revocation_entry_state(
-    entry_status: RevocationListEntryStatus,
+    entry_status: RevocationListEntryState,
     purpose: RevocationListPurpose,
 ) -> bool {
     match purpose {
-        RevocationListPurpose::Revocation => entry_status == RevocationListEntryStatus::Revoked,
-        RevocationListPurpose::Suspension => entry_status == RevocationListEntryStatus::Suspended,
+        RevocationListPurpose::Revocation => entry_status == RevocationListEntryState::Revoked,
+        RevocationListPurpose::Suspension => entry_status == RevocationListEntryState::Suspended,
         RevocationListPurpose::RevocationAndSuspension => matches!(
             entry_status,
-            RevocationListEntryStatus::Revoked | RevocationListEntryStatus::Suspended
+            RevocationListEntryState::Revoked | RevocationListEntryState::Suspended
         ),
     }
 }

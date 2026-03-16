@@ -10,7 +10,7 @@ use flate2::write::ZlibEncoder;
 use thiserror::Error;
 
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::revocation_list::RevocationListEntryStatus;
+use crate::model::revocation_list::RevocationListEntryState;
 use crate::provider::credential_formatter::jwt_formatter::model::TokenStatusListSubject;
 use crate::provider::revocation::model::RevocationState;
 
@@ -85,7 +85,7 @@ pub(super) fn extract_state_from_token(
 }
 
 pub(super) fn generate_token(
-    input: Vec<(usize, RevocationListEntryStatus)>,
+    input: Vec<(usize, RevocationListEntryState)>,
     bits: usize,
     preferred_token_size: usize,
 ) -> Result<String, TokenError> {
@@ -93,12 +93,12 @@ pub(super) fn generate_token(
     input.into_iter().try_for_each(|(index, state)| {
         let most_significant_bit_index = get_most_significant_bit_index(index, bits);
         match state {
-            RevocationListEntryStatus::Active => {}
-            RevocationListEntryStatus::Revoked => {
+            RevocationListEntryState::Active => {}
+            RevocationListEntryState::Revoked => {
                 let revocation_bit_index = most_significant_bit_index + bits - 1;
                 bitvec.set(revocation_bit_index, true)
             }
-            RevocationListEntryStatus::Suspended => {
+            RevocationListEntryState::Suspended => {
                 if bits < PREFERRED_ENTRY_SIZE {
                     return Err(TokenError::SuspensionRequiresAtLeastTwoBits);
                 }

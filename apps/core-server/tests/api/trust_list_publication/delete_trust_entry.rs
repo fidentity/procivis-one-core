@@ -1,6 +1,6 @@
 use core_server::endpoint::trust_list_publication::dto::TrustListRoleRestEnum;
 use one_core::model::history::{HistoryAction, HistoryEntityType};
-use one_core::model::trust_entry::TrustEntryStatusEnum;
+use one_core::model::trust_entry::TrustEntryStateEnum;
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use uuid::Uuid;
 
@@ -94,7 +94,7 @@ async fn test_fail_to_delete_trust_entry_entry_does_not_belong_to_list() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             identifier.clone(),

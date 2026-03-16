@@ -23,7 +23,7 @@ use crate::model::credential::Credential;
 use crate::model::did::{DidRelations, KeyRole};
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
 use crate::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryState,
     RevocationListPurpose, RevocationListRelations, StatusListCredentialFormat,
     UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
@@ -225,7 +225,7 @@ impl RevocationMethod for TokenStatusList {
             .update_entry(
                 UpdateRevocationListEntryId::Credential(credential.id),
                 UpdateRevocationListEntryRequest {
-                    status: Some(new_state.into()),
+                    state: Some(new_state.into()),
                 },
             )
             .await
@@ -446,7 +446,7 @@ impl RevocationMethod for TokenStatusList {
                             .update_entry(
                                 UpdateRevocationListEntryId::Index(list.id, index),
                                 UpdateRevocationListEntryRequest {
-                                    status: Some(new_state.clone().into()),
+                                    state: Some(new_state.clone().into()),
                                 },
                             )
                             .await
@@ -516,7 +516,7 @@ impl RevocationMethod for TokenStatusList {
                     .update_entry(
                         UpdateRevocationListEntryId::Id(signature_id),
                         UpdateRevocationListEntryRequest {
-                            status: Some(RevocationListEntryStatus::Revoked),
+                            state: Some(RevocationListEntryState::Revoked),
                         },
                     )
                     .await
@@ -917,7 +917,7 @@ async fn generate_token_from_entries(
                 entry.index.ok_or(RevocationError::MappingError(
                     "revocation list entry index missing".to_string(),
                 ))?,
-                entry.status,
+                entry.state,
             ))
         })
         .collect::<Result<Vec<_>, RevocationError>>()?;

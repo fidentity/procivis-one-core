@@ -1,5 +1,5 @@
 use one_core::model::revocation_list::{
-    RevocationListEntityId, RevocationListEntryStatus, RevocationListPurpose,
+    RevocationListEntityId, RevocationListEntryState, RevocationListPurpose,
 };
 use similar_asserts::assert_eq;
 use uuid::Uuid;
@@ -58,8 +58,8 @@ async fn test_revoke_wrprc_success() {
     assert_eq!(entries_before.len(), entries_after.len());
     assert_eq!(entries_before[0].id, entries_after[0].id);
     assert_eq!(entries_before[0].entity_info, entries_after[0].entity_info);
-    assert_eq!(entries_before[0].status, RevocationListEntryStatus::Active);
-    assert_eq!(entries_after[0].status, RevocationListEntryStatus::Revoked);
+    assert_eq!(entries_before[0].state, RevocationListEntryState::Active);
+    assert_eq!(entries_after[0].state, RevocationListEntryState::Revoked);
 
     assert_ne!(list_before.formatted_list, list_after.formatted_list);
     assert!(list_after.last_modified > list_before.last_modified);

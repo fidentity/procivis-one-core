@@ -4,7 +4,7 @@ use one_core::model::list_filter::{ComparisonType, ListFilterValue, ValueCompari
 use one_core::model::list_query::ListPagination;
 use one_core::model::trust_entry::{
     TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryRelations,
-    TrustEntryStatusEnum, UpdateTrustEntryRequest,
+    TrustEntryStateEnum, UpdateTrustEntryRequest,
 };
 use one_core::model::trust_list_publication::{
     TrustListPublication, TrustListPublicationRelations,
@@ -88,7 +88,7 @@ fn dummy_trust_entry(
         id: Uuid::new_v4().into(),
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        status: TrustEntryStatusEnum::Active,
+        state: TrustEntryStateEnum::Active,
         metadata: vec![],
         trust_list_publication_id,
         identifier_id,
@@ -136,7 +136,7 @@ async fn test_get_trust_entry_success() {
     assert!(result.is_ok());
     let found = result.unwrap().unwrap();
     assert_eq!(found.id, id);
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
     assert_eq!(
         found.trust_list_publication_id,
         setup.trust_list_publication_id
@@ -255,7 +255,7 @@ async fn test_list_trust_entries_filter_by_status() {
 
     let entry1 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
     let mut entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
-    entry2.status = TrustEntryStatusEnum::Suspended;
+    entry2.state = TrustEntryStateEnum::Suspended;
     setup.provider.create(entry1).await.unwrap();
     setup.provider.create(entry2).await.unwrap();
 
@@ -269,7 +269,7 @@ async fn test_list_trust_entries_filter_by_status() {
                     page_size: 10,
                 }),
                 filtering: Some(
-                    TrustEntryFilterValue::Status(vec![TrustEntryStatusEnum::Active]).condition(),
+                    TrustEntryFilterValue::State(vec![TrustEntryStateEnum::Active]).condition(),
                 ),
                 ..Default::default()
             },
@@ -279,7 +279,7 @@ async fn test_list_trust_entries_filter_by_status() {
     assert!(result.is_ok());
     let list = result.unwrap();
     assert_eq!(list.total_items, 1);
-    assert_eq!(list.values[0].status, TrustEntryStatusEnum::Active);
+    assert_eq!(list.values[0].state, TrustEntryStateEnum::Active);
 }
 
 #[tokio::test]
@@ -295,7 +295,7 @@ async fn test_update_trust_entry_status() {
         .update(
             id,
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -308,7 +308,7 @@ async fn test_update_trust_entry_status() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.status, TrustEntryStatusEnum::Suspended);
+    assert_eq!(found.state, TrustEntryStateEnum::Suspended);
 }
 
 #[tokio::test]
@@ -339,7 +339,7 @@ async fn test_update_trust_entry_metadata() {
         .unwrap()
         .unwrap();
     assert_eq!(found.metadata, new_metadata);
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
 }
 
 #[tokio::test]
@@ -432,7 +432,7 @@ async fn test_list_trust_entries_filter_by_last_modified() {
         .update(
             id,
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -563,7 +563,7 @@ async fn test_update_trust_entry_not_found() {
         .update(
             Uuid::new_v4().into(),
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -592,6 +592,6 @@ async fn test_update_trust_entry_noop() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
     assert_eq!(found.metadata, Vec::<u8>::new());
 }

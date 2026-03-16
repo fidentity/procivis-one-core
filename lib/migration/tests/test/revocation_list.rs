@@ -105,7 +105,7 @@ async fn test_db_schema_revocation_list_entry() {
             "revocation_list_id",
             "index",
             "credential_id",
-            "status",
+            "state",
             "type",
             "signature_type",
             "serial",
@@ -156,7 +156,7 @@ async fn test_db_schema_revocation_list_entry() {
         .nullable(true)
         .foreign_key("fk-RevocationListEntry-CredentialId", "credential", "id");
     revocation_list_entry
-        .column("status")
+        .column("state")
         .r#type(ColumnType::String(None))
         .nullable(false)
         .default(None);

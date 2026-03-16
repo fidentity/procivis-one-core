@@ -1,15 +1,15 @@
-use crate::model::revocation_list::RevocationListEntryStatus;
+use crate::model::revocation_list::RevocationListEntryState;
 use crate::service::signature::dto::SignatureState;
 use crate::service::signature::error::SignatureServiceError;
 
-impl TryFrom<RevocationListEntryStatus> for SignatureState {
+impl TryFrom<RevocationListEntryState> for SignatureState {
     type Error = SignatureServiceError;
 
-    fn try_from(value: RevocationListEntryStatus) -> Result<Self, Self::Error> {
+    fn try_from(value: RevocationListEntryState) -> Result<Self, Self::Error> {
         match value {
-            RevocationListEntryStatus::Active => Ok(Self::Active),
-            RevocationListEntryStatus::Revoked => Ok(Self::Revoked),
-            RevocationListEntryStatus::Suspended => Err(SignatureServiceError::MappingError(
+            RevocationListEntryState::Active => Ok(Self::Active),
+            RevocationListEntryState::Revoked => Ok(Self::Revoked),
+            RevocationListEntryState::Suspended => Err(SignatureServiceError::MappingError(
                 format!("Invalid signature revocation status: {:?}", value),
             )),
         }

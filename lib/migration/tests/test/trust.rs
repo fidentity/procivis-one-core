@@ -283,7 +283,7 @@ async fn test_db_schema_trust_entry() {
         "id",
         "created_date",
         "last_modified",
-        "status",
+        "state",
         "metadata",
         "trust_list_publication_id",
         "identifier_id",
@@ -305,7 +305,7 @@ async fn test_db_schema_trust_entry() {
         .nullable(false)
         .default(None);
     trust_entry
-        .column("status")
+        .column("state")
         .r#type(ColumnType::String(None))
         .nullable(false)
         .default(None);

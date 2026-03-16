@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use crate::model::credential::Credential;
 use crate::model::proof_schema::ProofInputSchema;
-use crate::model::revocation_list::RevocationListEntryStatus;
+use crate::model::revocation_list::RevocationListEntryState;
 use crate::provider::credential_formatter::model::{CredentialStatus, DetailCredential};
 
 #[derive(Clone)]
@@ -37,12 +37,12 @@ pub enum RevocationState {
     },
 }
 
-impl From<RevocationState> for RevocationListEntryStatus {
+impl From<RevocationState> for RevocationListEntryState {
     fn from(value: RevocationState) -> Self {
         match value {
-            RevocationState::Valid => RevocationListEntryStatus::Active,
-            RevocationState::Revoked => RevocationListEntryStatus::Revoked,
-            RevocationState::Suspended { .. } => RevocationListEntryStatus::Suspended,
+            RevocationState::Valid => RevocationListEntryState::Active,
+            RevocationState::Revoked => RevocationListEntryState::Revoked,
+            RevocationState::Suspended { .. } => RevocationListEntryState::Suspended,
         }
     }
 }

@@ -98,7 +98,7 @@ impl TryFrom<TrustEntryFilterQueryParamsRestDTO> for ListFilterCondition<TrustEn
 
         let statuses = value
             .states
-            .map(|states| TrustEntryFilterValue::Status(convert_inner(states)));
+            .map(|states| TrustEntryFilterValue::State(convert_inner(states)));
 
         let created_date_after = value.created_date_after.map(|date| {
             TrustEntryFilterValue::CreatedDate(ValueComparison {

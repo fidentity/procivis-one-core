@@ -5,14 +5,14 @@ use shared_types::{IdentifierId, OrganisationId, TrustEntryId, TrustListPublicat
 use time::OffsetDateTime;
 
 use crate::entity::identifier::{IdentifierState, IdentifierType};
-use crate::entity::trust_entry::TrustEntryStatus;
+use crate::entity::trust_entry::TrustEntryState;
 
 #[derive(Clone, Debug, FromQueryResult)]
 pub struct TrustEntryWithIdentifier {
     pub id: TrustEntryId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub status: TrustEntryStatus,
+    pub state: TrustEntryState,
     pub metadata: Vec<u8>,
     pub trust_list_publication_id: TrustListPublicationId,
 
@@ -33,7 +33,7 @@ impl From<TrustEntryWithIdentifier> for TrustEntry {
             id: value.id,
             created_date: value.created_date,
             last_modified: value.last_modified,
-            status: value.status.into(),
+            state: value.state.into(),
             metadata: value.metadata,
             trust_list_publication_id: value.trust_list_publication_id,
             identifier_id: value.identifier_id,

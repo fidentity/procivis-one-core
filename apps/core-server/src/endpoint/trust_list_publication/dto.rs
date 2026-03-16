@@ -1,4 +1,4 @@
-use one_core::model::trust_entry::{SortableTrustEntryColumn, TrustEntryStatusEnum};
+use one_core::model::trust_entry::{SortableTrustEntryColumn, TrustEntryStateEnum};
 use one_core::model::trust_list_publication::SortableTrustListPublicationColumn;
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use one_core::service::error::ServiceError;
@@ -81,8 +81,8 @@ pub struct CreateTrustEntryRequestRestDTO {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[into(UpdateTrustEntryRequestDTO)]
 pub struct UpdateTrustEntryRequestRestDTO {
-    /// Update the entry's status on the trust list publication.
-    #[into(rename = "status", with_fn = convert_inner)]
+    /// Update the entry's state on the trust list publication.
+    #[into(with_fn = "convert_inner")]
     pub state: Option<TrustEntryStateRestEnum>,
     /// Optional entity and service information fields. See the
     /// [Scheme Operators Guide](https://docs.procivis.ch/trust/etsi/scheme-operators)
@@ -171,7 +171,6 @@ pub(crate) struct TrustEntryListItemResponseRestDTO {
     #[serde(serialize_with = "front_time")]
     pub last_modified: OffsetDateTime,
     /// The entry's current state on the trust list publication.
-    #[from(rename = "status")]
     pub state: TrustEntryStateRestEnum,
     /// Identifier of the trusted entity.
     pub identifier: GetIdentifierListItemResponseRestDTO,
@@ -297,7 +296,7 @@ pub(crate) enum SortableTrustEntryColumnRestEnum {
 impl From<SortableTrustEntryColumnRestEnum> for SortableTrustEntryColumn {
     fn from(value: SortableTrustEntryColumnRestEnum) -> Self {
         match value {
-            SortableTrustEntryColumnRestEnum::State => SortableTrustEntryColumn::Status,
+            SortableTrustEntryColumnRestEnum::State => SortableTrustEntryColumn::State,
             SortableTrustEntryColumnRestEnum::LastModified => {
                 SortableTrustEntryColumn::LastModified
             }
@@ -314,8 +313,8 @@ pub(crate) enum ExactTrustEntryFilterColumnRestEnum {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Into, From, Deserialize, Serialize, ToSchema)]
-#[into(TrustEntryStatusEnum)]
-#[from(TrustEntryStatusEnum)]
+#[into(TrustEntryStateEnum)]
+#[from(TrustEntryStateEnum)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TrustEntryStateRestEnum {
     Active,

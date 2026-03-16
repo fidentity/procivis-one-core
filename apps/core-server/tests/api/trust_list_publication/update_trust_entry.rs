@@ -2,7 +2,7 @@ use core_server::endpoint::trust_list_publication::dto::{
     TrustEntryStateRestEnum, TrustListRoleRestEnum,
 };
 use one_core::model::history::{HistoryAction, HistoryEntityType};
-use one_core::model::trust_entry::TrustEntryStatusEnum;
+use one_core::model::trust_entry::TrustEntryStateEnum;
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use uuid::Uuid;
 
@@ -65,7 +65,7 @@ async fn test_update_trust_entry() {
 
     // verify update
     let updated_entry = context.db.trust_entries.get(entry_id).await.unwrap();
-    similar_asserts::assert_eq!(updated_entry.status, TrustEntryStatusEnum::Suspended);
+    similar_asserts::assert_eq!(updated_entry.state, TrustEntryStateEnum::Suspended);
 
     // verify history entry on parent publication (sign_trust_list updates it)
     let history_list = context

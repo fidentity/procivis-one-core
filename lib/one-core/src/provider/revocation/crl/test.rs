@@ -13,7 +13,7 @@ use crate::model::certificate::{Certificate, CertificateState};
 use crate::model::identifier::Identifier;
 use crate::model::revocation_list::{
     RevocationList, RevocationListEntityId, RevocationListEntityInfo, RevocationListEntry,
-    RevocationListEntryStatus, RevocationListPurpose, StatusListCredentialFormat,
+    RevocationListEntryState, RevocationListPurpose, StatusListCredentialFormat,
     UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
 use crate::proto::transaction_manager::NoTransactionManager;
@@ -151,7 +151,7 @@ async fn test_revoke_signature() {
         .with(
             eq(UpdateRevocationListEntryId::Id(signature_id)),
             eq(UpdateRevocationListEntryRequest {
-                status: Some(RevocationListEntryStatus::Revoked),
+                state: Some(RevocationListEntryState::Revoked),
             }),
         )
         .returning(|_, _| Ok(()));
@@ -189,7 +189,7 @@ async fn test_revoke_signature() {
                         Some(serial),
                     ),
                     index: None,
-                    status: RevocationListEntryStatus::Revoked,
+                    state: RevocationListEntryState::Revoked,
                 }])
             }
         });

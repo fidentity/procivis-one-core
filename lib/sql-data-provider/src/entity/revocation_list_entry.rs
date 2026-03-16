@@ -16,7 +16,7 @@ pub struct Model {
     pub credential_id: Option<CredentialId>,
     pub r#type: RevocationListEntryType,
     pub signature_type: Option<String>,
-    pub status: RevocationListEntryStatus,
+    pub state: RevocationListEntryState,
     #[sea_orm(column_type = "VarBinary(StringLen::N(20))")]
     pub serial: Option<Vec<u8>>,
 }
@@ -33,10 +33,10 @@ pub enum RevocationListEntryType {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into)]
-#[from(revocation_list::RevocationListEntryStatus)]
-#[into(revocation_list::RevocationListEntryStatus)]
+#[from(revocation_list::RevocationListEntryState)]
+#[into(revocation_list::RevocationListEntryState)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
-pub enum RevocationListEntryStatus {
+pub enum RevocationListEntryState {
     #[sea_orm(string_value = "ACTIVE")]
     Active,
     #[sea_orm(string_value = "SUSPENDED")]

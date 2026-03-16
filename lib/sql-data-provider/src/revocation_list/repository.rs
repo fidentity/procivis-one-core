@@ -17,7 +17,7 @@ use shared_types::{
 };
 use uuid::Uuid;
 
-use crate::entity::revocation_list_entry::{RevocationListEntryStatus, RevocationListEntryType};
+use crate::entity::revocation_list_entry::{RevocationListEntryState, RevocationListEntryType};
 use crate::entity::{revocation_list, revocation_list_entry, wallet_unit_attested_key};
 use crate::mapper::{map_lock_type, to_data_layer_error, to_update_data_layer_error};
 use crate::revocation_list::RevocationListProvider;
@@ -290,7 +290,7 @@ impl RevocationListRepository for RevocationListProvider {
             credential_id: Set(credential_id),
             r#type: Set(r#type),
             signature_type: Set(signature_type),
-            status: Set(RevocationListEntryStatus::Active),
+            state: Set(RevocationListEntryState::Active),
             serial: Set(serial),
         }
         .insert(&self.db)
@@ -317,15 +317,15 @@ impl RevocationListRepository for RevocationListProvider {
         id: UpdateRevocationListEntryId,
         request: UpdateRevocationListEntryRequest,
     ) -> Result<(), DataLayerError> {
-        let status = match request.status {
-            None => Unchanged(RevocationListEntryStatus::Active),
-            Some(status) => Set(status.into()),
+        let state = match request.state {
+            None => Unchanged(RevocationListEntryState::Active),
+            Some(state) => Set(state.into()),
         };
 
         let model = revocation_list_entry::ActiveModel {
             id: NotSet,
             last_modified: Set(one_core::clock::now_utc()),
-            status,
+            state,
             ..Default::default()
         };
 
@@ -438,7 +438,7 @@ impl RevocationListProvider {
                     last_modified: entry.last_modified,
                     entity_info,
                     index: entry.index.map(|index| index as _),
-                    status: entry.status.into(),
+                    state: entry.state.into(),
                 })
             })
             .collect::<Result<_, DataLayerError>>()

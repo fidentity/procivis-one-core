@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
 use crate::model::identifier::Identifier;
-use crate::model::trust_entry::{TrustEntry, TrustEntryStatusEnum};
+use crate::model::trust_entry::{TrustEntry, TrustEntryStateEnum};
 use crate::model::trust_list_publication::TrustListPublication;
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::service::identifier::dto::GetIdentifierListItemResponseDTO;
@@ -33,7 +33,7 @@ pub struct CreateTrustEntryRequestDTO {
 
 #[derive(Clone, Debug)]
 pub struct UpdateTrustEntryRequestDTO {
-    pub status: Option<TrustEntryStatusEnum>,
+    pub state: Option<TrustEntryStateEnum>,
     pub params: Option<serde_json::Value>,
 }
 
@@ -92,7 +92,7 @@ pub struct TrustEntryListItemResponseDTO {
     #[try_from(infallible)]
     pub last_modified: OffsetDateTime,
     #[try_from(infallible)]
-    pub status: TrustEntryStatusEnum,
+    pub state: TrustEntryStateEnum,
     #[try_from(with_fn = "map_identifier")]
     pub identifier: GetIdentifierListItemResponseDTO,
     #[try_from(rename = "metadata", infallible)]

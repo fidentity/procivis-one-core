@@ -1,7 +1,7 @@
 use one_core::model::identifier::IdentifierType;
 use one_core::model::organisation::UpdateOrganisationRequest;
 use one_core::model::revocation_list::{
-    RevocationListEntityId, RevocationListEntryStatus, RevocationListPurpose,
+    RevocationListEntityId, RevocationListEntryState, RevocationListPurpose,
     RevocationListRelations,
 };
 use one_core::model::wallet_unit::{WalletUnitRelations, WalletUnitStatus};
@@ -132,8 +132,8 @@ async fn test_revoke_wallet_unit_success() {
         .await;
     assert_eq!(revocation_list_entry.len(), 1);
     assert_eq!(
-        revocation_list_entry[0].status,
-        RevocationListEntryStatus::Revoked
+        revocation_list_entry[0].state,
+        RevocationListEntryState::Revoked
     );
 }
 

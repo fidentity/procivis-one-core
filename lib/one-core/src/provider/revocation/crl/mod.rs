@@ -19,7 +19,7 @@ use crate::model::certificate::{Certificate, CertificateRelations};
 use crate::model::credential::Credential;
 use crate::model::identifier::Identifier;
 use crate::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntityInfo, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntityInfo, RevocationListEntryState,
     RevocationListPurpose, RevocationListRelations, StatusListCredentialFormat,
     UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
@@ -250,7 +250,7 @@ impl RevocationMethod for CRLRevocation {
             .update_entry(
                 UpdateRevocationListEntryId::Id(signature_id),
                 UpdateRevocationListEntryRequest {
-                    status: Some(RevocationListEntryStatus::Revoked),
+                    state: Some(RevocationListEntryState::Revoked),
                 },
             )
             .await
@@ -357,7 +357,7 @@ impl CRLRevocation {
             .error_while("getting revocation list entries")?
             .into_iter()
             .filter_map(|entry| {
-                if entry.status == RevocationListEntryStatus::Revoked
+                if entry.state == RevocationListEntryState::Revoked
                     && let RevocationListEntityInfo::Signature(_, Some(serial)) = entry.entity_info
                 {
                     Some((serial, entry.last_modified))

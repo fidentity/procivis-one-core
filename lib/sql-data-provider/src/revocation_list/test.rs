@@ -5,7 +5,7 @@ use one_core::model::credential::CredentialStateEnum;
 use one_core::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use one_core::model::revocation_list::{
     RevocationList, RevocationListEntityId, RevocationListEntityInfo, RevocationListEntry,
-    RevocationListEntryStatus, RevocationListPurpose, StatusListCredentialFormat,
+    RevocationListEntryState, RevocationListPurpose, StatusListCredentialFormat,
 };
 use one_core::repository::certificate_repository::MockCertificateRepository;
 use one_core::repository::error::DataLayerError;
@@ -334,7 +334,7 @@ async fn test_get_entries_non_empty() {
             last_modified: results[0].last_modified,
             entity_info: RevocationListEntityInfo::WalletUnitAttestedKey,
             index: Some(1),
-            status: RevocationListEntryStatus::Active,
+            state: RevocationListEntryState::Active,
         }
     );
     assert_eq!(
@@ -345,7 +345,7 @@ async fn test_get_entries_non_empty() {
             last_modified: results[1].last_modified,
             entity_info: RevocationListEntityInfo::Credential(credential_id),
             index: Some(2),
-            status: RevocationListEntryStatus::Active,
+            state: RevocationListEntryState::Active,
         }
     );
 }

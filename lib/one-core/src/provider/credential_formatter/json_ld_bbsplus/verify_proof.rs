@@ -1,33 +1,28 @@
 use super::{JsonLdBbsplus, data_integrity};
 use crate::config::core_config::KeyAlgorithmType;
+use crate::error::ContextWithErrorCode;
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::json_ld::json_ld_processor_options;
-use crate::provider::credential_formatter::json_ld::model::DEFAULT_ALLOWED_CONTEXTS;
-use crate::provider::credential_formatter::model::{DetailCredential, VerificationFn};
+use crate::provider::credential_formatter::model::VerificationFn;
 use crate::provider::credential_formatter::vcdm::VcdmCredential;
+use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_algorithm::key::MultiMessageSignatureKeyHandle;
+use crate::util::rdf_canonization::json_ld_processor_options;
+use crate::util::vcdm_jsonld_contexts::is_context_list_valid;
 
 impl JsonLdBbsplus {
+    /// Verifies the proof of the credential. To do so the proof must be removed from the
+    /// credential. This function is given a mutable reference to avoid cloning the whole thing.
+    /// Returns the list of mandatory pointers if the proof is valid.
     pub(super) async fn verify(
         &self,
-        credential: &str,
+        vcdm: &mut VcdmCredential,
         verification: VerificationFn,
-    ) -> Result<DetailCredential, FormatterError> {
-        let mut vcdm: VcdmCredential = serde_json::from_str(credential).map_err(|e| {
-            FormatterError::CouldNotVerify(format!("Could not deserialize base proof: {e}"))
-        })?;
-
-        if !crate::provider::credential_formatter::json_ld::is_context_list_valid(
+    ) -> Result<Option<Vec<String>>, FormatterError> {
+        is_context_list_valid(
             &vcdm.context,
             self.params.allowed_contexts.as_ref(),
-            &DEFAULT_ALLOWED_CONTEXTS,
             vcdm.credential_schema.as_ref(),
-            vcdm.id.as_ref(),
-        ) {
-            return Err(FormatterError::CouldNotVerify(
-                "Used context is not allowed".to_string(),
-            ));
-        }
+        )?;
 
         let Some(mut proof) = vcdm.proof.take() else {
             return Err(FormatterError::CouldNotVerify("Missing proof".to_string()));
@@ -46,33 +41,30 @@ impl JsonLdBbsplus {
             ));
         }
 
-        let hasher = self
-            .crypto
-            .get_hasher("sha-256")
-            .map_err(|_| FormatterError::CouldNotVerify("SHA256 hasher unavailable".to_string()))?;
+        let hasher = self.crypto.get_hasher("sha-256")?;
 
-        match proof_type(proof_value)? {
+        let mandatory_pointers = match proof_type(proof_value)? {
             ProofType::Base => {
-                data_integrity::verify_base_proof(
-                    &vcdm,
+                let mandatory_pointers = data_integrity::verify_base_proof(
+                    vcdm,
                     proof,
                     &self.caching_loader,
                     &*hasher,
                     &*verification,
                     json_ld_processor_options(),
                 )
-                .await?;
-
-                DetailCredential::try_from(vcdm)
+                .await?
+                .mandatory_pointers;
+                Some(mandatory_pointers)
             }
             ProofType::Derived => {
                 let handle = self
-                    .get_public_signature_handle(&vcdm, &proof.verification_method)
+                    .get_public_signature_handle(vcdm, &proof.verification_method)
                     .await?;
                 let public_key = handle.public().as_raw();
 
                 data_integrity::verify_derived_proof(
-                    &vcdm,
+                    vcdm,
                     proof,
                     &public_key,
                     &self.caching_loader,
@@ -80,10 +72,12 @@ impl JsonLdBbsplus {
                     json_ld_processor_options(),
                 )
                 .await?;
-
-                DetailCredential::try_from(vcdm)
+                // mandatory pointers not easily visible on verifier side,
+                // so skipping marking the disclosability of claims
+                None
             }
-        }
+        };
+        Ok(mandatory_pointers)
     }
 
     async fn get_public_signature_handle(
@@ -95,13 +89,14 @@ impl JsonLdBbsplus {
             .did_method_provider
             .resolve(&vcdm.issuer.to_did_value()?)
             .await
-            .map_err(|e| FormatterError::CouldNotVerify(e.to_string()))?;
+            .error_while("resolving issuer DID")?;
         let algo_provider = self
             .key_algorithm_provider
             .key_algorithm_from_type(KeyAlgorithmType::BbsPlus)
-            .ok_or(FormatterError::CouldNotVerify(
-                "Missing BBS_PLUS algorithm".to_owned(),
-            ))?;
+            .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                KeyAlgorithmType::BbsPlus.to_string(),
+            ))
+            .error_while("getting key algorithm")?;
 
         let verification_method = if let Some(multikey) = did_document
             .verification_method
@@ -113,14 +108,14 @@ impl JsonLdBbsplus {
             did_document
                 .verification_method
                 .first()
-                .ok_or(FormatterError::Failed("Missing issuer key".to_string()))?
+                .ok_or(FormatterError::CouldNotVerify(
+                    "Missing issuer key".to_string(),
+                ))?
         };
 
         algo_provider
             .parse_jwk(&verification_method.public_key_jwk)
-            .map_err(|e| {
-                FormatterError::CouldNotVerify(format!("Could not get public key from JWK: {e}"))
-            })?
+            .error_while("parsing JWK")?
             .multi_message_signature()
             .ok_or(FormatterError::CouldNotVerify(
                 "Missing multi-message signature key handle".to_string(),
@@ -142,4 +137,23 @@ fn proof_type(proof_value: &str) -> Result<ProofType, FormatterError> {
             "Invalid proof value prefix or unsupported proof feature".to_string(),
         )),
     }
+}
+
+pub(super) fn extract_mandatory_pointers(
+    vc: &VcdmCredential,
+) -> Result<Option<Vec<String>>, FormatterError> {
+    let Some(base_proof) = &vc.proof else {
+        return Ok(None);
+    };
+
+    let Some(proof_value) = &base_proof.proof_value else {
+        return Ok(None);
+    };
+
+    Ok(match proof_type(proof_value)? {
+        ProofType::Base => Some(
+            data_integrity::base_proof::parse_base_proof_value(proof_value)?.mandatory_pointers,
+        ),
+        ProofType::Derived => None,
+    })
 }

@@ -1,83 +1,101 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use shared_types::{ClaimSchemaId, CredentialSchemaId, DidValue};
+use shared_types::{ClaimSchemaId, CredentialSchemaId};
 
 use super::common::to_cbor;
-use crate::common_mapper::{
-    DidRole, NESTED_CLAIM_MARKER, extracted_credential_to_model, get_or_create_did_and_identifier,
-};
-use crate::common_validator::{validate_expiration_time, validate_issuance_time};
+use crate::config::core_config::VerificationProtocolType;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::{NESTED_CLAIM_MARKER, extracted_credential_to_model};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential_schema::CredentialSchema;
 use crate::model::did::KeyRole;
 use crate::model::proof::{Proof, ProofStateEnum, UpdateProofRequest};
 use crate::model::proof_schema::{ProofInputClaimSchema, ProofSchema};
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::SessionTranscript;
-use crate::provider::credential_formatter::model::{DetailCredential, ExtractPresentationCtx};
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::identifier_creator::{IdentifierCreator, IdentifierRole};
+use crate::proto::key_verification::KeyVerification;
+use crate::provider::credential_formatter::model::{
+    CredentialClaim, DetailCredential, IdentifierDetails,
+};
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::presentation_formatter::model::ExtractPresentationCtx;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::SessionTranscript;
+use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
 use crate::repository::credential_repository::CredentialRepository;
-use crate::repository::did_repository::DidRepository;
-use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::proof_repository::ProofRepository;
 use crate::service::error::{MissingProviderError, ServiceError};
-use crate::util::key_verification::KeyVerification;
+use crate::validator::{validate_expiration_time, validate_issuance_time};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ValidatedProofClaimDTO {
     pub claim_schema_id: ClaimSchemaId,
     pub credential: DetailCredential,
-    pub value: (String, serde_json::Value),
+    pub value: (String, CredentialClaim),
 }
 
 // copied from lib/one-core/src/service/ssi_verifier/validator.rs
 // just adapted to always use MDOC
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn validate_proof(
     proof_schema: &ProofSchema,
     presentation: &str,
     session_transcript: SessionTranscript,
-    formatter_provider: &dyn CredentialFormatterProvider,
-    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    credential_formatter_provider: &dyn CredentialFormatterProvider,
+    presentation_formatter_provider: &dyn PresentationFormatterProvider,
+    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
-) -> Result<(DidValue, Vec<ValidatedProofClaimDTO>), ServiceError> {
+    certificate_validator: Arc<dyn CertificateValidator>,
+) -> Result<(IdentifierDetails, Vec<ValidatedProofClaimDTO>), ServiceError> {
     let key_verification_presentation = Box::new(KeyVerification {
         key_algorithm_provider: key_algorithm_provider.clone(),
         did_method_provider: did_method_provider.clone(),
         key_role: KeyRole::Authentication,
+        certificate_validator: certificate_validator.clone(),
     });
 
     let key_verification_credentials = Box::new(KeyVerification {
-        key_algorithm_provider,
+        key_algorithm_provider: key_algorithm_provider.to_owned(),
         did_method_provider,
         key_role: KeyRole::AssertionMethod,
+        certificate_validator: certificate_validator.clone(),
     });
 
     let format = "MDOC";
-    let formatter = formatter_provider
-        .get_formatter(format)
+    let presentation_formatter = presentation_formatter_provider
+        .get_presentation_formatter(format)
         .ok_or(MissingProviderError::Formatter(format.to_owned()))?;
 
-    let presentation = formatter
+    let presentation = presentation_formatter
         .extract_presentation(
             presentation,
             key_verification_presentation,
             ExtractPresentationCtx {
-                mdoc_session_transcript: Some(to_cbor(&session_transcript)?),
-                ..Default::default()
+                mdoc_session_transcript: Some(
+                    to_cbor(&session_transcript).error_while("serializing SessionTranscript")?,
+                ),
+                verification_protocol_type: VerificationProtocolType::IsoMdl,
+                nonce: None,
+                format_nonce: None,
+                issuance_date: None,
+                expiration_date: None,
+                client_id: None,
+                response_uri: None,
+                verifier_key: None,
             },
         )
-        .await?;
+        .await
+        .error_while("extracting presentation")?;
 
-    let holder_did = presentation
-        .issuer_did
-        .ok_or(ServiceError::MappingError("issuer_did is None".to_string()))?;
+    let holder_identifier = presentation.issuer.ok_or(ServiceError::MappingError(
+        "presentation issuer is None".to_string(),
+    ))?;
 
     // Check if presentation is expired
-    let leeway = formatter.get_leeway();
+    let leeway = presentation_formatter.get_leeway();
     validate_issuance_time(&presentation.issued_at, leeway)?;
     validate_expiration_time(&presentation.expires_at, leeway)?;
 
@@ -151,15 +169,15 @@ pub(crate) async fn validate_proof(
     let mut proved_credentials: HashMap<CredentialSchemaId, Vec<ValidatedProofClaimDTO>> =
         HashMap::new();
 
+    let credential_formatter = credential_formatter_provider
+        .get_credential_formatter(&format.into())
+        .ok_or(MissingProviderError::Formatter(format.to_owned()))?;
+
     for credential in presentation.credentials {
-        let received_credential = formatter
-            .extract_credentials(
-                &credential,
-                None,
-                key_verification_credentials.clone(),
-                None,
-            )
-            .await?;
+        let received_credential = credential_formatter
+            .extract_credentials(&credential, None, key_verification_credentials.clone())
+            .await
+            .error_while("extracting credential")?;
 
         // Check if "nbf" attribute of VCs and VP are valid. || Check if VCs are expired.
         validate_issuance_time(&received_credential.invalid_before, leeway)?;
@@ -176,10 +194,10 @@ pub(crate) async fn validate_proof(
                     "Claim Holder DID missing".to_owned(),
                 ));
             }
-            Some(did) => did,
+            Some(identifier) => identifier,
         };
 
-        if claim_subject != &holder_did {
+        if claim_subject != &holder_identifier {
             return Err(ServiceError::ValidationError(
                 "Holder DID doesn't match.".to_owned(),
             ));
@@ -209,7 +227,7 @@ pub(crate) async fn validate_proof(
     }
 
     Ok((
-        holder_did,
+        holder_identifier,
         proved_credentials
             .into_iter()
             .flat_map(|(.., claims)| claims)
@@ -234,9 +252,9 @@ fn extract_matching_requested_schema(
                                 let required_key = &required_claim_schema.schema.key;
 
                                 namespace == required_key // requesting a whole namespace
-                                ||
+                                    ||
                                     // or requesting a single element
-                                    element_value.as_object().is_some_and(|value| {
+                                    element_value.value.as_object().is_some_and(|value| {
                                         value.keys().any(|key| {
                                             &format!("{namespace}{NESTED_CLAIM_MARKER}{key}")
                                                 == required_key
@@ -269,7 +287,7 @@ fn extract_matching_requested_claim(
             .claims
             .claims
             .get(namespace)
-            .and_then(|elements| elements.as_object())
+            .and_then(|elements| elements.value.as_object())
             .and_then(|elements| elements.get(element_identifier))
     } else {
         // requested whole namespace
@@ -292,16 +310,12 @@ fn extract_matching_requested_claim(
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn accept_proof(
     proof: Proof,
     proved_claims: Vec<ValidatedProofClaimDTO>,
-    holder_did: DidValue,
-    did_repository: &dyn DidRepository,
-    identifier_repository: &dyn IdentifierRepository,
-    did_method_provider: &dyn DidMethodProvider,
     credential_repository: &dyn CredentialRepository,
     proof_repository: &dyn ProofRepository,
+    identifier_creator: Arc<dyn IdentifierCreator>,
 ) -> Result<(), ServiceError> {
     let proof_schema = proof.schema.as_ref().ok_or(ServiceError::MappingError(
         "proof schema is None".to_string(),
@@ -347,7 +361,7 @@ pub(crate) async fn accept_proof(
 
     struct ProvedClaim {
         claim_schema: ClaimSchema,
-        value: (String, serde_json::Value),
+        value: (String, CredentialClaim),
         credential: DetailCredential,
         credential_schema: CredentialSchema,
     }
@@ -378,19 +392,9 @@ pub(crate) async fn accept_proof(
             .push(proved_claim);
     }
 
-    let (_, holder_identifier) = get_or_create_did_and_identifier(
-        did_method_provider,
-        did_repository,
-        identifier_repository,
-        &proof_schema.organisation,
-        &holder_did,
-        DidRole::Holder,
-    )
-    .await?;
-
     let mut proof_claims: Vec<Claim> = vec![];
     for (_, credential_claims) in claims_per_credential {
-        let claims: Vec<(serde_json::Value, ClaimSchema)> = credential_claims
+        let claims: Vec<(CredentialClaim, ClaimSchema)> = credential_claims
             .iter()
             .map(|claim| Ok((claim.value.1.to_owned(), claim.claim_schema.to_owned())))
             .collect::<Result<Vec<_>, ServiceError>>()?;
@@ -398,23 +402,15 @@ pub(crate) async fn accept_proof(
         let first_claim = credential_claims
             .first()
             .ok_or(ServiceError::MappingError("claims are empty".to_string()))?;
-        let issuer_did =
-            first_claim
-                .credential
-                .issuer_did
-                .as_ref()
-                .ok_or(ServiceError::MappingError(
-                    "issuer_did is missing".to_string(),
-                ))?;
-        let (_, isssuer_identifier) = get_or_create_did_and_identifier(
-            did_method_provider,
-            did_repository,
-            identifier_repository,
-            &proof_schema.organisation,
-            issuer_did,
-            DidRole::Issuer,
-        )
-        .await?;
+
+        let (issuer_identifier, issuer_identifier_relation) = identifier_creator
+            .get_or_create_remote_identifier(
+                &proof_schema.organisation,
+                &first_claim.credential.issuer,
+                IdentifierRole::Issuer,
+            )
+            .await
+            .error_while("creating remote issuer identifier")?;
 
         let credential_schema = &first_claim.credential_schema;
         let claim_schemas =
@@ -429,9 +425,11 @@ pub(crate) async fn accept_proof(
             claim_schemas,
             credential_schema.to_owned(),
             claims,
-            isssuer_identifier,
-            Some(holder_identifier.clone()),
-            proof.exchange.to_owned(),
+            issuer_identifier,
+            issuer_identifier_relation,
+            None,
+            proof.protocol.to_owned(),
+            first_claim.credential.issuance_date,
         )?;
 
         proof_claims.append(
@@ -442,23 +440,26 @@ pub(crate) async fn accept_proof(
                 .to_owned(),
         );
 
-        credential_repository.create_credential(credential).await?;
+        credential_repository
+            .create_credential(credential)
+            .await
+            .error_while("creating credential")?;
     }
 
     proof_repository
         .update_proof(
             &proof.id,
             UpdateProofRequest {
-                holder_identifier_id: Some(holder_identifier.id),
                 state: Some(ProofStateEnum::Accepted),
                 ..Default::default()
             },
             None,
         )
         .await
-        .map_err(ServiceError::from)?;
+        .error_while("updating proof")?;
     proof_repository
         .set_proof_claims(&proof.id, proof_claims)
-        .await?;
+        .await
+        .error_while("setting proof claims")?;
     Ok(())
 }

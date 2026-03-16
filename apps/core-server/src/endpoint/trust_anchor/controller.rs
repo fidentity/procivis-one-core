@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use shared_types::TrustAnchorId;
+use one_core::service::error::ServiceError;
+use proc_macros::require_permissions;
+use shared_types::{Permission, TrustAnchorId};
 
 use crate::dto::common::{EntityResponseRestDTO, GetTrustAnchorListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
@@ -30,6 +32,7 @@ use crate::router::AppState;
     configurations of the same type.
 "},
 )]
+#[require_permissions(Permission::TrustAnchorCreate)]
 pub(crate) async fn create_trust_anchor(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -59,6 +62,7 @@ pub(crate) async fn create_trust_anchor(
     summary = "Retrieve a trust anchor",
     description = "Returns details on a given trust anchor.",
 )]
+#[require_permissions(Permission::TrustAnchorDetail)]
 pub(crate) async fn get_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,
@@ -77,16 +81,23 @@ pub(crate) async fn get_trust_anchor(
         ("bearer" = [])
     ),
     summary = "List trust anchors",
-    description = "Returns a list of trust anchors in an organization. See the [guidelines](/api/general_guidelines) for handling list endpoints.",
+    description = "Returns a list of trust anchors in an organization.",
 )]
+#[require_permissions(Permission::TrustAnchorList)]
 pub(crate) async fn get_trust_anchors(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<ListTrustAnchorsQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetTrustAnchorListResponseRestDTO> {
-    let result = state
-        .core
-        .trust_anchor_service
-        .list_trust_anchors(query.into())
+    let result =
+        async {
+            state
+                .core
+                .trust_anchor_service
+                .list_trust_anchors(query.try_into().map_err(|e: std::convert::Infallible| {
+                    ServiceError::MappingError(e.to_string())
+                })?)
+                .await
+        }
         .await;
     OkOrErrorResponse::from_result(result, state, "listing trust anchors")
 }
@@ -108,6 +119,7 @@ pub(crate) async fn get_trust_anchors(
         are also deleted.
     "},
 )]
+#[require_permissions(Permission::TrustAnchorDelete)]
 pub(crate) async fn delete_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,

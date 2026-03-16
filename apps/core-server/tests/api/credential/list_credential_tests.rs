@@ -1,13 +1,19 @@
 use std::collections::HashSet;
 
-use one_core::model::credential::{CredentialRole, CredentialStateEnum};
-use one_core::service::credential::dto::CredentialListIncludeEntityTypeEnum;
+use one_core::model::credential::{
+    CredentialListIncludeEntityTypeEnum, CredentialRole, CredentialStateEnum,
+};
+use one_core::model::identifier::IdentifierType;
 use shared_types::CredentialId;
+use similar_asserts::assert_eq;
+use time::Duration;
+use time::macros::datetime;
 use uuid::Uuid;
 
-use crate::fixtures::TestingCredentialParams;
+use crate::fixtures::{ClaimData, TestingCredentialParams, TestingIdentifierParams};
 use crate::utils::api_clients::credentials::Filters;
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
 use crate::utils::field_match::FieldHelpers;
 
 const CLAIM_NAME: &str = "CLAIM_NAME";
@@ -21,7 +27,7 @@ async fn test_get_list_credential_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     for _ in 1..15 {
@@ -42,7 +48,7 @@ async fn test_get_list_credential_success() {
     let resp = context
         .api
         .credentials
-        .list(0, 8, &organisation.id, None, None, None, None)
+        .list(0, 8, &organisation.id, Filters::none(), None)
         .await;
 
     // THEN
@@ -53,7 +59,55 @@ async fn test_get_list_credential_success() {
     assert_eq!(resp["totalPages"], 2);
     assert_eq!(resp["values"].as_array().unwrap().len(), 8);
     assert!(resp["values"][0]["schema"]["layoutProperties"].is_null());
-    assert_eq!(resp["values"][0]["exchange"], "OPENID4VCI_DRAFT13")
+    assert_eq!(resp["values"][0]["protocol"], "OPENID4VCI_DRAFT13")
+}
+
+#[tokio::test]
+async fn test_get_list_credential_deleted_schema() {
+    // GIVEN
+    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "test",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                deleted_at: Some(datetime!(2025-08-11 09:31:29 UTC)),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Accepted,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams::default(),
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .credentials
+        .list(0, 8, &organisation.id, Filters::none(), None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+
+    assert_eq!(resp["totalItems"], 1);
+    assert_eq!(
+        resp["values"][0]["schema"]["deletedAt"],
+        "2025-08-11T09:31:29.000Z"
+    )
 }
 
 #[tokio::test]
@@ -63,7 +117,7 @@ async fn test_get_list_credential_deleted_credentials_are_not_returned() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     for _ in 1..15 {
@@ -84,7 +138,7 @@ async fn test_get_list_credential_deleted_credentials_are_not_returned() {
     let resp = context
         .api
         .credentials
-        .list(0, 8, &organisation.id, None, None, None, None)
+        .list(0, 8, &organisation.id, Filters::none(), None)
         .await;
 
     // THEN
@@ -103,7 +157,7 @@ async fn test_get_list_credential_filter_by_role() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     for (number, role, role_enum) in [
@@ -121,7 +175,7 @@ async fn test_get_list_credential_filter_by_role() {
                     &identifier,
                     "OPENID4VCI_DRAFT13",
                     TestingCredentialParams {
-                        role: Some(role_enum.clone()),
+                        role: Some(role_enum),
                         ..Default::default()
                     },
                 )
@@ -132,7 +186,7 @@ async fn test_get_list_credential_filter_by_role() {
         let resp = context
             .api
             .credentials
-            .list(0, 10, &organisation.id, Some(role), None, None, None)
+            .list(0, 10, &organisation.id, Filters::roles(&[role]), None)
             .await;
 
         // THEN
@@ -161,7 +215,7 @@ async fn test_fail_to_get_list_credential_filter_by_invalid_role() {
     let resp = context
         .api
         .credentials
-        .list(0, 10, &organisation.id, Some("foo"), None, None, None)
+        .list(0, 10, &organisation.id, Filters::roles(&["foo"]), None)
         .await;
 
     // THEN
@@ -175,13 +229,13 @@ async fn test_get_list_credential_filter_by_name() {
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test 1", &organisation, "NONE", Default::default())
+        .create("test 1", &organisation, None, Default::default())
         .await;
 
     let credential_schema2 = context
         .db
         .credential_schemas
-        .create("test 2", &organisation, "NONE", Default::default())
+        .create("test 2", &organisation, None, Default::default())
         .await;
 
     let credential = context
@@ -216,12 +270,10 @@ async fn test_get_list_credential_filter_by_name() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                name: Some("test 1".to_owned()),
+            Filters {
+                name: Some("test 1"),
                 ..Default::default()
-            }),
-            None,
+            },
             None,
         )
         .await;
@@ -243,7 +295,7 @@ async fn test_get_list_credential_filter_by_ids() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let mut credentials = vec![];
@@ -269,7 +321,7 @@ async fn test_get_list_credential_filter_by_ids() {
     let resp = context
         .api
         .credentials
-        .list(0, 10, &organisation.id, None, None, Some(credentials), None)
+        .list(0, 10, &organisation.id, Filters::ids(credentials), None)
         .await;
 
     // THEN
@@ -301,7 +353,7 @@ async fn test_get_list_credential_include_layout_properties_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     for _ in 1..15 {
@@ -326,9 +378,7 @@ async fn test_get_list_credential_include_layout_properties_success() {
             0,
             8,
             &organisation.id,
-            None,
-            None,
-            None,
+            Filters::none(),
             Some(vec![CredentialListIncludeEntityTypeEnum::LayoutProperties]),
         )
         .await;
@@ -365,13 +415,13 @@ async fn test_get_list_credential_filter_by_schema_name() {
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test 1", &organisation, "NONE", Default::default())
+        .create("test 1", &organisation, None, Default::default())
         .await;
 
     let credential_schema2 = context
         .db
         .credential_schemas
-        .create("test 2", &organisation, "NONE", Default::default())
+        .create("test 2", &organisation, None, Default::default())
         .await;
 
     let credential = context
@@ -406,13 +456,11 @@ async fn test_get_list_credential_filter_by_schema_name() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                search_text: Some("test 1".to_owned()),
-                search_type: Some(vec![CREDENTIAL_SCHEMA_NAME.into()]),
+            Filters {
+                search_text: Some("test 1"),
+                search_type: Some(&[CREDENTIAL_SCHEMA_NAME]),
                 ..Default::default()
-            }),
-            None,
+            },
             None,
         )
         .await;
@@ -442,7 +490,7 @@ async fn test_get_list_credential_filter_by_claim_name() {
             &Uuid::new_v4(),
             "schema-1",
             &organisation,
-            "NONE",
+            None,
             &[
                 (claim_1, "super-name-100", false, "STRING", false),
                 (claim_2, "super-name-200", false, "STRING", false),
@@ -455,7 +503,7 @@ async fn test_get_list_credential_filter_by_claim_name() {
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test 1", &organisation, "NONE", Default::default())
+        .create("test 1", &organisation, None, Default::default())
         .await;
 
     let credential = context
@@ -468,8 +516,18 @@ async fn test_get_list_credential_filter_by_claim_name() {
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
                 claims_data: Some(vec![
-                    (claim_1, "super-name-100", "extra-value-11"),
-                    (claim_2, "super-name-200", "extra-value-22"),
+                    ClaimData {
+                        schema_id: claim_1.into(),
+                        path: "super-name-100".to_string(),
+                        value: Some("extra-value-11".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: claim_2.into(),
+                        path: "super-name-200".to_string(),
+                        value: Some("extra-value-22".to_string()),
+                        selectively_disclosable: false,
+                    },
                 ]),
                 ..Default::default()
             },
@@ -485,7 +543,12 @@ async fn test_get_list_credential_filter_by_claim_name() {
             &identifier,
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
-                claims_data: Some(vec![(claim_2, "super-name-200", "extra-value-22")]),
+                claims_data: Some(vec![ClaimData {
+                    schema_id: claim_2.into(),
+                    path: "super-name-200".to_string(),
+                    value: Some("extra-value-22".to_string()),
+                    selectively_disclosable: false,
+                }]),
                 ..Default::default()
             },
         )
@@ -511,13 +574,11 @@ async fn test_get_list_credential_filter_by_claim_name() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                search_text: Some("super-name-100".to_owned()),
-                search_type: Some(vec![CLAIM_NAME.into()]),
+            Filters {
+                search_text: Some("super-name-100"),
+                search_type: Some(&[CLAIM_NAME]),
                 ..Default::default()
-            }),
-            None,
+            },
             None,
         )
         .await;
@@ -547,7 +608,7 @@ async fn test_get_list_credential_filter_by_claim_value() {
             &Uuid::new_v4(),
             "schema-1",
             &organisation,
-            "NONE",
+            None,
             &[
                 (claim_1, "super-name-100", false, "STRING", false),
                 (claim_2, "super-name-200", false, "STRING", false),
@@ -560,7 +621,7 @@ async fn test_get_list_credential_filter_by_claim_value() {
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test 1", &organisation, "NONE", Default::default())
+        .create("test 1", &organisation, None, Default::default())
         .await;
 
     let credential = context
@@ -573,8 +634,18 @@ async fn test_get_list_credential_filter_by_claim_value() {
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
                 claims_data: Some(vec![
-                    (claim_1, "super-name-100", "extra-value-11"),
-                    (claim_2, "super-name-200", "extra-value-22"),
+                    ClaimData {
+                        schema_id: claim_1.into(),
+                        path: "super-name-100".to_string(),
+                        value: Some("extra-value-11".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: claim_2.into(),
+                        path: "super-name-200".to_string(),
+                        value: Some("extra-value-22".to_string()),
+                        selectively_disclosable: false,
+                    },
                 ]),
                 ..Default::default()
             },
@@ -590,7 +661,12 @@ async fn test_get_list_credential_filter_by_claim_value() {
             &identifier,
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
-                claims_data: Some(vec![(claim_2, "super-name-200", "extra-value-33")]),
+                claims_data: Some(vec![ClaimData {
+                    schema_id: claim_2.into(),
+                    path: "super-name-200".to_string(),
+                    value: Some("extra-value-33".to_string()),
+                    selectively_disclosable: false,
+                }]),
                 ..Default::default()
             },
         )
@@ -616,13 +692,11 @@ async fn test_get_list_credential_filter_by_claim_value() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                search_text: Some("extra-value-11".to_owned()),
-                search_type: Some(vec![CLAIM_VALUE.into()]),
+            Filters {
+                search_text: Some("extra-value-11"),
+                search_type: Some(&[CLAIM_VALUE]),
                 ..Default::default()
-            }),
-            None,
+            },
             None,
         )
         .await;
@@ -652,7 +726,7 @@ async fn test_get_list_credential_filter_by_everything() {
             &Uuid::new_v4(),
             "schema-1",
             &organisation,
-            "NONE",
+            None,
             &[
                 (claim_1, "test 2", false, "STRING", false),
                 (claim_2, "super-name-200", false, "STRING", false),
@@ -665,7 +739,7 @@ async fn test_get_list_credential_filter_by_everything() {
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test 1", &organisation, "NONE", Default::default())
+        .create("test 1", &organisation, None, Default::default())
         .await;
 
     let credential1 = context
@@ -678,8 +752,18 @@ async fn test_get_list_credential_filter_by_everything() {
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
                 claims_data: Some(vec![
-                    (claim_1, "test 2", "extra-value-11"),
-                    (claim_2, "super-name-200", "extra-value-22"),
+                    ClaimData {
+                        schema_id: claim_1.into(),
+                        path: "test 2".to_string(),
+                        value: Some("extra-value-11".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: claim_2.into(),
+                        path: "super-name-200".to_string(),
+                        value: Some("extra-value-22".to_string()),
+                        selectively_disclosable: false,
+                    },
                 ]),
                 ..Default::default()
             },
@@ -695,7 +779,12 @@ async fn test_get_list_credential_filter_by_everything() {
             &identifier,
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
-                claims_data: Some(vec![(claim_2, "super-name-200", "test 3")]),
+                claims_data: Some(vec![ClaimData {
+                    schema_id: claim_2.into(),
+                    path: "super-name-200".to_string(),
+                    value: Some("test 3".to_string()),
+                    selectively_disclosable: false,
+                }]),
                 ..Default::default()
             },
         )
@@ -721,17 +810,11 @@ async fn test_get_list_credential_filter_by_everything() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                search_text: Some("test".to_owned()),
-                search_type: Some(vec![
-                    CLAIM_VALUE.into(),
-                    CLAIM_NAME.into(),
-                    CREDENTIAL_SCHEMA_NAME.into(),
-                ]),
+            Filters {
+                search_text: Some("test"),
+                search_type: Some(&[CLAIM_VALUE, CLAIM_NAME, CREDENTIAL_SCHEMA_NAME]),
                 ..Default::default()
-            }),
-            None,
+            },
             None,
         )
         .await;
@@ -760,9 +843,290 @@ async fn test_get_list_credential_filter_by_everything() {
 }
 
 #[tokio::test]
-async fn test_fail_list_credential_both_name_and_search_text_is_present() {
+async fn test_get_list_credential_filter_by_profiles() {
     // GIVEN
-    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+
+    let profile_1 = "profile-test-1";
+    let profile_2 = "profile-test-2";
+
+    // Create credential with profile 1
+    let credential_with_profile_1 = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams {
+                profile: Some(profile_1.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Create credential with profile 2
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams {
+                profile: Some(profile_2.to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Create credential without profile
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams::default(),
+        )
+        .await;
+
+    // WHEN - Filter by profile 1
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                profiles: Some(&[profile_1]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 1);
+    credentials["values"][0]["id"].assert_eq(&credential_with_profile_1.id);
+    credentials["values"][0]["profile"].assert_eq(&profile_1.to_string());
+
+    // WHEN - Filter without profile
+    let resp = context
+        .api
+        .credentials
+        .list(0, 10, &organisation.id, Filters::none(), None)
+        .await;
+
+    // THEN - All credentials are returned
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 3);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 3);
+
+    // WHEN - Filter by non-existent profile
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                profiles: Some(&["non-existent-profile"]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN - No credentials are returned
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 0);
+    assert_eq!(credentials["totalPages"], 0);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_get_list_credential_filter_by_date() {
+    // GIVEN
+    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+
+    let accepted_credential = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Accepted,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    let _pending_credential = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Pending,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    let revoked_credential = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Revoked,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    let pivot_date = accepted_credential.created_date;
+
+    // matches all credentials
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                created_date_after: Some(pivot_date - Duration::seconds(20)),
+                created_date_before: Some(pivot_date + Duration::seconds(20)),
+                last_modified_after: Some(pivot_date - Duration::seconds(20)),
+                last_modified_before: Some(pivot_date + Duration::seconds(20)),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+    assert_eq!(credentials["totalItems"], 3);
+
+    // matches only issued
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                issuance_date_after: Some(pivot_date - Duration::seconds(20)),
+                issuance_date_before: Some(pivot_date + Duration::seconds(20)),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(
+        credentials["values"][0]["id"],
+        accepted_credential.id.to_string()
+    );
+
+    // matches only revoked
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                revocation_date_after: Some(pivot_date - Duration::seconds(20)),
+                revocation_date_before: Some(pivot_date + Duration::seconds(20)),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(
+        credentials["values"][0]["id"],
+        revoked_credential.id.to_string()
+    );
+}
+
+#[tokio::test]
+async fn test_get_list_credential_filter_by_schema_ids() {
+    // GIVEN
+    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema1 = context
+        .db
+        .credential_schemas
+        .create("test 1", &organisation, None, Default::default())
+        .await;
+
+    let credential_schema2 = context
+        .db
+        .credential_schemas
+        .create("test 2", &organisation, None, Default::default())
+        .await;
+
+    let credential = context
+        .db
+        .credentials
+        .create(
+            &credential_schema1,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema2,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
 
     // WHEN
     let resp = context
@@ -772,18 +1136,220 @@ async fn test_fail_list_credential_both_name_and_search_text_is_present() {
             0,
             10,
             &organisation.id,
-            None,
-            Some(Filters {
-                name: Some("foo".into()),
-                search_text: Some("foo".into()),
-                search_type: Some(vec![CREDENTIAL_SCHEMA_NAME.into()]),
-            }),
-            None,
+            Filters {
+                credential_schema_ids: Some(&[&credential_schema1.schema_id]),
+                ..Default::default()
+            },
             None,
         )
         .await;
 
     // THEN
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 1);
+    credentials["values"][0]["id"].assert_eq(&credential.id);
+}
+
+#[tokio::test]
+async fn test_get_list_credential_filter_by_issuers() {
+    // GIVEN
+    let (context, organisation, did, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+
+    let credential = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    let identifier2 = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                did: Some(did),
+                r#type: Some(IdentifierType::Did),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier2,
+            "OPENID4VCI_DRAFT13",
+            Default::default(),
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                issuers: Some(&[identifier.id]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 1);
+    credentials["values"][0]["id"].assert_eq(&credential.id);
+}
+
+#[tokio::test]
+async fn test_get_list_credential_filter_by_states() {
+    // GIVEN
+    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+
+    // Create credential with state created
+    let credential_with_created_state = context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Created,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams {
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Create credential with state accepted
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Accepted,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams {
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Create credential with pending state
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Pending,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams::default(),
+        )
+        .await;
+
+    // WHEN - Filter by single state - CREATED
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                states: Some(&["CREATED"]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 1);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 1);
+    credentials["values"][0]["id"].assert_eq(&credential_with_created_state.id);
+    credentials["values"][0]["state"].assert_eq(&"CREATED".to_string());
+
+    // WHEN - Filter by multiple states - ACCEPTED, PENDING
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                states: Some(&["ACCEPTED", "PENDING"]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN - two credentials are returned
+    assert_eq!(resp.status(), 200);
+    let credentials = resp.json_value().await;
+
+    assert_eq!(credentials["totalItems"], 2);
+    assert_eq!(credentials["totalPages"], 1);
+    assert_eq!(credentials["values"].as_array().unwrap().len(), 2);
+
+    // WHEN - Filter by non-existent state
+    let resp = context
+        .api
+        .credentials
+        .list(
+            0,
+            10,
+            &organisation.id,
+            Filters {
+                states: Some(&["non-existent-state"]),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+    // THEN - No credentials are returned
     assert_eq!(resp.status(), 400);
-    assert_eq!("BR_0084", resp.error_code().await);
+    let error_response = resp.json_value().await;
+
+    assert_eq!(error_response["code"], "BR_0084");
+    assert_eq!(error_response["message"], "General input validation error");
 }

@@ -9,9 +9,10 @@ use super::dto::{
     SdJwtVcClaimSd, SdJwtVcDisplayMetadataDTO, SdJwtVcRenderingDTO, SdJwtVcSimpleRenderingDTO,
     SdJwtVcSimpleRenderingLogoDTO, SdJwtVcTypeMetadataResponseDTO,
 };
-use crate::common_mapper::NESTED_CLAIM_MARKER;
+use crate::mapper::NESTED_CLAIM_MARKER;
+use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential_schema::{
-    Arrayed, CredentialSchema, CredentialSchemaClaim, CredentialSchemaClaimsNestedTypeView,
+    Arrayed, CredentialSchema, CredentialSchemaClaimsNestedTypeView,
     CredentialSchemaClaimsNestedView,
 };
 use crate::service::credential_schema::dto::CredentialSchemaLayoutPropertiesResponseDTO;
@@ -33,13 +34,14 @@ impl Default for JsonLDContextDTO {
 }
 
 pub(crate) fn generate_jsonld_context_response(
-    claim_schemas: &Vec<CredentialSchemaClaim>,
+    claim_schemas: &Vec<ClaimSchema>,
     base_url: &str,
 ) -> Result<HashMap<String, JsonLDEntityDTO>, ServiceError> {
     let mut entities: HashMap<String, JsonLDEntityDTO> = HashMap::new();
     for claim_schema in claim_schemas {
-        if claim_schema.schema.data_type != "OBJECT" {
-            let key_parts: Vec<&str> = claim_schema.schema.key.split(NESTED_CLAIM_MARKER).collect();
+        // Metadata claims are not part of our JSON-LD context
+        if claim_schema.data_type != "OBJECT" && !claim_schema.metadata {
+            let key_parts: Vec<&str> = claim_schema.key.split(NESTED_CLAIM_MARKER).collect();
             insert_claim(&mut entities, &key_parts, base_url, 0)?;
         }
     }
@@ -56,7 +58,9 @@ fn insert_claim(
         return Ok(());
     }
 
-    let part = key_parts[index].to_string();
+    let Some(part) = key_parts.get(index).map(ToString::to_string) else {
+        return Ok(());
+    };
 
     let nested_claim = match current_claim.entry(part.clone()) {
         Entry::Occupied(entry) => entry.into_mut(),
@@ -145,6 +149,21 @@ fn vct_claims_from_nested_view(
 ) -> Vec<SdJwtVcClaimDTO> {
     let mut vct_claims = vec![];
     vct_claims_from_prefix_and_fields(&mut vct_claims, &[], nested_claims.fields);
+
+    // Sort claims in order to make VCT metadata deterministic
+    vct_claims.sort_by(|a, b| {
+        let a_stringified = a
+            .path
+            .iter()
+            .map(|val| format!("{val}"))
+            .collect::<Vec<_>>();
+        let b_stringified = b
+            .path
+            .iter()
+            .map(|val| format!("{val}"))
+            .collect::<Vec<_>>();
+        a_stringified.cmp(&b_stringified)
+    });
     vct_claims
 }
 
@@ -207,7 +226,7 @@ fn vct_logo_from_schema(
         .map(|s| Url::try_from(s.as_str()))
         .next()
         .transpose()
-        .map_err(|err| ServiceError::MappingError(format!("failed to parse logo URL: {}", err)))?
+        .map_err(|err| ServiceError::MappingError(format!("failed to parse logo URL: {err}")))?
         .map(|uri| SdJwtVcSimpleRenderingLogoDTO {
             uri,
             alt_text: None,

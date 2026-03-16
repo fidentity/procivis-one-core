@@ -1,26 +1,32 @@
-use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState};
+use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
 use one_core::service::error::ServiceError;
 use one_core::service::trust_entity::dto::{
-    CreateRemoteTrustEntityRequestDTO, GetTrustEntityResponseDTO, SortableTrustEntityColumnEnum,
-    TrustEntitiesResponseItemDTO,
+    CreateRemoteTrustEntityRequestDTO, GetRemoteTrustEntityResponseDTO, GetTrustEntityResponseDTO,
+    SortableTrustEntityColumnEnum, TrustEntitiesResponseItemDTO, TrustEntityCertificateResponseDTO,
 };
 use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
-use shared_types::{DidId, OrganisationId, TrustAnchorId, TrustEntityId};
+use shared_types::{
+    DidId, IdentifierId, OrganisationId, TrustAnchorId, TrustEntityId, TrustEntityKey,
+};
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::deserialize::deserialize_timestamp;
 use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::endpoint::certificate::dto::{CertificateStateRest, CertificateX509ExtensionRestDTO};
 use crate::endpoint::did::dto::DidListItemResponseRestDTO;
+use crate::endpoint::identifier::dto::GetIdentifierListItemResponseRestDTO;
 use crate::endpoint::trust_anchor::dto::{
     GetTrustAnchorDetailResponseRestDTO, GetTrustAnchorResponseRestDTO,
 };
 use crate::serialize::front_time;
 
+#[options_not_nullable]
 #[derive(Clone, Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateTrustEntityRequestRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateTrustEntityRequestRestDTO {
     /// Specify the entity name.
     pub(super) name: String,
     /// base64 encoded image. Maximum size = 50kb.
@@ -31,12 +37,25 @@ pub struct CreateTrustEntityRequestRestDTO {
     pub(super) terms_url: Option<String>,
     /// Specify the Privacy Policy URL.
     pub(super) privacy_url: Option<String>,
-    /// Whether the entity is a trusted issuer, verifier, or both.
+    /// Whether the entity is a trusted issuer, verifier, or both. For certificates,
+    /// whether the CA is trusted to sign for an issuer, a verifier, or both.
     pub(super) role: TrustEntityRoleRest,
-    /// Specify trust anchor ID.
+    /// Specify which trust anchor to add the entity to.
     pub(super) trust_anchor_id: TrustAnchorId,
     /// Specify DID ID.
-    pub(super) did_id: DidId,
+    pub(super) did_id: Option<DidId>,
+    /// Specify the identifier to add to the trust list.
+    pub(super) identifier_id: Option<IdentifierId>,
+    /// For certificates, put the PEM content here.
+    pub(super) content: Option<String>,
+    /// If passing an identifier via `identifierId` or a certificate via `content`,
+    /// specify the type of entity. If no type is specified the system expects a
+    /// `didId`.
+    pub(super) r#type: Option<TrustEntityTypeRest>,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    pub(super) organisation_id: OrganisationId,
 }
 
 /// Whether the trust entity issues credentials, verifies credentials, or both.
@@ -62,18 +81,81 @@ pub enum TrustEntityStateRest {
     RemovedAndWithdrawn,
 }
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[from(GetTrustEntityResponseDTO)]
 #[serde(rename_all = "camelCase")]
-pub struct GetTrustEntityResponseRestDTO {
+pub(crate) struct GetTrustEntityResponseRestDTO {
+    /// Trust entity ID.
     pub id: TrustEntityId,
     pub organisation_id: Option<OrganisationId>,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
+    pub last_modified: OffsetDateTime,
+    pub name: String,
+    pub logo: Option<String>,
+    pub website: Option<String>,
+    pub terms_url: Option<String>,
+    pub privacy_url: Option<String>,
+    /// The role the entity is trusted to perform.
+    pub role: TrustEntityRoleRest,
+    /// Trust anchor details.
+    pub trust_anchor: GetTrustAnchorDetailResponseRestDTO,
+    /// DID details.
+    #[from(with_fn=convert_inner)]
+    pub did: Option<DidListItemResponseRestDTO>,
+    /// The entity's status on the trust anchor.
+    pub state: TrustEntityStateRest,
+    /// DID value or certificate's `subject`.
+    pub entity_key: TrustEntityKey,
+    pub r#type: TrustEntityTypeRest,
+    /// Identifier details.
+    #[from(with_fn=convert_inner)]
+    pub identifier: Option<GetIdentifierListItemResponseRestDTO>,
+    /// If `type` is `CA`, the certificate in PEM format.
+    pub content: Option<String>,
+    /// Human-readable X.509 certificate details.
+    #[from(with_fn=convert_inner)]
+    pub ca: Option<TrustEntityCertificateResponseRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[from(TrustEntityCertificateResponseDTO)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrustEntityCertificateResponseRestDTO {
+    pub state: CertificateStateRest,
+    pub public_key: String,
+    pub common_name: Option<String>,
+    pub serial_number: String,
+    #[serde(serialize_with = "front_time")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
+    pub not_before: OffsetDateTime,
+    #[serde(serialize_with = "front_time")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
+    pub not_after: OffsetDateTime,
+    pub issuer: String,
+    pub subject: String,
+    pub fingerprint: String,
+    #[from(with_fn=convert_inner)]
+    pub extensions: Vec<CertificateX509ExtensionRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[from(GetRemoteTrustEntityResponseDTO)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GetRemoteTrustEntityResponseRestDTO {
+    pub id: TrustEntityId,
+    pub organisation_id: Option<OrganisationId>,
+    #[serde(serialize_with = "front_time")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
+    pub created_date: OffsetDateTime,
+    #[serde(serialize_with = "front_time")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub logo: Option<String>,
@@ -82,52 +164,90 @@ pub struct GetTrustEntityResponseRestDTO {
     pub privacy_url: Option<String>,
     pub role: TrustEntityRoleRest,
     pub trust_anchor: GetTrustAnchorDetailResponseRestDTO,
-    pub did: DidListItemResponseRestDTO,
     pub state: TrustEntityStateRest,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
 #[into(SortableTrustEntityColumnEnum)]
-pub enum SortableTrustEntityColumnRestEnum {
+pub(crate) enum SortableTrustEntityColumnRestEnum {
     Name,
     Role,
     LastModified,
     State,
+    EntityKey,
+    Type,
+    CreatedDate,
 }
 
-pub type ListTrustEntitiesQuery =
+pub(crate) type ListTrustEntitiesQuery =
     ListQueryParamsRest<TrustEntityFilterQueryParamsRestDto, SortableTrustEntityColumnRestEnum>;
 
 #[derive(Clone, Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct TrustEntityFilterQueryParamsRestDto {
+#[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside ListTrustEntitiesQuery
+pub(crate) struct TrustEntityFilterQueryParamsRestDto {
+    /// Return only entities with a name starting with this string. Not case-sensitive.
     #[param(nullable = false)]
     pub name: Option<String>,
+    /// Filter by one or more trust entity types.
+    #[param(rename = "types[]", inline, nullable = false)]
+    pub types: Option<Vec<TrustEntityTypeRest>>,
+    /// Specify entities to return by their DID value or their certificate `subject`.
+    #[param(nullable = false)]
+    pub entity_key: Option<TrustEntityKey>,
+    /// Filter by role.
     #[param(nullable = false)]
     pub role: Option<TrustEntityRoleRest>,
+    /// Return only entities from the specified trust anchor.
     #[param(nullable = false)]
     pub trust_anchor_id: Option<TrustAnchorId>,
+    /// Filter by specific DID UUIDs.
     #[param(nullable = false)]
     pub did_id: Option<DidId>,
+    /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactColumn>>,
+    #[param(nullable = false)]
     pub organisation_id: Option<OrganisationId>,
+    /// Filter by one or more states.
+    #[param(rename = "states[]", inline, nullable = false)]
+    pub states: Option<Vec<TrustEntityStateRest>>,
+
+    /// Return only entities created after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_after: Option<OffsetDateTime>,
+    /// Return only entities created before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_before: Option<OffsetDateTime>,
+    /// Return only entities last modified after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_after: Option<OffsetDateTime>,
+    /// Return only entities last modified before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_before: Option<OffsetDateTime>,
 }
 
-#[skip_serializing_none]
+#[options_not_nullable]
 #[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(TrustEntitiesResponseItemDTO)]
-pub struct ListTrustEntitiesResponseItemRestDTO {
+pub(crate) struct ListTrustEntitiesResponseItemRestDTO {
     pub id: TrustEntityId,
     pub name: String,
 
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
 
     pub logo: Option<String>,
@@ -137,13 +257,14 @@ pub struct ListTrustEntitiesResponseItemRestDTO {
     pub privacy_url: Option<String>,
     pub role: TrustEntityRoleRest,
     pub trust_anchor: GetTrustAnchorResponseRestDTO,
-    pub did: DidListItemResponseRestDTO,
+    pub r#type: TrustEntityTypeRest,
+    pub entity_key: TrustEntityKey,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
 #[try_into(T = CreateRemoteTrustEntityRequestDTO, Error = ServiceError)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRemoteTrustEntityRequestRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateRemoteTrustEntityRequestRestDTO {
     /// Specify trust anchor ID.
     #[serde(default)]
     #[schema(nullable = false)]
@@ -173,4 +294,14 @@ pub struct CreateRemoteTrustEntityRequestRestDTO {
     pub privacy_url: Option<String>,
     #[try_into(infallible)]
     pub role: TrustEntityRoleRest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, ToSchema, Into, From)]
+#[into(TrustEntityType)]
+#[from(TrustEntityType)]
+pub enum TrustEntityTypeRest {
+    #[serde(rename = "DID")]
+    Did,
+    #[serde(rename = "CA")]
+    CertificateAuthority,
 }

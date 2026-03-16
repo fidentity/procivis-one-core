@@ -1,6 +1,8 @@
 use std::fmt;
 
+use one_core::error::{ErrorCode, ErrorCodeMixin};
 use one_core::model::common::GetListResponse;
+use one_core::service::error::ServiceError;
 use one_dto_mapper::{convert_inner, try_convert_inner};
 use serde::Serialize;
 use thiserror::Error;
@@ -8,9 +10,15 @@ use thiserror::Error;
 use crate::dto::common::GetListResponseRestDTO;
 
 #[derive(Debug, Error)]
-pub enum MapperError {
+pub(crate) enum MapperError {
     #[error("ct_codecs error: `{0}`")]
     CtCodecsError(#[from] ct_codecs::Error),
+}
+
+impl ErrorCodeMixin for MapperError {
+    fn error_code(&self) -> ErrorCode {
+        ErrorCode::BR_0000
+    }
 }
 
 impl<T, K> From<GetListResponse<K>> for GetListResponseRestDTO<T>
@@ -26,7 +34,7 @@ where
     }
 }
 
-pub fn list_try_from<T, K>(
+pub(crate) fn list_try_from<T, K>(
     value: GetListResponse<K>,
 ) -> Result<GetListResponseRestDTO<T>, MapperError>
 where
@@ -38,4 +46,10 @@ where
         total_pages: value.total_pages,
         total_items: value.total_items,
     })
+}
+
+impl From<MapperError> for ServiceError {
+    fn from(value: MapperError) -> Self {
+        ServiceError::MappingError(value.to_string())
+    }
 }

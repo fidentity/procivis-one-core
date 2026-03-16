@@ -2,7 +2,7 @@ use one_core::model::certificate::CertificateState as ModelCertificateState;
 use one_dto_mapper::{From, Into};
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
-use shared_types::{CertificateId, IdentifierId, KeyId};
+use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -17,10 +17,12 @@ pub struct Model {
 
     pub name: String,
     pub chain: String,
+    pub fingerprint: String,
     pub state: CertificateState,
 
     pub identifier_id: IdentifierId,
     pub key_id: Option<KeyId>,
+    pub organisation_id: Option<OrganisationId>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

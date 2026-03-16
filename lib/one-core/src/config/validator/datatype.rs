@@ -9,9 +9,9 @@ use time::macros::format_description;
 use time::{Date, OffsetDateTime};
 
 use crate::config::ConfigValidationError;
-use crate::config::core_config::{DatatypeConfig, DatatypeType};
+use crate::config::core_config::{ConfigExt, DatatypeConfig, DatatypeType};
 
-const DATE_FORMAT: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
+pub(crate) const DATE_FORMAT: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
 
 #[derive(Debug, Error)]
 pub enum DatatypeValidationError {
@@ -113,7 +113,10 @@ pub fn validate_datatype_value(
     match fields.r#type {
         DatatypeType::String => validate_string(value, config.get(datatype)?)?,
         DatatypeType::Number => validate_number(value, config.get(datatype)?)?,
-        DatatypeType::File => validate_file(value, config.get(datatype)?)?,
+        DatatypeType::SwiyuPicture | DatatypeType::Picture => {
+            let params: FileParams = config.get(datatype)?;
+            validate_picture(value, params.file_size, params.accept.as_deref())?
+        }
         DatatypeType::Object => validate_object(value, config.get(datatype)?)?,
         DatatypeType::Array => validate_array(value, config.get(datatype)?)?,
         DatatypeType::Boolean => validate_boolean(value, config.get(datatype)?)?,
@@ -144,7 +147,7 @@ fn validate_string(value: &str, params: StringParams) -> Result<(), DatatypeVali
 
     Ok(())
 }
-#[allow(dead_code)]
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BooleanParams {}
@@ -208,61 +211,71 @@ fn validate_date(value: &str, params: DateParams) -> Result<(), DatatypeValidati
         .formats
         .iter()
         .map(|format| match format {
-            DateFormat::Date => {
-                let date = Date::parse(value, DATE_FORMAT)?;
-
-                if let Some(min) = &params.min {
-                    let min_date = parse_min_max_date(min)?;
-                    if date < min_date {
-                        return Err(DatatypeValidationError::DateTooEarly(
-                            value.to_string(),
-                            min.to_owned(),
-                        ));
-                    }
-                }
-
-                if let Some(max) = &params.max {
-                    let max_date = parse_min_max_date(max)?;
-                    if date > max_date {
-                        return Err(DatatypeValidationError::DateTooLate(
-                            value.to_string(),
-                            max.to_owned(),
-                        ));
-                    }
-                }
-
-                Ok(())
-            }
-            DateFormat::Datetime => {
-                let datetime = OffsetDateTime::parse(value, &Rfc3339)?;
-                if let Some(min) = &params.min {
-                    let min_date = parse_min_max_datetime(min)?;
-                    if datetime < min_date {
-                        return Err(DatatypeValidationError::DateTooEarly(
-                            value.to_string(),
-                            min.to_owned(),
-                        ));
-                    }
-                }
-
-                if let Some(max) = &params.max {
-                    let max_date = parse_min_max_datetime(max)?;
-                    if datetime > max_date {
-                        return Err(DatatypeValidationError::DateTooLate(
-                            value.to_string(),
-                            max.to_owned(),
-                        ));
-                    }
-                }
-
-                Ok(())
-            }
+            DateFormat::Date => validate_date_format_date(value, &params),
+            DateFormat::Datetime => validate_date_format_datetime(value, &params),
         })
         .partition(|r| r.is_ok());
 
-    if valid.is_empty() {
-        if let Some(last_error) = errors.pop() {
-            return last_error;
+    if valid.is_empty()
+        && let Some(last_error) = errors.pop()
+    {
+        return last_error;
+    }
+
+    Ok(())
+}
+
+fn validate_date_format_date(
+    value: &str,
+    params: &DateParams,
+) -> Result<(), DatatypeValidationError> {
+    let date = Date::parse(value, DATE_FORMAT)?;
+
+    if let Some(min) = &params.min {
+        let min_date = parse_min_max_date(min)?;
+        if date < min_date {
+            return Err(DatatypeValidationError::DateTooEarly(
+                value.to_string(),
+                min.to_owned(),
+            ));
+        }
+    }
+
+    if let Some(max) = &params.max {
+        let max_date = parse_min_max_date(max)?;
+        if date > max_date {
+            return Err(DatatypeValidationError::DateTooLate(
+                value.to_string(),
+                max.to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_date_format_datetime(
+    value: &str,
+    params: &DateParams,
+) -> Result<(), DatatypeValidationError> {
+    let datetime = OffsetDateTime::parse(value, &Rfc3339)?;
+    if let Some(min) = &params.min {
+        let min_date = parse_min_max_datetime(min)?;
+        if datetime < min_date {
+            return Err(DatatypeValidationError::DateTooEarly(
+                value.to_string(),
+                min.to_owned(),
+            ));
+        }
+    }
+
+    if let Some(max) = &params.max {
+        let max_date = parse_min_max_datetime(max)?;
+        if datetime > max_date {
+            return Err(DatatypeValidationError::DateTooLate(
+                value.to_string(),
+                max.to_owned(),
+            ));
         }
     }
 
@@ -285,7 +298,7 @@ fn validate_date_params(params: &DateParams) -> Result<(), DateParamsError> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FileParams {
@@ -295,7 +308,11 @@ struct FileParams {
     pub encode_as_mdl_portrait: Option<bool>,
 }
 
-fn validate_file(value: &str, params: FileParams) -> Result<(), DatatypeValidationError> {
+pub(crate) fn validate_picture(
+    value: &str,
+    max_size: Option<usize>,
+    accept: Option<&[String]>,
+) -> Result<(), DatatypeValidationError> {
     let mut parts = value.split(',');
 
     let media_part = parts
@@ -320,7 +337,7 @@ fn validate_file(value: &str, params: FileParams) -> Result<(), DatatypeValidati
     }
 
     // Default policy; Accept all if not provided
-    if let Some(accept) = params.accept {
+    if let Some(accept) = accept {
         let media_type = content_type
             .split(';')
             .next()
@@ -339,26 +356,26 @@ fn validate_file(value: &str, params: FileParams) -> Result<(), DatatypeValidati
         .ok_or(DatatypeValidationError::FileParseMissingDataPart)?;
 
     // Default policy; Accept all if not provided
-    if let Some(max_file_size) = params.file_size {
-        let num_bytes = if data_part.ends_with("==") {
-            2
-        } else if data_part.ends_with('=') {
-            1
-        } else {
-            0
-        };
-
-        let file_size = (data_part.len() * 3 / 4) - num_bytes;
-
-        if file_size > max_file_size {
-            return Err(DatatypeValidationError::FileTooLong);
-        }
+    if let Some(max_file_size) = max_size
+        && base64_byte_length(data_part) > max_file_size
+    {
+        return Err(DatatypeValidationError::FileTooLong);
     }
 
     Ok(())
 }
 
-#[allow(dead_code)]
+pub(crate) fn base64_byte_length(data: &str) -> usize {
+    let num_bytes = if data.ends_with("==") {
+        2
+    } else if data.ends_with('=') {
+        1
+    } else {
+        0
+    };
+    (data.len() * 3 / 4) - num_bytes
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectParams {}
@@ -367,7 +384,6 @@ fn validate_object(_value: &str, _params: ObjectParams) -> Result<(), DatatypeVa
     Err(DatatypeValidationError::ObjectValueShouldNotBeSpecifiedInRequest)
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ArrayParams {}
@@ -376,7 +392,7 @@ fn validate_array(_value: &str, _params: ArrayParams) -> Result<(), DatatypeVali
     Err(DatatypeValidationError::ArrayValueShouldNotBeSpecifiedInRequest)
 }
 
-fn parse_min_max_date(value: &str) -> Result<Date, DatatypeValidationError> {
+pub fn parse_min_max_date(value: &str) -> Result<Date, DatatypeValidationError> {
     if value == "NOW" {
         return Ok(OffsetDateTime::now_utc().date());
     }
@@ -384,7 +400,9 @@ fn parse_min_max_date(value: &str) -> Result<Date, DatatypeValidationError> {
     Ok(Date::parse(value, DATE_FORMAT)?)
 }
 
-fn parse_min_max_datetime(value: &str) -> Result<OffsetDateTime, DatatypeValidationError> {
+pub(crate) fn parse_min_max_datetime(
+    value: &str,
+) -> Result<OffsetDateTime, DatatypeValidationError> {
     if value == "NOW" {
         return Ok(OffsetDateTime::now_utc());
     }
@@ -629,7 +647,7 @@ mod tests {
         let datatype_config = indoc! {r#"
         PICTURE:
             display: "datatype.picture"
-            type: "FILE"
+            type: "PICTURE"
             order: 400
             params:
                 public:
@@ -693,9 +711,9 @@ mod tests {
     #[test]
     fn test_validate_values_file() {
         let datatype_config = indoc! {r#"
-        FILE:
+        PICTURE:
             display: "datatype.file"
-            type: "FILE"
+            type: "PICTURE"
             order: 400
             params: null
         "#};
@@ -704,14 +722,14 @@ mod tests {
 
         let valid = validate_datatype_value(
             "data:image/png;base64,dGVzdGNvbnRlbnQ=",
-            "FILE",
+            "PICTURE",
             &datatype_config,
         );
         assert!(valid.is_ok());
 
         let valid = validate_datatype_value(
             "data:image/jpeg;base64,dGVzdGNvbnRlbnQ=",
-            "FILE",
+            "PICTURE",
             &datatype_config,
         );
         assert!(valid.is_ok());

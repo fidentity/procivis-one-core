@@ -7,22 +7,28 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		335514E12F29B5830080E837 /* Init.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335514E02F29B5830080E837 /* Init.swift */; };
 		33CBDF262D9152C1006768C1 /* SecureEnclaveKeyStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF252D9152C1006768C1 /* SecureEnclaveKeyStorage.swift */; };
+		33CBDF262D9152C2006768C1 /* NFCScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF252D9152C2006768C1 /* NFCScanner.swift */; };
 		33CBDF282D915308006768C1 /* IOSBLECentral.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF272D915308006768C1 /* IOSBLECentral.swift */; };
 		33CBDF2A2D915312006768C1 /* IOSBLEModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF292D915312006768C1 /* IOSBLEModels.swift */; };
 		33CBDF2C2D915319006768C1 /* IOSBLEPeripheral.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF2B2D915319006768C1 /* IOSBLEPeripheral.swift */; };
 		33CBDF302D91539D006768C1 /* ProcivisOneCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CBDF2F2D91539D006768C1 /* ProcivisOneCore.swift */; };
 		33E15DED2B11096D0085370C /* ProcivisOneCoreFFI.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 339F03CE2B10FD3D00FF10ED /* ProcivisOneCoreFFI.xcframework */; };
+		33ED481B2E810A3100B39A51 /* NFCHCE.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33ED481A2E810A3100B39A51 /* NFCHCE.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		335514E02F29B5830080E837 /* Init.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Init.swift; path = "one-core/Init.swift"; sourceTree = SOURCE_ROOT; };
 		339F03BF2B10FC8300FF10ED /* ProcivisOneCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ProcivisOneCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		339F03CE2B10FD3D00FF10ED /* ProcivisOneCoreFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ProcivisOneCoreFFI.xcframework; path = ../../target/ProcivisOneCoreFFI.xcframework; sourceTree = "<group>"; };
 		33CBDF252D9152C1006768C1 /* SecureEnclaveKeyStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SecureEnclaveKeyStorage.swift; path = "one-core/SecureEnclaveKeyStorage.swift"; sourceTree = SOURCE_ROOT; };
+		33CBDF252D9152C2006768C1 /* NFCScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NFCScanner.swift; path = "one-core/NFCScanner.swift"; sourceTree = SOURCE_ROOT; };
 		33CBDF272D915308006768C1 /* IOSBLECentral.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = IOSBLECentral.swift; path = "one-core/IOSBLECentral.swift"; sourceTree = SOURCE_ROOT; };
 		33CBDF292D915312006768C1 /* IOSBLEModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = IOSBLEModels.swift; path = "one-core/IOSBLEModels.swift"; sourceTree = SOURCE_ROOT; };
 		33CBDF2B2D915319006768C1 /* IOSBLEPeripheral.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = IOSBLEPeripheral.swift; path = "one-core/IOSBLEPeripheral.swift"; sourceTree = SOURCE_ROOT; };
 		33CBDF2F2D91539D006768C1 /* ProcivisOneCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProcivisOneCore.swift; path = ../../target/uniffi/ios/ProcivisOneCore.swift; sourceTree = SOURCE_ROOT; };
+		33ED481A2E810A3100B39A51 /* NFCHCE.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NFCHCE.swift; path = "one-core/NFCHCE.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,9 +64,12 @@
 			isa = PBXGroup;
 			children = (
 				33CBDF252D9152C1006768C1 /* SecureEnclaveKeyStorage.swift */,
+				33CBDF252D9152C2006768C1 /* NFCScanner.swift */,
+				33ED481A2E810A3100B39A51 /* NFCHCE.swift */,
 				33CBDF272D915308006768C1 /* IOSBLECentral.swift */,
 				33CBDF292D915312006768C1 /* IOSBLEModels.swift */,
 				33CBDF2B2D915319006768C1 /* IOSBLEPeripheral.swift */,
+				335514E02F29B5830080E837 /* Init.swift */,
 				33CBDF2F2D91539D006768C1 /* ProcivisOneCore.swift */,
 			);
 			path = ProcivisOneCore;
@@ -154,7 +163,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				33CBDF262D9152C1006768C1 /* SecureEnclaveKeyStorage.swift in Sources */,
+				335514E12F29B5830080E837 /* Init.swift in Sources */,
+				33CBDF262D9152C2006768C1 /* NFCScanner.swift in Sources */,
 				33CBDF302D91539D006768C1 /* ProcivisOneCore.swift in Sources */,
+				33ED481B2E810A3100B39A51 /* NFCHCE.swift in Sources */,
 				33CBDF282D915308006768C1 /* IOSBLECentral.swift in Sources */,
 				33CBDF2A2D915312006768C1 /* IOSBLEModels.swift in Sources */,
 				33CBDF2C2D915319006768C1 /* IOSBLEPeripheral.swift in Sources */,
@@ -316,6 +328,7 @@
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = "ch.procivis.one.core.one-core";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				RUN_DOCUMENTATION_COMPILER = YES;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -354,6 +367,7 @@
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				PRODUCT_BUNDLE_IDENTIFIER = "ch.procivis.one.core.one-core";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				RUN_DOCUMENTATION_COMPILER = YES;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;

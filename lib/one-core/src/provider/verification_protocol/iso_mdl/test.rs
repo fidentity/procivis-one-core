@@ -4,27 +4,30 @@ use std::sync::Arc;
 use maplit::{hashmap, hashset};
 use mockall::predicate::eq;
 use secrecy::SecretSlice;
+use shared_types::CredentialId;
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::IsoMdl;
+use crate::config::core_config::VerificationEngagement;
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType, LayoutType,
-};
-use crate::model::interaction::Interaction;
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
+use crate::model::interaction::{Interaction, InteractionType};
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputSchema, ProofSchema};
-use crate::provider::bluetooth_low_energy::low_level::ble_central::MockBleCentral;
-use crate::provider::bluetooth_low_energy::low_level::ble_peripheral::MockBlePeripheral;
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::EmbeddedCbor;
-use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
+use crate::proto::bluetooth_low_energy::ble_resource::{BleWaiter, OnConflict};
+use crate::proto::bluetooth_low_energy::low_level::ble_central::MockBleCentral;
+use crate::proto::bluetooth_low_energy::low_level::ble_peripheral::MockBlePeripheral;
+use crate::provider::credential_formatter::mdoc_formatter::util::EmbeddedCbor;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_storage::provider::MockKeyProvider;
+use crate::provider::presentation_formatter::provider::MockPresentationFormatterProvider;
 use crate::provider::verification_protocol::VerificationProtocol;
 use crate::provider::verification_protocol::dto::PresentationDefinitionRuleTypeEnum;
+use crate::provider::verification_protocol::error::VerificationProtocolError;
 use crate::provider::verification_protocol::iso_mdl::ble_holder::{
     MdocBleHolderInteractionData, MdocBleHolderInteractionSessionData,
 };
@@ -33,7 +36,6 @@ use crate::provider::verification_protocol::iso_mdl::common::{
 };
 use crate::service::storage_proxy::MockStorageProxy;
 use crate::service::test_utilities::{dummy_organisation, generic_config};
-use crate::util::ble_resource::{BleWaiter, OnConflict};
 
 #[tokio::test]
 async fn test_presentation_reject_ok() {
@@ -45,15 +47,26 @@ async fn test_presentation_reject_ok() {
         .returning(move |_, _, _, _| Ok(()));
 
     ble_peripheral
+        .expect_is_advertising()
+        .times(1)
+        .returning(move || Ok(false));
+
+    ble_peripheral
         .expect_stop_server()
         .times(1)
         .returning(move || Ok(()));
 
-    let ble_waiter = BleWaiter::new(Arc::new(MockBleCentral::new()), Arc::new(ble_peripheral));
+    let mut ble_central = MockBleCentral::new();
+    ble_central
+        .expect_is_scanning()
+        .times(1)
+        .returning(move || Ok(false));
+
+    let ble_waiter = BleWaiter::new(Arc::new(ble_central), Arc::new(ble_peripheral));
     let (continuation_task_id, _) = ble_waiter
         .schedule(
             Uuid::new_v4(),
-            |_, _, _| async {},
+            |_, _, _| async { Ok(()) as Result<(), VerificationProtocolError> },
             |_, _| async {},
             OnConflict::DoNothing,
             true,
@@ -65,10 +78,11 @@ async fn test_presentation_reject_ok() {
 
     let provider = IsoMdl::new(
         Arc::new(core_config),
-        Arc::new(MockCredentialFormatterProvider::new()),
+        Arc::new(MockPresentationFormatterProvider::new()),
         Arc::new(MockKeyProvider::new()),
         Arc::new(MockKeyAlgorithmProvider::new()),
         Some(ble_waiter),
+        None,
     );
 
     let schema_id = "org.iso.18013.5.1".to_string();
@@ -96,6 +110,7 @@ async fn test_presentation_reject_ok() {
         service_uuid: Uuid::new_v4(),
         continuation_task_id,
         organisation_id,
+        engagement: HashSet::from([VerificationEngagement::QrCode]),
         session: Some(MdocBleHolderInteractionSessionData {
             sk_device: SkDevice::new(SecretSlice::from(vec![0; 32])),
             sk_reader: SkReader::new(SecretSlice::from(vec![0; 32])),
@@ -110,8 +125,7 @@ async fn test_presentation_reject_ok() {
         id: Uuid::new_v4().into(),
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: "ISO_MDL".to_string(),
+        protocol: "ISO_MDL".to_string(),
         transport: "BLE".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Pending,
@@ -127,42 +141,47 @@ async fn test_presentation_reject_ok() {
             name: "".to_string(),
             expire_duration: 0,
             input_schemas: Some(vec![ProofInputSchema {
-                validity_constraint: None,
                 claim_schemas: None,
                 credential_schema: Some(CredentialSchema {
                     id: Uuid::new_v4().into(),
                     created_date: OffsetDateTime::now_utc(),
                     imported_source_url: "CORE_URL".to_string(),
-                    external_schema: false,
                     last_modified: OffsetDateTime::now_utc(),
                     deleted_at: None,
                     name: "".to_string(),
-                    format: "".to_string(),
-                    revocation_method: "".to_string(),
-                    wallet_storage_type: None,
+                    format: "".into(),
+                    revocation_method: None,
+                    key_storage_security: None,
                     layout_type: LayoutType::Card,
                     layout_properties: None,
                     schema_id,
-                    schema_type: CredentialSchemaType::ProcivisOneSchema2024,
                     claim_schemas: None,
                     organisation: None,
                     allow_suspension: true,
+                    requires_wallet_instance_attestation: false,
+                    transaction_code: None,
                 }),
             }]),
             organisation: None,
         }),
         claims: None,
         verifier_identifier: None,
-        holder_identifier: None,
         verifier_key: None,
+        verifier_certificate: None,
         interaction: Some(Interaction {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             created_date: OffsetDateTime::now_utc(),
-            host: None,
             data: Some(interaction_data),
             last_modified: OffsetDateTime::now_utc(),
             organisation: None,
+            nonce_id: None,
+            interaction_type: InteractionType::Verification,
+            expires_at: None,
         }),
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     };
 
     let result = provider.holder_reject_proof(&proof).await;
@@ -174,9 +193,10 @@ async fn test_get_presentation_definition_ok() {
     let core_config = generic_config().core;
     let service = IsoMdl::new(
         Arc::new(core_config),
-        Arc::new(MockCredentialFormatterProvider::new()),
+        Arc::new(MockPresentationFormatterProvider::new()),
         Arc::new(MockKeyProvider::new()),
         Arc::new(MockKeyAlgorithmProvider::new()),
+        None,
         None,
     );
 
@@ -204,6 +224,7 @@ async fn test_get_presentation_definition_ok() {
     let interaction_data = serde_json::to_value(MdocBleHolderInteractionData {
         service_uuid: Uuid::new_v4(),
         continuation_task_id: Uuid::new_v4(),
+        engagement: HashSet::from([VerificationEngagement::QrCode]),
         organisation_id,
         session: Some(MdocBleHolderInteractionSessionData {
             sk_device: SkDevice::new(SecretSlice::from(vec![0; 32])),
@@ -221,8 +242,7 @@ async fn test_get_presentation_definition_ok() {
         id: proof_id,
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: "ISO_MDL".to_string(),
+        protocol: "ISO_MDL".to_string(),
         transport: "BLE".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Pending,
@@ -232,90 +252,87 @@ async fn test_get_presentation_definition_ok() {
         schema: None,
         claims: None,
         verifier_identifier: None,
-        holder_identifier: None,
         verifier_key: None,
+        verifier_certificate: None,
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     };
 
     let credential_id = Uuid::new_v4().into();
     let credential_schema_id = Uuid::new_v4().into();
 
     let claim_schemas = hashmap![
-       "org.iso.18013.5.1.mDL" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+       "org.iso.18013.5.1.mDL" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-        "org.iso.18013.5.1.mDL/name" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/name".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+        "org.iso.18013.5.1.mDL/name" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/name".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-       "org.iso.18013.5.1.mDL/age" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/age".to_string(),
-                data_type: "NUMBER".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+       "org.iso.18013.5.1.mDL/age" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/age".to_string(),
+            data_type: "NUMBER".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-       "org.iso.18013.5.1.mDL/country" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/country".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+       "org.iso.18013.5.1.mDL/country" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/country".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-       "org.iso.18013.5.1.mDL/country_code" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/country_code".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+       "org.iso.18013.5.1.mDL/country_code" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/country_code".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-        "org.iso.18013.5.1.mDL/info" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/info".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+        "org.iso.18013.5.1.mDL/info" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/info".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
-        "org.iso.18013.5.1.mDL/info/code" => CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "org.iso.18013.5.1.mDL/info/code".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
-                array: false,
-            },
+        "org.iso.18013.5.1.mDL/info/code" => ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "org.iso.18013.5.1.mDL/info/code".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            array: false,
+            metadata: false,
             required: true,
         },
     ];
@@ -325,104 +342,101 @@ async fn test_get_presentation_definition_ok() {
         imported_source_url: "CORE_URL".to_string(),
         last_modified: OffsetDateTime::now_utc(),
         name: "schema-name".to_string(),
-        format: "ISO_MDL".to_string(),
-        revocation_method: "NONE".to_string(),
+        format: "ISO_MDL".into(),
+        revocation_method: None,
         layout_type: LayoutType::Card,
-        external_schema: false,
         schema_id: schema_id.clone(),
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         organisation: Some(dummy_organisation(Some(organisation_id))),
         layout_properties: None,
         claim_schemas: Some(claim_schemas.values().cloned().collect()),
-        wallet_storage_type: None,
+        key_storage_security: None,
         deleted_at: None,
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     };
 
     let claims = vec![
         Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/name"].schema.clone()),
+            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/name"].clone()),
             path: "org.iso.18013.5.1.mDL/name".to_string(),
-            value: "John".to_string(),
+            value: Some("John".to_string()),
+            selectively_disclosable: false,
         },
         Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/age"].schema.clone()),
+            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/age"].clone()),
             path: "org.iso.18013.5.1.mDL/age".to_string(),
-            value: "55".to_string(),
+            value: Some("55".to_string()),
+            selectively_disclosable: false,
         },
         Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            schema: Some(
-                claim_schemas["org.iso.18013.5.1.mDL/country"]
-                    .schema
-                    .clone(),
-            ),
+            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/country"].clone()),
             path: "org.iso.18013.5.1.mDL/country".to_string(),
-            value: "Germany".to_string(),
+            value: Some("Germany".to_string()),
+            selectively_disclosable: false,
         },
         Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            schema: Some(
-                claim_schemas["org.iso.18013.5.1.mDL/country_code"]
-                    .schema
-                    .clone(),
-            ),
+            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/country_code"].clone()),
             path: "org.iso.18013.5.1.mDL/country_code".to_string(),
-            value: "DE".to_string(),
+            value: Some("DE".to_string()),
+            selectively_disclosable: false,
         },
         Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            schema: Some(
-                claim_schemas["org.iso.18013.5.1.mDL/info/code"]
-                    .schema
-                    .clone(),
-            ),
+            schema: Some(claim_schemas["org.iso.18013.5.1.mDL/info/code"].clone()),
             path: "org.iso.18013.5.1.mDL/info/code".to_string(),
-            value: "ABCDEFG".to_string(),
+            value: Some("ABCDEFG".to_string()),
+            selectively_disclosable: false,
         },
     ];
 
     let mut storage_access = MockStorageProxy::new();
     storage_access
-        .expect_get_credentials_by_credential_schema_id()
+        .expect_get_presentation_credentials_by_schema_id()
         .with(eq(schema_id), eq(organisation_id))
         .return_once(move |_, _| {
             Ok(vec![Credential {
                 id: credential_id,
                 created_date: OffsetDateTime::now_utc(),
-                issuance_date: OffsetDateTime::now_utc(),
+                issuance_date: None,
                 last_modified: OffsetDateTime::now_utc(),
-                exchange: "ISO_MDL".to_string(),
+                protocol: "ISO_MDL".to_string(),
                 schema: Some(credential_schema),
                 role: CredentialRole::Holder,
-                credential: vec![],
                 deleted_at: None,
                 redirect_uri: None,
                 state: CredentialStateEnum::Accepted,
                 suspend_end_date: None,
                 claims: Some(claims),
                 issuer_identifier: None,
+                issuer_certificate: None,
                 holder_identifier: None,
                 key: None,
                 interaction: None,
-                revocation_list: None,
+                profile: None,
+                credential_blob_id: None,
+                wallet_unit_attestation_blob_id: None,
+                wallet_instance_attestation_blob_id: None,
+                webhook_url: None,
             }])
         });
 
@@ -445,17 +459,18 @@ async fn test_get_presentation_definition_ok() {
 
     assert_eq!(1, requested_credential.applicable_credentials.len());
     assert_eq!(
-        credential_id.to_string(),
+        credential_id,
         requested_credential.applicable_credentials[0]
     );
 
-    let (credentials, mapped_field_ids): (HashSet<String>, HashSet<String>) = requested_credential
-        .fields
-        .into_iter()
-        .flat_map(|field| field.key_map)
-        .unzip();
+    let (credentials, mapped_field_ids): (HashSet<CredentialId>, HashSet<String>) =
+        requested_credential
+            .fields
+            .into_iter()
+            .flat_map(|field| field.key_map)
+            .unzip();
 
-    assert_eq!(hashset![credential_id.to_string()], credentials);
+    assert_eq!(hashset![credential_id], credentials);
 
     assert_eq!(
         mapped_field_ids,

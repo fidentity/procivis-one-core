@@ -1,9 +1,10 @@
+use shared_types::DidValue;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{CreateTrustAnchorRequestDTO, GetTrustAnchorEntityListResponseDTO};
 use crate::model::trust_anchor::TrustAnchor;
-use crate::model::trust_entity::TrustEntity;
+use crate::model::trust_entity::{TrustEntity, TrustEntityType};
 use crate::service::error::ServiceError;
 
 pub(super) fn trust_anchor_from_request(
@@ -19,7 +20,7 @@ pub(super) fn trust_anchor_from_request(
             "{}/ssi/trust/v1/{id}",
             core_base_url
                 .as_ref()
-                .ok_or_else(|| ServiceError::Other("Missing core_base_url".to_string()))?,
+                .ok_or_else(|| ServiceError::MappingError("Missing core_base_url".to_string()))?,
         )
     };
 
@@ -38,6 +39,15 @@ impl TryFrom<TrustEntity> for GetTrustAnchorEntityListResponseDTO {
     type Error = ServiceError;
 
     fn try_from(value: TrustEntity) -> Result<Self, Self::Error> {
+        let did = if value.r#type == TrustEntityType::Did {
+            Some(DidValue::from_did_url(&value.entity_key).map_err(|err| {
+                ServiceError::MappingError(format!(
+                    "Invalid entity_key on trust entity of type DID: {err}"
+                ))
+            })?)
+        } else {
+            None
+        };
         Ok(Self {
             id: value.id,
             created_date: value.created_date,
@@ -49,13 +59,10 @@ impl TryFrom<TrustEntity> for GetTrustAnchorEntityListResponseDTO {
             privacy_url: value.privacy_url,
             role: value.role,
             state: value.state,
-            did: value
-                .did
-                .map(Into::into)
-                .ok_or(ServiceError::MappingError(format!(
-                    "missing did for trust entity {}",
-                    value.id
-                )))?,
+            r#type: value.r#type,
+            entity_key: value.entity_key,
+            content: value.content,
+            did,
         })
     }
 }

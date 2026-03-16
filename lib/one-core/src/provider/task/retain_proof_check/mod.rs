@@ -8,17 +8,19 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::Task;
+use crate::error::ContextWithErrorCode;
 use crate::model::claim::ClaimRelations;
-use crate::model::credential::CredentialRelations;
+use crate::model::credential::{CredentialFilterValue, CredentialRelations, GetCredentialQuery};
 use crate::model::history::{HistoryAction, HistoryEntityType, HistoryFilterValue};
 use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::{ListPagination, ListQuery};
 use crate::model::proof::{ProofClaimRelations, ProofRelations, ProofStateEnum};
+use crate::provider::blob_storage_provider::{BlobStorageProvider, BlobStorageType};
 use crate::repository::claim_repository::ClaimRepository;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::proof_repository::ProofRepository;
-use crate::service::error::{EntityNotFoundError, ServiceError};
+use crate::service::error::{EntityNotFoundError, MissingProviderError, ServiceError};
 use crate::service::proof::dto::ProofFilterValue;
 
 pub struct RetainProofCheck {
@@ -26,6 +28,7 @@ pub struct RetainProofCheck {
     credential_repository: Arc<dyn CredentialRepository>,
     proof_repository: Arc<dyn ProofRepository>,
     history_repository: Arc<dyn HistoryRepository>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
 }
 
 impl RetainProofCheck {
@@ -34,12 +37,14 @@ impl RetainProofCheck {
         credential_repository: Arc<dyn CredentialRepository>,
         proof_repository: Arc<dyn ProofRepository>,
         history_repository: Arc<dyn HistoryRepository>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
     ) -> Self {
         Self {
             claim_repository,
             credential_repository,
             proof_repository,
             history_repository,
+            blob_storage_provider,
         }
     }
 }
@@ -52,13 +57,14 @@ impl Task for RetainProofCheck {
             .get_history_list(ListQuery {
                 filtering: Some(
                     HistoryFilterValue::EntityTypes(vec![HistoryEntityType::Proof]).condition()
-                        & HistoryFilterValue::Action(HistoryAction::ClaimsRemoved),
+                        & HistoryFilterValue::Actions(vec![HistoryAction::ClaimsRemoved]),
                 ),
                 pagination: None,
                 sorting: None,
                 include: None,
             })
-            .await?
+            .await
+            .error_while("getting history list")?
             .values
             .into_iter()
             .flat_map(|event| event.entity_id)
@@ -73,7 +79,7 @@ impl Task for RetainProofCheck {
                 .proof_repository
                 .get_proof_list(ListQuery {
                     filtering: Some(
-                        ProofFilterValue::ProofStates(vec![ProofStateEnum::Accepted]).condition()
+                        ProofFilterValue::States(vec![ProofStateEnum::Accepted]).condition()
                             & ProofFilterValue::ValidForDeletion
                             & ProofFilterValue::ProofIdsNot(processed_events.clone()),
                     ),
@@ -84,7 +90,8 @@ impl Task for RetainProofCheck {
                     sorting: None,
                     include: None,
                 })
-                .await?;
+                .await
+                .error_while("getting proofs")?;
 
             if proofs.values.is_empty() {
                 return Ok(json!({}));
@@ -113,8 +120,10 @@ impl Task for RetainProofCheck {
                             }),
                             ..Default::default()
                         },
+                        None,
                     )
-                    .await?
+                    .await
+                    .error_while("getting proof")?
                     .ok_or(ServiceError::EntityNotFound(EntityNotFoundError::Proof(
                         proof.id,
                     )))?
@@ -133,13 +142,64 @@ impl Task for RetainProofCheck {
                     })
                     .collect::<Result<HashSet<_>, _>>()?;
 
-                self.proof_repository.delete_proof_claims(&proof.id).await?;
+                self.proof_repository
+                    .delete_proof_claims(&proof.id)
+                    .await
+                    .error_while("deleting proof claims")?;
                 self.claim_repository
                     .delete_claims_for_credentials(credential_ids.clone())
-                    .await?;
+                    .await
+                    .error_while("deleting credential claims")?;
+
+                let blob_storage = self
+                    .blob_storage_provider
+                    .get_blob_storage(BlobStorageType::Db)
+                    .await
+                    .ok_or_else(|| {
+                        MissingProviderError::BlobStorage(BlobStorageType::Db.to_string())
+                    })?;
+
+                let credential_blob_ids = self
+                    .credential_repository
+                    .get_credential_list(GetCredentialQuery {
+                        filtering: Some(
+                            CredentialFilterValue::CredentialIds(Vec::from_iter(
+                                credential_ids.clone(),
+                            ))
+                            .condition(),
+                        ),
+                        ..GetCredentialQuery::default()
+                    })
+                    .await
+                    .error_while("getting credentials")?
+                    .values
+                    .into_iter()
+                    .filter_map(|c| c.credential_blob_id)
+                    .collect::<Vec<_>>();
+
+                blob_storage
+                    .delete_many(&credential_blob_ids)
+                    .await
+                    .error_while("deleting blobs")?;
                 self.credential_repository
                     .delete_credential_blobs(credential_ids)
-                    .await?;
+                    .await
+                    .error_while("deleting credential blobs")?;
+
+                if let Some(proof_blob_id) = proof.proof_blob_id {
+                    let blob_storage = self
+                        .blob_storage_provider
+                        .get_blob_storage(BlobStorageType::Db)
+                        .await
+                        .ok_or_else(|| {
+                            MissingProviderError::BlobStorage(BlobStorageType::Db.to_string())
+                        })?;
+
+                    blob_storage
+                        .delete(&proof_blob_id)
+                        .await
+                        .error_while("deleting proof blob")?;
+                }
             }
 
             page += 1;

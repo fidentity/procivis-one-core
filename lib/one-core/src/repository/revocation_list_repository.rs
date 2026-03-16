@@ -1,9 +1,12 @@
-use shared_types::DidId;
+use shared_types::{
+    CertificateId, IdentifierId, RevocationListEntryId, RevocationListId, RevocationMethodId,
+};
 
 use super::error::DataLayerError;
+use crate::model::common::LockType;
 use crate::model::revocation_list::{
-    RevocationList, RevocationListId, RevocationListPurpose, RevocationListRelations,
-    StatusListType,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListPurpose,
+    RevocationListRelations, UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -13,21 +16,66 @@ pub trait RevocationListRepository: Send + Sync {
         &self,
         request: RevocationList,
     ) -> Result<RevocationListId, DataLayerError>;
+
     async fn get_revocation_list(
         &self,
         id: &RevocationListId,
         relations: &RevocationListRelations,
     ) -> Result<Option<RevocationList>, DataLayerError>;
-    async fn get_revocation_by_issuer_did_id(
+
+    async fn get_revocation_list_by_entry_id(
         &self,
-        issuer_did_id: &DidId,
-        purpose: RevocationListPurpose,
-        status_list_type: StatusListType,
+        entry_id: RevocationListEntryId,
         relations: &RevocationListRelations,
     ) -> Result<Option<RevocationList>, DataLayerError>;
-    async fn update_credentials(
+
+    async fn get_revocation_by_issuer_identifier_id(
+        &self,
+        issuer_identifier_id: IdentifierId,
+        issuer_certificate_id: Option<CertificateId>,
+        purpose: RevocationListPurpose,
+        status_list_type: &RevocationMethodId,
+        relations: &RevocationListRelations,
+    ) -> Result<Option<RevocationList>, DataLayerError>;
+
+    async fn update_formatted_list(
         &self,
         revocation_list_id: &RevocationListId,
-        credentials: Vec<u8>,
+        formatted_list: Vec<u8>,
     ) -> Result<(), DataLayerError>;
+
+    async fn next_free_index(
+        &self,
+        id: &RevocationListId,
+        lock: Option<LockType>,
+    ) -> Result<usize, DataLayerError>;
+
+    async fn create_entry(
+        &self,
+        list_id: RevocationListId,
+        entity_id: RevocationListEntityId,
+        // must be set for non-CRL
+        index_on_status_list: Option<usize>,
+    ) -> Result<RevocationListEntryId, DataLayerError>;
+
+    async fn update_entry(
+        &self,
+        id: UpdateRevocationListEntryId,
+        request: UpdateRevocationListEntryRequest,
+    ) -> Result<(), DataLayerError>;
+
+    async fn get_entry_by_id(
+        &self,
+        id: RevocationListEntryId,
+    ) -> Result<Option<RevocationListEntry>, DataLayerError>;
+
+    async fn get_entries(
+        &self,
+        list_id: RevocationListId,
+    ) -> Result<Vec<RevocationListEntry>, DataLayerError>;
+
+    async fn get_entries_by_id(
+        &self,
+        entry_ids: Vec<RevocationListEntryId>,
+    ) -> Result<Vec<RevocationListEntry>, DataLayerError>;
 }

@@ -6,13 +6,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use create::{DidDocKeys, UpdateKeys};
 use serde::Deserialize;
+use serde_with::{DurationSeconds, serde_as};
 use shared_types::{DidId, DidValue};
+use time::Duration;
 use url::Url;
 
 use super::keys::Keys;
 use super::model::{AmountOfKeys, DidCapabilities, DidDocument, Feature, Operation};
 use super::{DidCreated, DidKeys, DidMethod, DidUpdate};
 use crate::config::core_config::KeyAlgorithmType;
+use crate::model::key::Key;
+use crate::proto::http_client::HttpClient;
 use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::did_method::webvh::common::{
@@ -20,7 +24,6 @@ use crate::provider::did_method::webvh::common::{
 };
 use crate::provider::did_method::webvh::deserialize::DidLogEntry;
 use crate::provider::did_method::webvh::mapper::url_to_did;
-use crate::provider::http_client::HttpClient;
 use crate::provider::key_storage::provider::KeyProvider;
 
 mod common;
@@ -34,11 +37,19 @@ mod mapper;
 #[cfg(test)]
 mod test;
 
-#[derive(Debug, Default)]
+#[serde_as]
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Params {
+    #[serde(default)]
     pub keys: Keys,
+    #[serde(default)]
     pub max_did_log_entry_check: Option<u32>,
+    #[serde(default)]
     pub resolve_to_insecure_http: bool,
+    #[serde(default)]
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub leeway: Duration,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +63,7 @@ pub struct DidWebVh {
     core_base_url: Option<String>,
     client: Arc<dyn HttpClient>,
     did_method_provider: Arc<dyn DidMethodProvider>,
-    key_provider: Option<Arc<dyn KeyProvider>>,
+    key_provider: Arc<dyn KeyProvider>,
 }
 
 impl DidWebVh {
@@ -61,7 +72,7 @@ impl DidWebVh {
         core_base_url: Option<String>,
         client: Arc<dyn HttpClient>,
         did_method_provider: Arc<dyn DidMethodProvider>,
-        key_provider: Option<Arc<dyn KeyProvider>>,
+        key_provider: Arc<dyn KeyProvider>,
     ) -> Self {
         Self {
             params,
@@ -81,14 +92,11 @@ impl DidWebVh {
             return url_to_did(external_host);
         }
 
-        let base_url = self
-            .core_base_url
-            .as_ref()
-            .ok_or_else(|| DidMethodError::CouldNotCreate("Missing core base url".to_string()))?;
-
-        let url = Url::parse(base_url).map_err(|err| {
-            DidMethodError::CouldNotCreate(format!("Invalid core base url: {err}"))
+        let base_url = self.core_base_url.as_ref().ok_or_else(|| {
+            DidMethodError::InitializationError("Missing core base url".to_string())
         })?;
+
+        let url = Url::parse(base_url)?;
 
         let mut domain = url_to_did(url)?;
         domain.push_str(":ssi:did-webvh:v1:");
@@ -106,21 +114,15 @@ impl DidMethod for DidWebVh {
         params: &Option<serde_json::Value>,
         keys: Option<DidKeys>,
     ) -> Result<DidCreated, DidMethodError> {
-        let Some(key_provider) = self.key_provider.as_ref() else {
-            return Err(DidMethodError::CouldNotCreate(
-                "Missing key provider for did:webvh creation".to_string(),
-            ));
-        };
-
         let Some(keys) = keys else {
-            return Err(DidMethodError::CouldNotCreate(
+            return Err(DidMethodError::CreationError(
                 "Missing keys for did:webvh".to_string(),
             ));
         };
 
         let update_keys = match keys.update_keys.as_deref() {
             None | Some([]) => {
-                return Err(DidMethodError::CouldNotCreate(
+                return Err(DidMethodError::CreationError(
                     "Missing update keys for did:webvh".to_string(),
                 ));
             }
@@ -128,7 +130,7 @@ impl DidMethod for DidWebVh {
         };
 
         let Some(did_id) = id else {
-            return Err(DidMethodError::CouldNotCreate(
+            return Err(DidMethodError::CreationError(
                 "Missing did id for did:webvh".to_string(),
             ));
         };
@@ -147,13 +149,18 @@ impl DidMethod for DidWebVh {
             .map(|params| {
                 DidCreateParams::deserialize(params)
                     .map(|p| p.external_hosting_url)
-                    .map_err(|err| DidMethodError::CouldNotCreate(format!("Invalid params: {err}")))
+                    .map_err(|err| DidMethodError::CreationError(format!("Invalid params: {err}")))
             })
             .transpose()?;
 
         let domain = self.domain(did_id, external_hosting_url)?;
-        let (did, log) =
-            create::create(&domain, did_doc_keys, update_keys, key_provider.as_ref()).await?;
+        let (did, log) = create::create(
+            &domain,
+            did_doc_keys,
+            update_keys,
+            self.key_provider.as_ref(),
+        )
+        .await?;
 
         Ok(DidCreated {
             did,
@@ -178,18 +185,13 @@ impl DidMethod for DidWebVh {
         keys: DidKeys,
         log: Option<String>,
     ) -> Result<DidUpdate, DidMethodError> {
-        let Some(key_provider) = self.key_provider.as_ref() else {
-            return Err(DidMethodError::CouldNotCreate(
-                "Missing key provider for did:webvh creation".to_string(),
-            ));
-        };
         let Some(ref update_keys) = keys.update_keys else {
-            return Err(DidMethodError::CouldNotCreate(
+            return Err(DidMethodError::CouldNotDeactivate(
                 "missing update keys".to_string(),
             ));
         };
         let Some(update_key) = update_keys.first() else {
-            return Err(DidMethodError::CouldNotCreate(
+            return Err(DidMethodError::CouldNotDeactivate(
                 "empty update keys".to_string(),
             ));
         };
@@ -216,7 +218,7 @@ impl DidMethod for DidWebVh {
         let next_index = log.lines().count() + 1;
         update_version(&mut new_entry, next_index, &entry_hash);
 
-        let key_ref = make_keyref(update_key, key_provider.as_ref())?;
+        let key_ref = make_keyref(update_key, self.key_provider.as_ref())?;
         new_entry.proof = vec![build_proof(&new_entry, &key_ref, now).await?];
 
         let line = serde_json::to_string(&new_entry).map_err(|err| {
@@ -226,10 +228,6 @@ impl DidMethod for DidWebVh {
             deactivated: Some(true),
             log: Some(format!("{log}\n{line}")),
         })
-    }
-
-    fn can_be_deactivated(&self) -> bool {
-        true
     }
 
     fn get_capabilities(&self) -> DidCapabilities {
@@ -248,5 +246,9 @@ impl DidMethod for DidWebVh {
 
     fn get_keys(&self) -> Option<Keys> {
         Some(self.params.keys.clone())
+    }
+
+    fn get_reference_for_key(&self, key: &Key) -> Result<String, DidMethodError> {
+        Ok(format!("key-{}", key.id))
     }
 }

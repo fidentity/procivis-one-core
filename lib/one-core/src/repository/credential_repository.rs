@@ -1,13 +1,11 @@
 use std::collections::HashSet;
 
-use shared_types::{CredentialId, DidId};
+use shared_types::{ClaimId, CredentialId, InteractionId};
 
 use super::error::DataLayerError;
-use crate::model::claim::ClaimId;
 use crate::model::credential::{
     Credential, CredentialRelations, GetCredentialList, GetCredentialQuery, UpdateCredentialRequest,
 };
-use crate::model::interaction::InteractionId;
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait::async_trait]
@@ -33,12 +31,6 @@ pub trait CredentialRepository: Send + Sync {
         relations: &CredentialRelations,
     ) -> Result<Vec<Credential>, DataLayerError>;
 
-    async fn get_credentials_by_issuer_did_id(
-        &self,
-        issuer_did_id: &DidId,
-        relations: &CredentialRelations,
-    ) -> Result<Vec<Credential>, DataLayerError>;
-
     async fn get_credential_list(
         &self,
         query_params: GetCredentialQuery,
@@ -61,10 +53,4 @@ pub trait CredentialRepository: Send + Sync {
         claim_id: &ClaimId,
         relations: &CredentialRelations,
     ) -> Result<Option<Credential>, DataLayerError>;
-
-    async fn get_credentials_by_credential_schema_id(
-        &self,
-        schema_id: String,
-        relations: &CredentialRelations,
-    ) -> Result<Vec<Credential>, DataLayerError>;
 }

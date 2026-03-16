@@ -11,25 +11,10 @@ use shared_types::ClaimSchemaId;
 
 use super::ClaimSchemaProvider;
 use crate::entity::claim_schema;
-use crate::mapper::to_data_layer_error;
 
 #[autometrics]
 #[async_trait::async_trait]
 impl ClaimSchemaRepository for ClaimSchemaProvider {
-    async fn create_claim_schema_list(
-        &self,
-        claim_schemas: Vec<ClaimSchema>,
-    ) -> Result<(), DataLayerError> {
-        let models: Vec<claim_schema::ActiveModel> = convert_inner(claim_schemas);
-
-        claim_schema::Entity::insert_many(models)
-            .exec(&self.db)
-            .await
-            .map_err(to_data_layer_error)?;
-
-        Ok(())
-    }
-
     async fn get_claim_schema_list(
         &self,
         ids: Vec<ClaimSchemaId>,
@@ -58,6 +43,7 @@ impl ClaimSchemaRepository for ClaimSchemaProvider {
 
         let mut claim_schema_list: Vec<ClaimSchema> = convert_inner(models);
 
+        #[allow(clippy::indexing_slicing)]
         claim_schema_list.sort_by_key(|claim_schema| claim_schema_to_index[&claim_schema.id]);
 
         Ok(claim_schema_list)

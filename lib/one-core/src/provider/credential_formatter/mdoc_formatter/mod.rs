@@ -1,84 +1,80 @@
 //! Implementation of ISO mDL (ISO/IEC 18013-5:2021).
 //! https://www.iso.org/standard/69084.html
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use ciborium::Value;
 use coset::iana::{self, EnumI64};
-use coset::{
-    CoseKey, CoseKeyBuilder, Header, HeaderBuilder, Label, ProtectedHeader,
-    RegisteredLabelWithPrivate, SignatureContext,
-};
+use coset::{CoseKey, CoseKeyBuilder, Header, HeaderBuilder, SignatureContext};
 use ct_codecs::{Base64, Base64UrlSafeNoPadding, Decoder, Encoder};
 use indexmap::{IndexMap, IndexSet};
-use mdoc::{DataElementValue, DeviceNamespaces};
-use one_crypto::SignerError;
 use one_crypto::utilities::generate_random_bytes;
 use serde::Deserialize;
-use serde_json::json;
 use serde_with::{DurationSeconds, serde_as};
 use sha2::{Digest, Sha256, Sha384, Sha512};
-use shared_types::{CredentialSchemaId, DidValue};
+use shared_types::{CredentialId, CredentialSchemaId, DidValue};
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime};
-use url::Url;
 use uuid::Uuid;
 
-use self::cose::CoseSign1Builder;
-use self::mdoc::{
-    Bstr, CoseSign1, DateTime, DeviceAuth, DeviceAuthentication, DeviceKey, DeviceKeyInfo,
-    DeviceResponse, DeviceResponseVersion, DeviceSigned, DigestAlgorithm, DigestIDs, Document,
+use self::util::{
+    Bstr, DataElementValue, DateTime, DeviceKey, DeviceKeyInfo, DigestAlgorithm, DigestIDs,
     EmbeddedCbor, IssuerSigned, IssuerSignedItem, MobileSecurityObject,
-    MobileSecurityObjectVersion, Namespace, Namespaces, OID4VPHandover, SessionTranscript,
-    ValidityInfo, ValueDigests,
+    MobileSecurityObjectVersion, Namespace, Namespaces, ValidityInfo, ValueDigests,
+    extract_algorithm_from_header, extract_certificate_from_x5chain_header,
+    try_build_algorithm_header, try_extract_holder_public_key, try_extract_mobile_security_object,
 };
-use super::model::{CredentialData, HolderBindingCtx};
 use super::nest_claims;
-use crate::common_mapper::{NESTED_CLAIM_MARKER, decode_cbor_base64, encode_cbor_base64};
 use crate::config::core_config::{
     DatatypeConfig, DatatypeType, DidType, IdentifierType, IssuanceProtocolType, KeyAlgorithmType,
     KeyStorageType, RevocationType, VerificationProtocolType,
 };
-use crate::model::credential_schema::CredentialSchemaType;
-use crate::model::did::Did;
-use crate::model::key::{PublicKeyJwk, PublicKeyJwkEllipticData};
-use crate::model::revocation_list::StatusListType;
-use crate::provider::credential_formatter::CredentialFormatter;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::x509::pem_chain_into_x5c;
+use crate::mapper::{NESTED_CLAIM_MARKER, decode_cbor_base64, encode_cbor_base64};
+use crate::model::claim::Claim;
+use crate::model::claim_schema::ClaimSchema;
+use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use crate::model::identifier::Identifier;
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::cose::{CoseSign1, CoseSign1Builder};
+use crate::proto::jwt::TokenError;
 use crate::provider::credential_formatter::error::FormatterError;
+use crate::provider::credential_formatter::json_claims::prepare_identifier;
 use crate::provider::credential_formatter::model::{
-    AuthenticationFn, CredentialPresentation, CredentialSchema, CredentialSchemaMetadata,
-    CredentialSubject, DetailCredential, ExtractPresentationCtx, Features, FormatPresentationCtx,
-    FormatterCapabilities, Presentation, PublishedClaim, SelectiveDisclosure, SignatureProvider,
+    AuthenticationFn, CredentialClaim, CredentialClaimValue, CredentialData,
+    CredentialPresentation, CredentialSchema, CredentialSubject, DetailCredential, Features,
+    FormatterCapabilities, IdentifierDetails, PublicKeySource, PublishedClaim, SelectiveDisclosure,
     TokenVerifier, VerificationFn,
 };
-use crate::provider::did_method::mdl::DidMdlValidator;
+use crate::provider::credential_formatter::{CredentialFormatter, MetadataClaimSchema};
+use crate::provider::data_type::model::ExtractedClaim;
+use crate::provider::data_type::provider::DataTypeProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::revocation::bitstring_status_list::model::StatusPurpose;
 use crate::service::credential_schema::dto::CreateCredentialSchemaRequestDTO;
 
-mod cose;
-pub mod mdoc;
+pub(crate) mod util;
 
 #[cfg(test)]
 mod test;
 
 const FULL_DATE_FORMAT: &[FormatItem<'_>] = format_description!("[year]-[month]-[day]");
 
-static LAYOUT_NAMESPACE: &str = "ch.procivis.mdoc_layout.1";
-
 pub struct MdocFormatter {
-    did_mdl_validator: Arc<dyn DidMdlValidator>,
+    certificate_validator: Arc<dyn CertificateValidator>,
     params: Params,
     did_method_provider: Arc<dyn DidMethodProvider>,
-    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    base_url: Option<String>,
     datatype_config: DatatypeConfig,
+    datatype_provider: Arc<dyn DataTypeProvider>,
+    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
 }
 
 #[serde_as]
@@ -92,91 +88,27 @@ pub struct Params {
     #[serde_as(as = "DurationSeconds<i64>")]
     pub mso_minimum_refresh_time: Duration,
     pub leeway: u64,
-    pub embed_layout_properties: Option<bool>,
+    #[serde(default)]
+    pub ecosystem_schema_ids: Vec<String>,
 }
 
 impl MdocFormatter {
-    pub fn new(
+    pub(crate) fn new(
         params: Params,
-        did_mdl_validator: Arc<dyn DidMdlValidator>,
+        certificate_validator: Arc<dyn CertificateValidator>,
         did_method_provider: Arc<dyn DidMethodProvider>,
-        key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-        base_url: Option<String>,
         datatype_config: DatatypeConfig,
+        datatype_provider: Arc<dyn DataTypeProvider>,
+        key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     ) -> Self {
         Self {
-            did_mdl_validator,
+            certificate_validator,
             params,
             did_method_provider,
-            key_algorithm_provider,
-            base_url,
             datatype_config,
+            datatype_provider,
+            key_algorithm_provider,
         }
-    }
-
-    fn extract_presentation_context(
-        &self,
-        context: &ExtractPresentationCtx,
-    ) -> Result<(SessionTranscript, Option<String>), FormatterError> {
-        // ISO mDL:
-        if let Some(session_transcript) = context.mdoc_session_transcript.as_ref() {
-            let session_transcript = ciborium::from_reader(session_transcript.as_slice())
-                .context("session_transcript deserialization error")
-                .map_err(|e| FormatterError::Failed(e.to_string()))?;
-
-            return Ok((session_transcript, None));
-        }
-
-        // OpenID4VP:
-        let nonce = context
-            .nonce
-            .as_ref()
-            .ok_or(FormatterError::CouldNotExtractPresentation(
-                "Missing nonce".to_owned(),
-            ))?
-            .to_string();
-
-        let mdoc_generated_nonce =
-            context
-                .format_nonce
-                .as_ref()
-                .ok_or(FormatterError::CouldNotExtractPresentation(
-                    "Missing mdoc_generated_nonce".to_owned(),
-                ))?;
-
-        let client_id = context
-            .client_id
-            .clone()
-            .or_else(|| {
-                // fallback for backwards compatibility (also note "base_url" is not available on mobile verifier)
-                let base_url = self.base_url.as_ref()?;
-                Url::parse(&format!("{}/ssi/openid4vp/draft-20/response", base_url))
-                    .map(|u| u.to_string())
-                    .ok()
-            })
-            .ok_or_else(|| {
-                FormatterError::CouldNotExtractPresentation(
-                    "Could not create client_id for validation".to_owned(),
-                )
-            })?;
-
-        let response_uri = context
-            .response_uri
-            .as_deref()
-            .unwrap_or(client_id.as_str());
-
-        let session_transcript = SessionTranscript {
-            device_engagement_bytes: None,
-            e_reader_key_bytes: None,
-            handover: Some(OID4VPHandover::compute(
-                &client_id,
-                response_uri,
-                &nonce,
-                mdoc_generated_nonce,
-            )),
-        };
-
-        Ok((session_transcript, Some(nonce)))
     }
 }
 
@@ -192,38 +124,67 @@ impl CredentialFormatter for MdocFormatter {
             .credential_schema
             .and_then(|schema| schema.into_iter().next())
             .ok_or_else(|| {
-                FormatterError::Failed("MDOC credential missing credential schema".to_string())
+                FormatterError::CouldNotFormat(
+                    "MDOC credential missing credential schema".to_string(),
+                )
             })?;
 
-        let mut claims = nest_claims(credential_data.claims.clone())?;
-
-        if let Some(metadata) = credential_schema.metadata {
-            let layout_value = match self.params.embed_layout_properties {
-                Some(true) => {
-                    json!({
-                        "id": credential_schema.id,
-                        "layoutProperties": metadata.layout_properties,
-                        "layoutType": metadata.layout_type,
-                    })
-                }
-                _ => {
-                    json!({
-                        "id": credential_schema.id
-                    })
-                }
-            };
-
-            claims.insert(LAYOUT_NAMESPACE.to_string(), layout_value);
-        }
+        let claims = nest_claims(credential_data.claims.clone())?;
 
         let namespaces =
             try_build_namespaces(claims, credential_data.claims, &self.datatype_config)?;
 
-        let holder_did = credential_data.holder_did.ok_or_else(|| {
-            FormatterError::CouldNotFormat("Missing holder did for mdoc".to_string())
-        })?;
+        let holder_identifier =
+            credential_data
+                .holder_identifier
+                .ok_or(FormatterError::CouldNotFormat(
+                    "Missing holder identifier".to_string(),
+                ))?;
 
-        let cose_key = try_build_cose_key(&*self.did_method_provider, &holder_did).await?;
+        let holder_key = match holder_identifier.r#type {
+            crate::model::identifier::IdentifierType::Key => {
+                let key = holder_identifier.key.ok_or(FormatterError::CouldNotFormat(
+                    "Missing holder key".to_string(),
+                ))?;
+
+                let key_alg = key
+                    .key_algorithm_type()
+                    .ok_or(FormatterError::CouldNotFormat(format!(
+                        "Invalid key algorithm {}",
+                        key.key_type
+                    )))?;
+
+                self.key_algorithm_provider
+                    .key_algorithm_from_type(key_alg)
+                    .ok_or_else(|| {
+                        FormatterError::CouldNotFormat(format!("Missing key algorithm {key_alg}"))
+                    })?
+                    .reconstruct_key(&key.public_key, None, None)
+                    .error_while("reconstructing key")?
+                    .public_key_as_jwk()
+                    .error_while("getting JWK")?
+            }
+            crate::model::identifier::IdentifierType::Did => {
+                try_extract_did(
+                    self.did_method_provider.as_ref(),
+                    &holder_identifier
+                        .did
+                        .ok_or(FormatterError::CouldNotFormat(
+                            "Missing holder did".to_string(),
+                        ))?
+                        .did,
+                    credential_data.holder_key_id.as_ref(),
+                )
+                .await?
+            }
+            _ => {
+                return Err(FormatterError::CouldNotFormat(
+                    "Invalid holder identifier".to_string(),
+                ));
+            }
+        };
+
+        let cose_key = try_build_cose_key(holder_key).await?;
 
         let device_key_info = DeviceKeyInfo {
             device_key: DeviceKey(cose_key),
@@ -249,21 +210,22 @@ impl CredentialFormatter for MdocFormatter {
             doc_type: credential_schema.id,
             validity_info,
         };
-        let mso = EmbeddedCbor::<MobileSecurityObject>::new(mso)
-            .map_err(|err| {
-                FormatterError::Failed(format!(
-                    "CBOR serialization failed for MobileSecurityObjectBytes: {err}"
-                ))
-            })?
-            .into_bytes();
+        let mso = EmbeddedCbor::<MobileSecurityObject>::new(mso)?.into_bytes();
 
         let key_algorithm = auth_fn
             .get_key_algorithm()
-            .map_err(|key_type| FormatterError::Failed(format!("Failed mapping algorithm `{key_type}` to name compatible with allowed COSE Algorithms")))?;
+            .map_err(|key_type| FormatterError::CouldNotFormat(format!("Failed mapping algorithm `{key_type}` to name compatible with allowed COSE Algorithms")))?;
 
         let algorithm_header = try_build_algorithm_header(key_algorithm)?;
 
-        let x5chain_header = build_x5chain_header(vcdm.issuer.to_did_value()?)?;
+        let x5c = if let Some(certificate) = credential_data.issuer_certificate {
+            pem_chain_into_x5c(&certificate.chain).error_while("parsing PEM chain")?
+        } else {
+            return Err(FormatterError::CouldNotFormat(
+                "Missing issuer certificate".to_string(),
+            ));
+        };
+        let x5chain_header = build_x5chain_header(&x5c)?;
 
         let cose_sign1 = CoseSign1Builder::new()
             .protected(algorithm_header)
@@ -271,7 +233,7 @@ impl CredentialFormatter for MdocFormatter {
             .payload(mso)
             .try_create_signature_with_provider(&[], &*auth_fn)
             .await
-            .map_err(|err| FormatterError::CouldNotSign(err.to_string()))?
+            .error_while("creating signature")?
             .build();
 
         let issuer_signed = IssuerSigned {
@@ -285,14 +247,14 @@ impl CredentialFormatter for MdocFormatter {
     async fn format_status_list(
         &self,
         _revocation_list_url: String,
-        _issuer_did: &Did,
+        _issuer_identifier: &Identifier,
         _encoded_list: String,
         _algorithm: KeyAlgorithmType,
         _auth_fn: AuthenticationFn,
         _status_purpose: StatusPurpose,
-        _status_list_type: StatusListType,
+        _status_list_type: RevocationType,
     ) -> Result<String, FormatterError> {
-        Err(FormatterError::Failed(
+        Err(FormatterError::CouldNotFormat(
             "Cannot format StatusList with MDOC formatter".to_string(),
         ))
     }
@@ -302,14 +264,8 @@ impl CredentialFormatter for MdocFormatter {
         token: &str,
         _credential_schema: Option<&'a crate::model::credential_schema::CredentialSchema>,
         _verification: VerificationFn,
-        _holder_binding_ctx: Option<HolderBindingCtx>,
     ) -> Result<DetailCredential, FormatterError> {
-        extract_credentials_internal(
-            &*self.key_algorithm_provider,
-            &*self.did_mdl_validator,
-            token,
-            true,
-        )
+        extract_credentials_internal(&*self.certificate_validator, token, true).await
     }
 
     async fn extract_credentials_unverified<'a>(
@@ -317,198 +273,67 @@ impl CredentialFormatter for MdocFormatter {
         token: &str,
         _credential_schema: Option<&'a crate::model::credential_schema::CredentialSchema>,
     ) -> Result<DetailCredential, FormatterError> {
-        extract_credentials_internal(
-            &*self.key_algorithm_provider,
-            &*self.did_mdl_validator,
-            token,
-            false,
-        )
-    }
-
-    async fn format_presentation(
-        &self,
-        tokens: &[String],
-        _holder_did: &DidValue,
-        algorithm: KeyAlgorithmType,
-        auth_fn: AuthenticationFn,
-        context: FormatPresentationCtx,
-    ) -> Result<String, FormatterError> {
-        let FormatPresentationCtx {
-            mdoc_session_transcript: Some(session_transcript),
-            ..
-        } = context
-        else {
-            return Err(FormatterError::Failed(format!(
-                "Cannot format mdoc presentation invalid context `{context:?}`"
-            )));
-        };
-
-        let mut documents = Vec::with_capacity(tokens.len());
-        for token in tokens {
-            let issuer_signed: IssuerSigned = decode_cbor_base64(token)?;
-            let mso = try_extract_mobile_security_object(&issuer_signed.issuer_auth)?;
-            let doc_type = mso.doc_type;
-
-            let device_signed =
-                try_build_device_signed(&*auth_fn, algorithm, &doc_type, &session_transcript)
-                    .await?;
-
-            let document = Document {
-                doc_type,
-                issuer_signed,
-                device_signed,
-                errors: None,
-            };
-
-            documents.push(document);
-        }
-
-        let device_response = DeviceResponse {
-            version: DeviceResponseVersion::V1_0,
-            documents: Some(documents),
-            document_errors: None,
-            // this will be != 0 if document errors is not None
-            status: 0,
-        };
-
-        encode_cbor_base64(device_response)
-    }
-
-    async fn extract_presentation(
-        &self,
-        token: &str,
-        verification: VerificationFn,
-        context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        let device_response_signed: DeviceResponse = decode_cbor_base64(token)?;
-
-        let documents =
-            device_response_signed
-                .documents
-                .ok_or(FormatterError::CouldNotExtractPresentation(
-                    "Missing docs".to_string(),
-                ))?;
-
-        let mut tokens: Vec<String> = Vec::with_capacity(documents.len());
-
-        let (session_transcript, nonce) = self.extract_presentation_context(&context)?;
-
-        let mut current_issuer_did = None;
-
-        // can we have more than one document?
-        for document in documents {
-            let issuer_signed = document.issuer_signed;
-
-            let issuer_did = extract_did_from_x5chain_header(
-                Some(self.did_mdl_validator.as_ref()),
-                &issuer_signed.issuer_auth,
-            )?;
-
-            try_verify_issuer_auth(&issuer_signed.issuer_auth, &issuer_did, &verification).await?;
-
-            let holder_did = try_extract_holder_did_mdl_public_key(
-                self.key_algorithm_provider.as_ref(),
-                &issuer_signed.issuer_auth,
-            )?;
-            current_issuer_did = Some(holder_did.clone());
-
-            //try verify device signed
-            let device_signed = document.device_signed;
-            let doc_type = document.doc_type;
-
-            let signature: coset::CoseSign1 = device_signed
-                .device_auth
-                .device_signature
-                .ok_or(FormatterError::CouldNotExtractPresentation(
-                    "Missing device signature".to_owned(),
-                ))?
-                .0;
-
-            try_verify_device_signed(
-                session_transcript.to_owned(),
-                &doc_type,
-                &signature,
-                &holder_did,
-                &verification,
-            )
-            .await?;
-
-            tokens.push(encode_cbor_base64(issuer_signed)?)
-        }
-
-        // todo transfer issued and expires from the token
-        Ok(Presentation {
-            id: Some(Uuid::new_v4().to_string()),
-            issued_at: context.issuance_date,
-            expires_at: context.expiration_date,
-            issuer_did: current_issuer_did,
-            nonce,
-            credentials: tokens,
-        })
+        extract_credentials_internal(&*self.certificate_validator, token, false).await
     }
 
     // Extract issuer_signed, keep only the claims that the verifier asked for, re-encode issuer_signed that back to the same format
-    async fn format_credential_presentation(
+    async fn prepare_selective_disclosure(
         &self,
         credential: CredentialPresentation,
-        _holder_binding_ctx: Option<HolderBindingCtx>,
-        _holder_binding_fn: Option<AuthenticationFn>,
     ) -> Result<String, FormatterError> {
         let mut issuer_signed: IssuerSigned = decode_cbor_base64(&credential.token)?;
 
         let Some(namespaces) = issuer_signed.name_spaces.as_mut() else {
-            return Err(FormatterError::Failed(
+            return Err(FormatterError::CouldNotFormat(
                 "IssuerSigned object is missing namespaces".to_owned(),
             ));
         };
 
-        let mut disclosed_keys: IndexSet<&str> = credential
+        let disclosed_keys: IndexSet<&str> = credential
             .disclosed_keys
             .iter()
             .map(|key| key.as_str())
             .collect();
 
-        if namespaces.contains_key(LAYOUT_NAMESPACE) {
-            // We would like to disclose that namespace as well
-            disclosed_keys.insert(LAYOUT_NAMESPACE);
-        }
-
-        let mut paths_for_namespace = IndexMap::new();
+        let mut elements_for_namespace = IndexMap::new();
         for disclosed_key in disclosed_keys {
-            if let Some((namespace, path)) = disclosed_key.split_once('/') {
-                paths_for_namespace
-                    .entry(namespace)
-                    .or_insert(vec![])
-                    .push(path);
-            } else {
-                // we ask for the entire namespace
-                paths_for_namespace.insert(disclosed_key, vec![]);
+            match disclosed_key.split_once(NESTED_CLAIM_MARKER) {
+                Some((namespace, path)) => {
+                    let element = match path.split_once(NESTED_CLAIM_MARKER) {
+                        Some((element, _)) => element,
+                        None => path,
+                    };
+
+                    elements_for_namespace
+                        .entry(namespace)
+                        .or_insert(vec![])
+                        .push(element);
+                }
+                None => {
+                    // the entire namespace is requested
+                    elements_for_namespace.insert(disclosed_key, vec![]);
+                }
             }
         }
 
-        // keep only the claims that we were asked for
+        // keep only the namespaces/claims that we were asked for
         namespaces.retain(|namespace, claims| {
-            let Some(related_paths) = paths_for_namespace.get(namespace.as_str()) else {
+            let Some(elements) = elements_for_namespace.get(namespace.as_str()) else {
                 return false;
             };
 
-            // we're going to keep the whole namespace
-            if related_paths.is_empty() {
+            // disclose the whole namespace
+            if elements.is_empty() {
                 return true;
             }
 
-            claims.retain(|claim| {
-                // we pull in everything starting with `path` since a `disclosed_key` for an object will contain only name of the object
-                related_paths
-                    .iter()
-                    .any(|path| claim.inner().element_identifier.starts_with(path))
-            });
+            claims.retain(|claim| elements.contains(&claim.inner().element_identifier.as_str()));
 
             !claims.is_empty()
         });
 
         if namespaces.is_empty() {
-            return Err(FormatterError::Failed(
+            return Err(FormatterError::CouldNotFormat(
                 "No matching claims were found in namespaces".to_owned(),
             ));
         }
@@ -524,17 +349,23 @@ impl CredentialFormatter for MdocFormatter {
         FormatterCapabilities {
             features: vec![
                 Features::SelectiveDisclosure,
-                Features::RequiresSchemaId,
+                Features::SupportsSchemaId,
                 Features::SupportsCredentialDesign,
                 Features::RequiresPresentationEncryption,
+                Features::SupportsCombinedPresentation,
+                Features::SupportsTxCode,
             ],
-            allowed_schema_ids: vec![],
+            ecosystem_schema_ids: self.params.ecosystem_schema_ids.to_owned(),
             selective_disclosure: vec![SelectiveDisclosure::SecondLevel],
-            issuance_did_methods: vec![DidType::MDL],
-            issuance_exchange_protocols: vec![IssuanceProtocolType::OpenId4VciDraft13],
+            issuance_did_methods: vec![],
+            issuance_exchange_protocols: vec![
+                IssuanceProtocolType::OpenId4VciDraft13,
+                IssuanceProtocolType::OpenId4VciFinal1_0,
+            ],
             proof_exchange_protocols: vec![
                 VerificationProtocolType::OpenId4VpDraft20,
                 VerificationProtocolType::OpenId4VpDraft25,
+                VerificationProtocolType::OpenId4VpFinal1_0,
                 VerificationProtocolType::IsoMdl,
                 VerificationProtocolType::OpenId4VpProximityDraft00,
             ],
@@ -559,270 +390,195 @@ impl CredentialFormatter for MdocFormatter {
                 "ARRAY".to_string(),
                 "MDL_PICTURE".to_string(),
             ],
-            forbidden_claim_names: vec!["0".to_string(), LAYOUT_NAMESPACE.to_string()],
-            issuance_identifier_types: vec![IdentifierType::Did],
-            verification_identifier_types: vec![IdentifierType::Did],
-            holder_identifier_types: vec![IdentifierType::Did],
+            forbidden_claim_names: vec!["0".to_string()],
+            issuance_identifier_types: vec![IdentifierType::Certificate],
+            verification_identifier_types: vec![IdentifierType::Did, IdentifierType::Certificate],
+            holder_identifier_types: vec![IdentifierType::Did, IdentifierType::Key],
             holder_key_algorithms: vec![KeyAlgorithmType::Ecdsa, KeyAlgorithmType::Eddsa],
             holder_did_methods: vec![DidType::Web, DidType::Key, DidType::Jwk, DidType::WebVh],
         }
     }
 
-    async fn extract_presentation_unverified(
-        &self,
-        token: &str,
-        context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        let device_response_signed: DeviceResponse = decode_cbor_base64(token)?;
-
-        let documents =
-            device_response_signed
-                .documents
-                .ok_or(FormatterError::CouldNotExtractPresentation(
-                    "Missing docs".to_string(),
-                ))?;
-
-        let tokens = documents
-            .into_iter()
-            .map(|doc| encode_cbor_base64(doc.issuer_signed))
-            .collect::<Result<Vec<String>, FormatterError>>()?;
-
-        // todo transfer issued and expires from the token
-        Ok(Presentation {
-            id: Some(Uuid::new_v4().to_string()),
-            issued_at: context.issuance_date,
-            expires_at: context.expiration_date,
-            issuer_did: None,
-            nonce: context.nonce,
-            credentials: tokens,
-        })
-    }
-
     fn credential_schema_id(
         &self,
-        _id: CredentialSchemaId,
+        id: CredentialSchemaId,
         request: &CreateCredentialSchemaRequestDTO,
         _core_base_url: &str,
     ) -> Result<String, FormatterError> {
-        request
+        Ok(request
             .schema_id
-            .clone()
-            .ok_or(FormatterError::Failed("Missing schema_id".to_string()))
+            .to_owned()
+            .unwrap_or_else(|| id.to_string()))
     }
-}
 
-fn try_extract_holder_did_mdl_public_key(
-    key_algorithm_provider: &dyn KeyAlgorithmProvider,
-    issuer_auth: &CoseSign1,
-) -> Result<DidValue, FormatterError> {
-    let holder_public_key = try_extract_holder_public_key(issuer_auth)?;
-    let algorithm = match &holder_public_key {
-        PublicKeyJwk::Ec(_) => KeyAlgorithmType::Ecdsa,
-        PublicKeyJwk::Okp(_) => KeyAlgorithmType::Eddsa,
-        key @ (PublicKeyJwk::Rsa(_) | PublicKeyJwk::Oct(_) | PublicKeyJwk::Mlwe(_)) => {
-            return Err(FormatterError::Failed(format!(
-                "Key `{key:?}` should not be available for mdoc",
-            )));
-        }
-    };
-
-    let key_algorithm = key_algorithm_provider
-        .key_algorithm_from_type(algorithm)
-        .ok_or(FormatterError::CouldNotVerify(format!(
-            "Key algorithm `{algorithm}` not configured"
-        )))?;
-    let multibase_public_key = key_algorithm
-        .parse_jwk(&holder_public_key)
-        .map_err(|err| FormatterError::Failed(format!("Cannot convert jwk: {err}")))?
-        .public_key_as_multibase()
-        .map_err(|err| FormatterError::Failed(format!("Cannot convert to multibase: {err}")))?;
-
-    format!("did:mdl:public_key:{multibase_public_key}")
-        .parse()
-        .context("did parsing error")
-        .map_err(|e| FormatterError::Failed(e.to_string()))
-}
-
-fn try_extract_holder_public_key(
-    CoseSign1(issuer_auth): &CoseSign1,
-) -> Result<PublicKeyJwk, FormatterError> {
-    let mso = issuer_auth
-        .payload
-        .as_ref()
-        .ok_or_else(|| FormatterError::Failed("Issuer auth missing mso object".to_owned()))?;
-
-    let mso: EmbeddedCbor<MobileSecurityObject> = ciborium::from_reader(&mso[..])
-        .map_err(|err| FormatterError::Failed(format!("Failed deserializing MSO: {err}")))?;
-
-    let DeviceKey(cose_key) = mso.into_inner().device_key_info.device_key;
-
-    let get_param_value = |key| {
-        cose_key
-            .params
-            .iter()
-            .find_map(|(k, v)| (k == &key).then_some(v))
-    };
-
-    match cose_key.kty {
-        coset::RegisteredLabel::Assigned(iana::KeyType::EC2) => (|| -> anyhow::Result<_> {
-            let _crv = get_param_value(Label::Int(iana::Ec2KeyParameter::Crv.to_i64()))
-                .and_then(|v| v.as_integer())
-                .filter(|v| v == &iana::EllipticCurve::P_256.to_i64().into())
-                .context("Missing P-256 curve in params")?;
-
-            let x = get_param_value(Label::Int(iana::Ec2KeyParameter::X.to_i64()))
-                .and_then(|v| v.as_bytes())
-                .and_then(|v| Base64UrlSafeNoPadding::encode_to_string(v).ok())
-                .context("Missing P-256 X value in params")?;
-
-            let y = get_param_value(Label::Int(iana::Ec2KeyParameter::Y.to_i64()))
-                .and_then(|v| v.as_bytes())
-                .and_then(|v| Base64UrlSafeNoPadding::encode_to_string(v).ok())
-                .context("Missing P-256  Y value in params")?;
-
-            let key = PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-                r#use: None,
-                kid: None,
-                crv: "P-256".to_owned(),
-                x,
-                y: Some(y),
-            });
-
-            Ok(key)
-        })()
-        .map_err(|err| {
-            FormatterError::Failed(format!("Cannot build P-256 public key from CoseKey: {err}"))
-        }),
-
-        coset::RegisteredLabel::Assigned(iana::KeyType::OKP) => (|| -> anyhow::Result<_> {
-            let _crv = get_param_value(Label::Int(iana::Ec2KeyParameter::Crv.to_i64()))
-                .and_then(|v| v.as_integer())
-                .filter(|v| v == &iana::EllipticCurve::Ed25519.to_i64().into())
-                .context("Missing Ed25519 curve in params")?;
-
-            let x = get_param_value(Label::Int(iana::Ec2KeyParameter::X.to_i64()))
-                .and_then(|v| v.as_bytes())
-                .and_then(|v| Base64UrlSafeNoPadding::encode_to_string(v).ok())
-                .context("Missing Ed25519 X value in params")?;
-
-            let key = PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
-                r#use: None,
-                kid: None,
-                crv: "Ed25519".to_owned(),
-                x,
-                y: None,
-            });
-
-            Ok(key)
-        })()
-        .map_err(|err| {
-            FormatterError::Failed(format!(
-                "Cannot build Ed25519 public key from CoseKey: {err}"
-            ))
-        }),
-        other => Err(FormatterError::Failed(format!(
-            "CoseKey contains invalid kty `{other:?}`, only EC2 and OKP keys are supported"
-        ))),
+    fn get_metadata_claims(&self) -> Vec<MetadataClaimSchema> {
+        vec![MetadataClaimSchema {
+            key: "doctype".to_string(),
+            data_type: "STRING".to_string(),
+            array: false,
+            required: true,
+        }]
     }
-}
 
-async fn try_verify_issuer_auth(
-    CoseSign1(cose_sign1): &CoseSign1,
-    issuer_did: &DidValue,
-    verifier: &dyn TokenVerifier,
-) -> Result<(), FormatterError> {
-    let token = coset::sig_structure_data(
-        SignatureContext::CoseSign1,
-        cose_sign1.protected.clone(),
-        None,
-        &[],
-        cose_sign1.payload.as_ref().unwrap_or(&vec![]),
-    );
+    fn user_claims_path(&self) -> Vec<String> {
+        vec![]
+    }
 
-    let algorithm = extract_algorithm_from_header(cose_sign1).ok_or_else(|| {
-        FormatterError::CouldNotVerify("IssuerAuth is missing algorithm information".to_owned())
-    })?;
-
-    let signature = &cose_sign1.signature;
-
-    verifier
-        .verify(
-            Some(issuer_did.to_owned()),
-            None,
-            algorithm,
-            &token,
-            signature,
+    async fn parse_credential(
+        &self,
+        credential: &str,
+        _verification: Box<dyn TokenVerifier>,
+    ) -> Result<Credential, FormatterError> {
+        let issuer_signed: IssuerSigned = decode_cbor_base64(credential)?;
+        let issuer_certificate = extract_certificate_from_x5chain_header(
+            &*self.certificate_validator,
+            &issuer_signed.issuer_auth,
+            true,
         )
-        .await
-        .map_err(|err| FormatterError::CouldNotVerify(err.to_string()))
+        .await?;
+
+        let mso = try_extract_mobile_security_object(&issuer_signed.issuer_auth)?;
+        let Some(namespaces) = issuer_signed.name_spaces else {
+            return Err(FormatterError::CouldNotExtractCredentials(
+                "IssuerSigned object is missing namespaces".to_owned(),
+            ));
+        };
+        verify_digests(&mso, &namespaces)?;
+
+        let now = OffsetDateTime::now_utc();
+        let doctype = mso.doc_type;
+        let credential_id = Uuid::new_v4().into();
+        let mut claims = parse_claims(namespaces, self.datatype_provider.as_ref(), credential_id)?;
+        claims.push(Claim {
+            id: Uuid::new_v4().into(),
+            credential_id,
+            created_date: now,
+            last_modified: now,
+            value: Some(doctype.to_owned()),
+            path: "doctype".to_string(),
+            selectively_disclosable: false,
+            schema: Some(ClaimSchema {
+                id: Uuid::new_v4().into(),
+                created_date: now,
+                last_modified: now,
+                key: "doctype".to_string(),
+                data_type: "STRING".to_owned(),
+                array: false,
+                metadata: true,
+                required: false,
+            }),
+        });
+
+        // Collect unique claim schemas
+        let mut claim_schemas: Vec<ClaimSchema> = vec![];
+        for claim in &claims {
+            if let Some(schema) = &claim.schema
+                && !claim_schemas.iter().any(|s| s.key == schema.key)
+            {
+                claim_schemas.push(schema.clone());
+            }
+        }
+
+        let credential_schema = crate::model::credential_schema::CredentialSchema {
+            id: Uuid::new_v4().into(),
+            deleted_at: None,
+            created_date: now,
+            last_modified: now,
+            name: doctype.to_owned(),
+            format: "".into(), // Will be overridden based on config priority
+            revocation_method: None,
+            key_storage_security: None,
+            layout_type: crate::model::credential_schema::LayoutType::Card,
+            layout_properties: None,
+            schema_id: doctype,
+            imported_source_url: "".to_string(),
+            allow_suspension: false,
+            requires_wallet_instance_attestation: false,
+            organisation: None,
+            claim_schemas: Some(claim_schemas),
+            transaction_code: None,
+        };
+
+        let issuer_identifier = prepare_identifier(
+            &IdentifierDetails::Certificate(issuer_certificate),
+            self.key_algorithm_provider.as_ref(),
+        )?;
+
+        let holder_jwk = try_extract_holder_public_key(&issuer_signed.issuer_auth)?;
+        let holder_identifier = prepare_identifier(
+            &IdentifierDetails::Key(holder_jwk),
+            self.key_algorithm_provider.as_ref(),
+        )?;
+
+        Ok(Credential {
+            id: credential_id,
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            issuance_date: Some(mso.validity_info.signed.into()),
+            deleted_at: None,
+            protocol: "".to_string(),
+            redirect_uri: None,
+            role: CredentialRole::Holder,
+            state: CredentialStateEnum::Accepted,
+            suspend_end_date: None,
+            profile: None,
+            credential_blob_id: None,
+            wallet_unit_attestation_blob_id: None,
+            wallet_instance_attestation_blob_id: None,
+            issuer_certificate: issuer_identifier
+                .certificates
+                .as_ref()
+                .and_then(|certs| certs.first().cloned()),
+            issuer_identifier: Some(issuer_identifier),
+            holder_identifier: Some(holder_identifier),
+            schema: Some(credential_schema),
+            interaction: None,
+            key: None,
+            claims: Some(claims),
+            webhook_url: None,
+        })
+    }
 }
 
-fn extract_credentials_internal(
-    key_algorithm_provider: &dyn KeyAlgorithmProvider,
-    did_mdl_validator: &dyn DidMdlValidator,
+async fn extract_credentials_internal(
+    certificate_validator: &dyn CertificateValidator,
     token: &str,
     verify: bool,
 ) -> Result<DetailCredential, FormatterError> {
     let issuer_signed: IssuerSigned = decode_cbor_base64(token)?;
-    let validator = if verify {
-        Some(did_mdl_validator)
-    } else {
-        None
-    };
-    let issuer_did = extract_did_from_x5chain_header(validator, &issuer_signed.issuer_auth)?;
+    let issuer_cert = extract_certificate_from_x5chain_header(
+        certificate_validator,
+        &issuer_signed.issuer_auth,
+        verify,
+    )
+    .await?;
     let mso = try_extract_mobile_security_object(&issuer_signed.issuer_auth)?;
     let Some(namespaces) = issuer_signed.name_spaces else {
-        return Err(FormatterError::Failed(
+        return Err(FormatterError::CouldNotExtractCredentials(
             "IssuerSigned object is missing namespaces".to_owned(),
         ));
     };
 
-    let holder_did =
-        try_extract_holder_did_mdl_public_key(key_algorithm_provider, &issuer_signed.issuer_auth)?;
+    let issuer_auth = &issuer_signed.issuer_auth;
+    let holder_jwk = try_extract_holder_public_key(issuer_auth)?;
 
     if verify {
-        let digest_algo = mso.digest_algorithm;
-        let digest_fn = |data: &[u8]| match digest_algo {
-            DigestAlgorithm::Sha256 => Sha256::digest(data).to_vec(),
-            DigestAlgorithm::Sha384 => Sha384::digest(data).to_vec(),
-            DigestAlgorithm::Sha512 => Sha512::digest(data).to_vec(),
-        };
-
-        let digest_values = mso.value_digests;
-
-        for (namespace, signed_items) in &namespaces {
-            let digest_ids = digest_values
-                .get(namespace)
-                .ok_or(FormatterError::CouldNotVerify(format!(
-                    "Missing digest value for namespace {namespace}"
-                )))?;
-
-            for signed_item in signed_items {
-                let digest_id = digest_ids.get(&signed_item.inner().digest_id).ok_or(
-                    FormatterError::CouldNotExtractCredentials("Missing digest_ids".to_owned()),
-                )?;
-
-                let item_as_cbor = signed_item.bytes();
-                let digest = digest_fn(item_as_cbor);
-
-                if digest != digest_id.0 {
-                    return Err(FormatterError::CouldNotExtractCredentials(
-                        "Invalid digest_id".to_owned(),
-                    ));
-                }
-            }
-        }
+        verify_digests(&mso, &namespaces)?;
     }
 
-    let mut claims = try_extract_claims(namespaces)?;
-
-    let layout = claims.remove(LAYOUT_NAMESPACE);
-
-    let metadata: Option<CredentialSchemaMetadata> =
-        layout.and_then(|layout| serde_json::from_value(layout).ok());
+    let mut claims = extract_claims(namespaces)?;
+    claims.insert(
+        "doctype".to_string(),
+        CredentialClaim {
+            selectively_disclosable: false,
+            metadata: true,
+            value: CredentialClaimValue::String(mso.doc_type.clone()),
+        },
+    );
 
     Ok(DetailCredential {
         id: None,
+        issuance_date: Some(mso.validity_info.signed.into()),
         valid_from: Some(mso.validity_info.valid_from.into()),
         valid_until: Some(mso.validity_info.valid_until.into()),
         update_at: mso
@@ -830,110 +586,67 @@ fn extract_credentials_internal(
             .expected_update
             .map(|update| update.into()),
         invalid_before: None,
-        issuer_did: Some(issuer_did),
-        subject: Some(holder_did),
+        issuer: IdentifierDetails::Certificate(issuer_cert),
+        subject: Some(IdentifierDetails::Key(holder_jwk)),
         claims: CredentialSubject { claims, id: None },
         status: vec![],
         credential_schema: Some(CredentialSchema {
             id: mso.doc_type,
-            r#type: CredentialSchemaType::Mdoc.to_string(),
-            metadata,
+            r#type: "mdoc".to_string(),
+            metadata: None,
         }),
     })
 }
 
-async fn try_build_device_signed(
-    auth_fn: &dyn SignatureProvider,
-    algorithm: KeyAlgorithmType,
-    doctype: &str,
-    session_transcript_bytes: &[u8],
-) -> Result<DeviceSigned, FormatterError> {
-    let session_transcript = ciborium::from_reader(session_transcript_bytes)
-        .map_err(|err| FormatterError::Failed(format!("invalid session transcript: {err}")))?;
-    let device_namespaces = EmbeddedCbor::<DeviceNamespaces>::new([].into()).map_err(|err| {
-        FormatterError::Failed(format!(
-            "CBOR serialization failed for DeviceNamespaces: {err}"
-        ))
-    })?;
-
-    let device_auth = DeviceAuthentication {
-        session_transcript,
-        doctype: doctype.to_owned(),
-        device_namespaces: device_namespaces.clone(),
-    };
-    let device_auth_bytes = EmbeddedCbor::new(device_auth)
-        .map_err(|err| {
-            FormatterError::Failed(format!(
-                "CBOR serialization failed for DeviceAuthentication: {err}"
-            ))
-        })?
-        .into_bytes();
-
-    let algorithm_header = try_build_algorithm_header(algorithm)?;
-    let cose_sign1 = CoseSign1Builder::new()
-        .protected(algorithm_header)
-        .try_create_detached_signature_with_provider(&device_auth_bytes, &[], auth_fn)
-        .await
-        .map_err(|err| FormatterError::CouldNotSign(err.to_string()))?
-        .build();
-
-    let device_auth = DeviceAuth {
-        device_signature: Some(cose_sign1.into()),
-    };
-
-    let device_signed = DeviceSigned {
-        name_spaces: device_namespaces,
-        device_auth,
-    };
-
-    Ok(device_signed)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn try_verify_device_signed(
-    session_transcript: SessionTranscript,
-    doctype: &str,
-    signature: &coset::CoseSign1,
-    holder_did: &DidValue,
-    verify_fn: &VerificationFn,
+fn verify_digests(
+    mso: &MobileSecurityObject,
+    namespaces: &Namespaces,
 ) -> Result<(), FormatterError> {
-    let device_namespaces = EmbeddedCbor::new([].into()).map_err(|err| {
-        FormatterError::Failed(format!(
-            "CBOR serialization failed for DeviceNamespaces: {err}"
-        ))
-    })?;
-
-    let device_auth = DeviceAuthentication {
-        session_transcript,
-        doctype: doctype.to_owned(),
-        device_namespaces,
+    let digest_algo = mso.digest_algorithm;
+    let digest_fn = |data: &[u8]| match digest_algo {
+        DigestAlgorithm::Sha256 => Sha256::digest(data).to_vec(),
+        DigestAlgorithm::Sha384 => Sha384::digest(data).to_vec(),
+        DigestAlgorithm::Sha512 => Sha512::digest(data).to_vec(),
     };
-    let device_auth_bytes = EmbeddedCbor::new(device_auth)
-        .map_err(|err| {
-            FormatterError::Failed(format!(
-                "CBOR serialization failed for DeviceAuthentication: {err}"
-            ))
-        })?
-        .into_bytes();
 
-    try_verify_detached_signature_with_provider(
-        signature,
-        &device_auth_bytes,
-        &[],
-        holder_did,
-        verify_fn,
-    )
-    .await
-    .map_err(|e| FormatterError::CouldNotSign(e.to_string()))
+    let digest_values = &mso.value_digests;
+
+    for (namespace, signed_items) in namespaces {
+        let digest_ids = digest_values
+            .get(namespace)
+            .ok_or(FormatterError::CouldNotVerify(format!(
+                "Missing digests for namespace {namespace}"
+            )))?;
+
+        for signed_item in signed_items {
+            let expected_digest = &digest_ids
+                .get(&signed_item.inner().digest_id)
+                .ok_or(FormatterError::CouldNotExtractCredentials(
+                    "Missing digest_ids".to_owned(),
+                ))?
+                .0;
+
+            let item_as_cbor = signed_item.bytes();
+            let digest = digest_fn(item_as_cbor);
+
+            if &digest != expected_digest {
+                return Err(FormatterError::CouldNotExtractCredentials(
+                    "Invalid digest".to_owned(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn try_verify_detached_signature_with_provider(
     device_signature: &coset::CoseSign1,
     payload: &[u8],
     external_aad: &[u8],
-    issuer_did_value: &DidValue,
+    issuer_key: &PublicJwk,
     verifier: &dyn TokenVerifier,
-) -> Result<(), SignerError> {
+) -> Result<(), TokenError> {
     let sig_data = coset::sig_structure_data(
         SignatureContext::CoseSign1,
         device_signature.protected.clone(),
@@ -943,19 +656,16 @@ pub async fn try_verify_detached_signature_with_provider(
     );
 
     let algorithm = extract_algorithm_from_header(device_signature).ok_or(
-        SignerError::CouldNotVerify("Missing or invalid signature algorithm".to_string()),
+        TokenError::MissingJOSEAlgorithm("Missing or invalid signature algorithm".to_string()),
     )?;
 
     let signature = &device_signature.signature;
 
+    let params = PublicKeySource::Jwk {
+        jwk: Cow::Borrowed(issuer_key),
+    };
     verifier
-        .verify(
-            Some(issuer_did_value.to_owned()),
-            None, /* take the first one */
-            algorithm,
-            &sig_data,
-            signature,
-        )
+        .verify(params, algorithm, &sig_data, signature)
         .await
 }
 
@@ -973,7 +683,9 @@ fn try_build_namespaces(
 
         let namespace_object = namespace_value
             .as_object()
-            .ok_or(FormatterError::Failed("Expected an object".to_string()))?;
+            .ok_or(FormatterError::JsonMapping(
+                "Expected an object".to_string(),
+            ))?;
 
         for (item_key, item_value) in namespace_object {
             // random has to be minimum 16 bytes
@@ -991,11 +703,7 @@ fn try_build_namespaces(
                 )?,
             };
 
-            namespace.push(EmbeddedCbor::new(signed_item).map_err(|err| {
-                FormatterError::Failed(format!(
-                    "CBOR serialization failed for IssuerSignedItem: {err}"
-                ))
-            })?);
+            namespace.push(EmbeddedCbor::new(signed_item)?);
             digest_id += 1;
         }
     }
@@ -1038,38 +746,18 @@ fn build_ciborium_value(
             Ok(ciborium::Value::Array(items))
         }
         serde_json::Value::Null => Ok(ciborium::Value::Null),
-        serde_json::Value::String(value)
-            if this_path
-                .chars()
-                .take_while(|c| c != &NESTED_CLAIM_MARKER)
-                .eq(LAYOUT_NAMESPACE.chars()) =>
-        {
-            let claim = PublishedClaim {
-                key: this_path.to_string(),
-                value: crate::provider::credential_formatter::model::PublishedClaimValue::String(
-                    value.to_string(),
-                ),
-                datatype: Some("STRING".to_owned()),
-                array_item: false,
-            };
-            map_to_ciborium_value(&claim, datatype_config)
-        }
         _ => {
-            let claim =
-                claims
-                    .iter()
-                    .find(|c| c.key == this_path)
-                    .ok_or(FormatterError::Failed(format!(
-                        "Missing claim: {this_path}"
-                    )))?;
+            let claim = claims.iter().find(|c| c.key == this_path).ok_or(
+                FormatterError::CouldNotFormat(format!("Missing claim: {this_path}")),
+            )?;
             map_to_ciborium_value(claim, datatype_config)
         }
     }
 }
 
 // full-date (ISO mDL 7.2.1)
-const FULL_DATE_TAG: u64 = 1004;
-const TDATE_TAG: u64 = 0;
+pub(crate) const FULL_DATE_TAG: u64 = 1004;
+pub(crate) const TDATE_TAG: u64 = 0;
 
 fn map_to_ciborium_value(
     claim: &PublishedClaim,
@@ -1078,10 +766,12 @@ fn map_to_ciborium_value(
     let data_type = claim
         .datatype
         .as_ref()
-        .ok_or(FormatterError::Failed("Missing data type".to_string()))?;
+        .ok_or(FormatterError::CouldNotFormat(
+            "Missing data type".to_string(),
+        ))?;
     let fields = datatype_config
         .get_fields(data_type)
-        .map_err(|e| FormatterError::CouldNotFormat(e.to_string()))?;
+        .error_while("getting datatype config")?;
 
     let value_as_string = claim.value.to_string();
     Ok(match fields.r#type {
@@ -1118,28 +808,23 @@ fn map_to_ciborium_value(
             };
             ciborium::Value::Bool(value)
         }
-        DatatypeType::File => {
+        DatatypeType::Picture => {
             let mut file_parts = value_as_string.splitn(2, ',');
 
-            let mime_type = file_parts.next().ok_or(FormatterError::Failed(
+            let mime_type = file_parts.next().ok_or(FormatterError::CouldNotFormat(
                 "Missing data type of base64".to_string(),
             ))?;
 
-            let content = file_parts
-                .next()
-                .ok_or(FormatterError::Failed("Missing base64 data".to_string()))?;
+            let content = file_parts.next().ok_or(FormatterError::CouldNotFormat(
+                "Missing base64 data".to_string(),
+            ))?;
 
-            if let Some(params) = &fields.params {
-                if let Some(public) = &params.public {
-                    if public["encodeAsMdlPortrait"].as_bool().unwrap_or(false) {
-                        let decoded = Base64::decode_to_vec(content, None).map_err(|e| {
-                            FormatterError::CouldNotFormat(format!(
-                                "Base64url decoding failed: {e}"
-                            ))
-                        })?;
-                        return Ok(ciborium::Value::Bytes(decoded));
-                    }
-                }
+            if let Some(params) = &fields.params
+                && let Some(public) = &params.public
+                && public["encodeAsMdlPortrait"].as_bool().unwrap_or(false)
+            {
+                let decoded = Base64::decode_to_vec(content, None)?;
+                return Ok(ciborium::Value::Bytes(decoded));
             }
 
             ciborium::Value::Array(vec![
@@ -1156,113 +841,23 @@ fn map_to_ciborium_value(
     })
 }
 
-fn build_x5chain_header(issuer_did: DidValue) -> Result<Header, FormatterError> {
+fn build_x5chain_header(x5c: &[String]) -> Result<Header, FormatterError> {
     let x5chain_label = coset::iana::HeaderParameter::X5Chain.to_i64();
 
-    let body = issuer_did
-        .as_str()
-        .strip_prefix("did:mdl:certificate:")
-        .ok_or_else(|| FormatterError::CouldNotFormat("Invalid mdl did".into()))?;
+    let mut chain = vec![];
+    for cert in x5c {
+        let bytes = Base64::decode_to_vec(cert, None)?;
+        chain.push(ciborium::Value::Bytes(bytes));
+    }
 
-    let decoded = Base64UrlSafeNoPadding::decode_to_vec(body, None)
-        .map_err(|e| FormatterError::CouldNotFormat(format!("Base64url decoding failed: {e}")))?;
-
-    let x5chain_value = ciborium::Value::Bytes(decoded);
-
+    let x5chain_value = if chain.len() == 1 {
+        chain.remove(0)
+    } else {
+        ciborium::Value::Array(chain)
+    };
     Ok(HeaderBuilder::new()
         .value(x5chain_label, x5chain_value)
         .build())
-}
-
-fn try_build_algorithm_header(
-    algorithm: KeyAlgorithmType,
-) -> Result<ProtectedHeader, FormatterError> {
-    let algorithm = match algorithm {
-        KeyAlgorithmType::Ecdsa => iana::Algorithm::ES256,
-        KeyAlgorithmType::Eddsa => iana::Algorithm::EdDSA,
-        _ => {
-            return Err(FormatterError::Failed(format!(
-                "Failed mapping algorithm `{algorithm}` to name compatible with allowed COSE Algorithms"
-            )));
-        }
-    };
-    let algorithm_header = coset::HeaderBuilder::new().algorithm(algorithm).build();
-
-    Ok(ProtectedHeader {
-        original_data: None,
-        header: algorithm_header,
-    })
-}
-
-fn extract_did_from_x5chain_header(
-    did_mdl_validator: Option<&dyn DidMdlValidator>,
-    CoseSign1(cose_sign1): &CoseSign1,
-) -> Result<DidValue, FormatterError> {
-    let x5chain_label = Label::Int(coset::iana::HeaderParameter::X5Chain.to_i64());
-
-    cose_sign1
-        .unprotected
-        .rest
-        .iter()
-        .find(|(label, _)| label == &x5chain_label)
-        .context(anyhow::anyhow!("Missing x5chain header"))
-        .and_then(|(_, value)| {
-            let value = value
-                .as_bytes()
-                .context(anyhow::anyhow!("Invalid value for x5chain header"))?;
-
-            let (_, certificate) = x509_parser::parse_x509_certificate(value)
-                .map_err(|err| anyhow::anyhow!("Cannot parse x509 certificate: {err}"))?;
-
-            if let Some(did_mdl_validator) = did_mdl_validator {
-                did_mdl_validator
-                    .validate_certificate(&certificate)
-                    .map_err(|err| anyhow::anyhow!("Invalid x509 certificate: {err}"))?;
-            }
-
-            let did = Base64UrlSafeNoPadding::encode_to_string(value)
-                .map(|cert| format!("did:mdl:certificate:{cert}"))
-                .map_err(|err| anyhow::anyhow!("Base64 encoding failed: {err}"))?;
-
-            Ok(did
-                .parse()
-                .context("did parsing failed")
-                .map_err(|e| FormatterError::Failed(e.to_string()))?)
-        })
-        .map_err(|err| FormatterError::Failed(format!("Failed extracting x5chain header {err}")))
-}
-
-fn extract_algorithm_from_header(cose_sign1: &coset::CoseSign1) -> Option<KeyAlgorithmType> {
-    let alg = &cose_sign1.protected.header.alg;
-
-    if let Some(RegisteredLabelWithPrivate::Assigned(algorithm)) = alg {
-        match algorithm {
-            iana::Algorithm::ES256 => Some(KeyAlgorithmType::Ecdsa),
-            iana::Algorithm::EdDSA => Some(KeyAlgorithmType::Eddsa),
-            _ => None,
-        }
-    } else {
-        None
-    }
-}
-
-fn try_extract_mobile_security_object(
-    CoseSign1(cose_sign1): &CoseSign1,
-) -> Result<MobileSecurityObject, FormatterError> {
-    let Some(payload) = &cose_sign1.payload else {
-        return Err(FormatterError::Failed(
-            "IssuerAuth doesn't contain payload".to_owned(),
-        ));
-    };
-
-    let mso: EmbeddedCbor<MobileSecurityObject> =
-        ciborium::from_reader(&payload[..]).map_err(|err| {
-            FormatterError::Failed(format!(
-                "IssuerAuth payload cannot be converted to MSO: {err}"
-            ))
-        })?;
-
-    Ok(mso.into_inner())
 }
 
 fn try_build_value_digests(
@@ -1290,26 +885,34 @@ fn try_build_value_digests(
     Ok(value_digests)
 }
 
-async fn try_build_cose_key(
+async fn try_extract_did(
     did_resolver: &dyn DidMethodProvider,
     holder_did: &DidValue,
-) -> Result<CoseKey, FormatterError> {
-    let mut did_document = did_resolver
+    holder_key_id: Option<&String>,
+) -> Result<PublicJwk, FormatterError> {
+    let did_document = did_resolver
         .resolve(holder_did)
         .await
-        .map_err(|err| FormatterError::Failed(format!("Failed resolving did {err}")))?;
+        .error_while("resolving did")?;
 
-    let base64decode = |v| {
-        Base64UrlSafeNoPadding::decode_to_vec(v, None)
-            .map_err(|err| FormatterError::Failed(format!("Failed base64 decoding key {err}")))
-    };
+    for verification_method in did_document.verification_method {
+        if holder_key_id.is_some_and(|key_id| key_id != &verification_method.id) {
+            continue;
+        }
 
-    let cose_key = match did_document
-        .verification_method
-        .swap_remove(0)
-        .public_key_jwk
-    {
-        PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
+        return Ok(verification_method.public_key_jwk);
+    }
+
+    Err(FormatterError::CouldNotVerify(format!(
+        "Verification method not found: did:{holder_did}, keyId:{holder_key_id:?}"
+    )))
+}
+
+async fn try_build_cose_key(key: PublicJwk) -> Result<CoseKey, FormatterError> {
+    let base64decode = |v| Base64UrlSafeNoPadding::decode_to_vec(v, None);
+
+    Ok(match key {
+        PublicJwk::Ec(PublicJwkEc {
             crv, x, y: Some(y), ..
         }) if &crv == "P-256" => {
             let x = base64decode(x)?;
@@ -1318,7 +921,7 @@ async fn try_build_cose_key(
             CoseKeyBuilder::new_ec2_pub_key(iana::EllipticCurve::P_256, x, y).build()
         }
 
-        PublicKeyJwk::Okp(key) if key.crv == "Ed25519" => {
+        PublicJwk::Okp(key) if key.crv == "Ed25519" => {
             let x = base64decode(key.x)?;
 
             CoseKeyBuilder::new_okp_key()
@@ -1330,13 +933,11 @@ async fn try_build_cose_key(
                 .build()
         }
         key => {
-            return Err(FormatterError::Failed(format!(
+            return Err(FormatterError::CouldNotFormat(format!(
                 "Key not available for mdoc {key:?}"
             )));
         }
-    };
-
-    Ok(cose_key)
+    })
 }
 
 fn build_json_value(value: DataElementValue) -> Result<serde_json::Value, FormatterError> {
@@ -1354,25 +955,33 @@ fn build_json_value(value: DataElementValue) -> Result<serde_json::Value, Format
         Value::Tag(tag, tag_value) => match tag {
             TDATE_TAG => {
                 let datetime = tag_value.into_text().map_err(|v| {
-                    FormatterError::Failed(format!("Expected tdate value. Got: {v:#?}",))
+                    FormatterError::CouldNotExtractCredentials(format!(
+                        "Expected tdate value. Got: {v:#?}",
+                    ))
                 })?;
                 OffsetDateTime::parse(&datetime, &Rfc3339).map_err(|err| {
-                    FormatterError::Failed(format!("Invalid tdate `{datetime}`: {err}",))
+                    FormatterError::CouldNotExtractCredentials(format!(
+                        "Invalid tdate `{datetime}`: {err}",
+                    ))
                 })?;
 
                 Ok(serde_json::Value::String(datetime))
             }
             FULL_DATE_TAG => {
                 let date = tag_value.into_text().map_err(|v| {
-                    FormatterError::Failed(format!("Expected tdate value. Got: {v:#?}",))
+                    FormatterError::CouldNotExtractCredentials(format!(
+                        "Expected tdate value. Got: {v:#?}",
+                    ))
                 })?;
                 Date::parse(&date, FULL_DATE_FORMAT).map_err(|err| {
-                    FormatterError::Failed(format!("Invalid full-date `{date}`: {err}",))
+                    FormatterError::CouldNotExtractCredentials(format!(
+                        "Invalid full-date `{date}`: {err}",
+                    ))
                 })?;
 
                 Ok(serde_json::Value::String(date))
             }
-            _ => Err(FormatterError::Failed(format!(
+            _ => Err(FormatterError::CouldNotExtractCredentials(format!(
                 "Unexpected CBOR tag: {tag}"
             ))),
         },
@@ -1383,15 +992,16 @@ fn build_json_value(value: DataElementValue) -> Result<serde_json::Value, Format
             for (key, value) in map {
                 let key = key
                     .as_text()
-                    .ok_or(FormatterError::Failed("Expected a text".to_string()))?;
+                    .ok_or(FormatterError::CouldNotExtractCredentials(
+                        "Expected a text".to_string(),
+                    ))?;
                 map_content.insert(key.to_owned(), build_json_value(value)?);
             }
             Ok(serde_json::Value::Object(map_content))
         }
         Value::Null => Ok(serde_json::Value::Null),
-        _ => Err(FormatterError::Failed(format!(
-            "Unexpected element value. Got: {:#?}",
-            value
+        _ => Err(FormatterError::CouldNotExtractCredentials(format!(
+            "Unexpected element value. Got: {value:#?}"
         ))),
     }
 }
@@ -1414,22 +1024,33 @@ fn handle_array(array: Vec<Value>) -> Result<serde_json::Value, FormatterError> 
 
     // PICTURE
     if array.len() == 2 {
-        let bytes = array[1]
+        let data_type_value = array
+            .first()
+            .ok_or_else(|| FormatterError::CouldNotExtractCredentials("Invalid index".to_owned()))?
+            .as_text()
+            .ok_or_else(|| {
+                FormatterError::CouldNotExtractCredentials(
+                    "Expected String value for key".to_owned(),
+                )
+            })?;
+
+        let bytes = array
+            .get(1)
+            .ok_or_else(|| FormatterError::CouldNotExtractCredentials("Invalid index".to_owned()))?
             .as_bytes()
-            .ok_or_else(|| FormatterError::Failed("Not a byte array".to_owned()))?;
+            .ok_or_else(|| {
+                FormatterError::CouldNotExtractCredentials("Not a byte array".to_owned())
+            })?;
         let value = String::from_utf8_lossy(bytes);
 
-        let data_type_value = array[0]
-            .as_text()
-            .ok_or_else(|| FormatterError::Failed("Expected String value for key".to_owned()))?;
-
         return Ok(serde_json::Value::String(format!(
-            "{},{}",
-            data_type_value, value
+            "{data_type_value},{value}"
         )));
     }
 
-    Err(FormatterError::Failed("Unhandled array".to_owned()))
+    Err(FormatterError::CouldNotExtractCredentials(
+        "Unhandled array".to_owned(),
+    ))
 }
 
 fn is_same_type(a: &Value, b: &Value) -> bool {
@@ -1446,28 +1067,38 @@ fn is_same_type(a: &Value, b: &Value) -> bool {
 }
 
 fn handle_bytes(bytes: &[u8]) -> Result<serde_json::Value, FormatterError> {
-    let value = Base64::encode_to_string(bytes)
-        .map_err(|e| FormatterError::CouldNotExtractCredentials(e.to_string()))?;
+    let value = Base64::encode_to_string(bytes)?;
     Ok(serde_json::Value::String(format!(
         "data:image/jpeg;base64,{value}"
     )))
 }
 
-fn try_extract_claims(
+fn extract_claims(
     namespaces: Namespaces,
-) -> Result<HashMap<String, serde_json::Value>, FormatterError> {
+) -> Result<HashMap<String, CredentialClaim>, FormatterError> {
     let mut result = HashMap::new();
     for (namespace, inner_claims) in namespaces {
-        let mut namespace_object_content = serde_json::Map::new();
+        let mut namespace_object_content = HashMap::new();
 
         for issuer_signed_item in inner_claims {
             let issuer_signed_item = issuer_signed_item.into_inner();
             let val = build_json_value(issuer_signed_item.element_value)?;
-            namespace_object_content.insert(issuer_signed_item.element_identifier, val);
+            namespace_object_content.insert(
+                issuer_signed_item.element_identifier,
+                CredentialClaim {
+                    selectively_disclosable: true,
+                    metadata: false,
+                    value: val.try_into()?,
+                },
+            );
         }
         result.insert(
             namespace,
-            serde_json::Value::Object(namespace_object_content),
+            CredentialClaim {
+                selectively_disclosable: true,
+                metadata: false,
+                value: CredentialClaimValue::Object(namespace_object_content),
+            },
         );
     }
 
@@ -1479,4 +1110,239 @@ pub async fn try_extracting_mso_from_token(
 ) -> Result<MobileSecurityObject, FormatterError> {
     let issuer_signed: IssuerSigned = decode_cbor_base64(token)?;
     try_extract_mobile_security_object(&issuer_signed.issuer_auth)
+}
+
+fn parse_claims(
+    namespaces: Namespaces,
+    datatype_provider: &dyn DataTypeProvider,
+    credential_id: CredentialId,
+) -> Result<Vec<Claim>, FormatterError> {
+    let mut result = vec![];
+    for (namespace, inner_claims) in namespaces {
+        for issuer_signed_item in inner_claims {
+            let issuer_signed_item = issuer_signed_item.into_inner();
+            let path = format!("{namespace}/{}", issuer_signed_item.element_identifier);
+            let mut claims = parse_claim(
+                &path,
+                &path,
+                issuer_signed_item.element_value,
+                datatype_provider,
+                credential_id,
+            )?;
+
+            // only the top-level claim / element root is selectively disclosable
+            if let Some(top_level_claim) = claims.iter_mut().find(|claim| claim.path == path) {
+                top_level_claim.selectively_disclosable = true;
+            }
+
+            result.extend(claims);
+        }
+
+        let now = OffsetDateTime::now_utc();
+        result.push(Claim {
+            id: Uuid::new_v4().into(),
+            credential_id,
+            created_date: now,
+            last_modified: now,
+            value: None,
+            path: namespace.to_string(),
+            selectively_disclosable: true,
+            schema: Some(ClaimSchema {
+                id: Uuid::new_v4().into(),
+                created_date: now,
+                last_modified: now,
+                key: namespace,
+                data_type: "OBJECT".to_owned(),
+                array: false,
+                metadata: false,
+                required: false,
+            }),
+        });
+    }
+
+    let mut known_schemas: HashMap<String, ClaimSchema> = HashMap::new();
+    for claim in result.iter_mut() {
+        let Some(schema) = claim.schema.as_ref() else {
+            continue;
+        };
+
+        match known_schemas.get(&schema.key) {
+            Some(matching_schema) => {
+                let parsed_datatype = &schema.data_type;
+                if &matching_schema.data_type != parsed_datatype {
+                    tracing::warn!(
+                        "Mismatch of detected datatype ({parsed_datatype:?}) of array claim: '{}'",
+                        claim.path
+                    );
+                }
+
+                // reuse the already inserted schema here (to match ids) of array siblings
+                claim.schema = Some(matching_schema.to_owned());
+            }
+            None => {
+                known_schemas.insert(schema.key.to_owned(), schema.to_owned());
+            }
+        };
+    }
+
+    Ok(result)
+}
+
+fn parse_claim(
+    claim_path: &str,
+    claim_schema_path: &str,
+    value: Value,
+    datatype_provider: &dyn DataTypeProvider,
+    credential_id: CredentialId,
+) -> Result<Vec<Claim>, FormatterError> {
+    let now = OffsetDateTime::now_utc();
+
+    // specific case of encoding picture claim as array
+    if matches!(value, Value::Array(_))
+        && let Ok(ExtractedClaim { data_type, value }) =
+            datatype_provider.extract_cbor_claim(&value)
+    {
+        return Ok(vec![Claim {
+            id: Uuid::new_v4().into(),
+            credential_id,
+            created_date: now,
+            last_modified: now,
+            value: Some(value),
+            path: claim_path.to_string(),
+            selectively_disclosable: false,
+            schema: Some(ClaimSchema {
+                id: Uuid::new_v4().into(),
+                created_date: now,
+                last_modified: now,
+                key: claim_schema_path.to_string(),
+                data_type,
+                array: false,
+                metadata: false,
+                required: false,
+            }),
+        }]);
+    }
+
+    Ok(match value {
+        Value::Array(values) => {
+            // Check if array has all elements with the same type
+            let Some(first) = values.first() else {
+                return Ok(vec![]);
+            };
+            if !values.iter().all(|item| is_same_type(item, first)) {
+                return Err(FormatterError::CouldNotExtractCredentials(format!(
+                    "Non-homogenous array at: {claim_path}"
+                )));
+            }
+
+            let mut subclaims: Vec<Claim> = vec![];
+            for (index, value) in values.into_iter().enumerate() {
+                let item_path = format!("{claim_path}/{index}");
+                let claims = parse_claim(
+                    &item_path,
+                    claim_schema_path,
+                    value,
+                    datatype_provider,
+                    credential_id,
+                )?;
+                subclaims.extend(claims);
+            }
+
+            // data type of the array elements based on first item data_type
+            let Some(first) = subclaims
+                .iter()
+                .find(|claim| claim.path == format!("{claim_path}/0"))
+                .and_then(|claim| claim.schema.as_ref())
+            else {
+                return Ok(vec![]);
+            };
+
+            let mut result = vec![Claim {
+                id: Uuid::new_v4().into(),
+                credential_id,
+                created_date: now,
+                last_modified: now,
+                value: None,
+                path: claim_path.to_string(),
+                selectively_disclosable: false,
+                schema: Some(ClaimSchema {
+                    id: Uuid::new_v4().into(),
+                    created_date: now,
+                    last_modified: now,
+                    key: claim_schema_path.to_string(),
+                    data_type: first.data_type.to_owned(),
+                    array: true,
+                    metadata: false,
+                    required: false,
+                }),
+            }];
+            result.extend(subclaims);
+            result
+        }
+        Value::Map(map) => {
+            let mut result = vec![];
+            for (key, value) in map {
+                let key = key.as_text().ok_or(FormatterError::JsonMapping(
+                    "Expected a text map key".to_string(),
+                ))?;
+                let item_path = format!("{claim_path}/{key}");
+                let item_schema_path = format!("{claim_schema_path}/{key}");
+                let claims = parse_claim(
+                    &item_path,
+                    &item_schema_path,
+                    value,
+                    datatype_provider,
+                    credential_id,
+                )?;
+                result.extend(claims);
+            }
+
+            result.push(Claim {
+                id: Uuid::new_v4().into(),
+                credential_id,
+                created_date: now,
+                last_modified: now,
+                value: None,
+                path: claim_path.to_string(),
+                selectively_disclosable: false,
+                schema: Some(ClaimSchema {
+                    id: Uuid::new_v4().into(),
+                    created_date: now,
+                    last_modified: now,
+                    key: claim_schema_path.to_string(),
+                    data_type: "OBJECT".to_owned(),
+                    array: false,
+                    metadata: false,
+                    required: false,
+                }),
+            });
+
+            result
+        }
+        simple_value => {
+            let ExtractedClaim { data_type, value } = datatype_provider
+                .extract_cbor_claim(&simple_value)
+                .error_while("extracting CBOR claim")?;
+
+            vec![Claim {
+                id: Uuid::new_v4().into(),
+                credential_id,
+                created_date: now,
+                last_modified: now,
+                value: Some(value),
+                path: claim_path.to_string(),
+                selectively_disclosable: false,
+                schema: Some(ClaimSchema {
+                    id: Uuid::new_v4().into(),
+                    created_date: now,
+                    last_modified: now,
+                    key: claim_schema_path.to_string(),
+                    data_type,
+                    array: false,
+                    metadata: false,
+                    required: false,
+                }),
+            }]
+        }
+    })
 }

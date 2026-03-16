@@ -1,4 +1,7 @@
 use axum::extract::State;
+use one_core::service::config::dto::ConfigDTO;
+use one_core::service::error::ServiceError;
+use one_dto_mapper::convert_inner;
 
 use super::dto::ConfigRestDTO;
 use crate::dto::response::OkOrErrorResponse;
@@ -16,16 +19,15 @@ use crate::router::AppState;
     description = indoc::formatdoc! {"
     Returns the system configuration.
 
-    While the system configuration is not modifiable via the API, it
-    is partially exposed to the API and is important for understanding
-    which parts of the solution are available, how to invoke each
-    component and for retrieving capabilities, reports that reflect
-    properties of instances.
+    While the system configuration cannot be modified via the API, it
+    is partially exposed through the API. Understanding the configuration
+    is important for determining which solution components are available,
+    how to invoke each component, and how to retrieve capabilities and
+    instance reports.
 
-    The pattern of referencing configuration instances, rather than
-    specifying types directly, is used throughout the API. Always refer
-    to your system configuration to determine correct reference
-    identifiers for:
+    The API uses a pattern of referencing configuration instances rather
+    than specifying types directly. Always check your system configuration
+    to determine the correct reference identifiers for:
 
     - Credential formats
     - Key algorithms
@@ -43,5 +45,9 @@ use crate::router::AppState;
 )]
 pub(crate) async fn get_config(state: State<AppState>) -> OkOrErrorResponse<ConfigRestDTO> {
     let result = state.core.config_service.get_config();
-    OkOrErrorResponse::from_result(result, state, "getting config")
+    OkOrErrorResponse::from_result(
+        convert_inner::<Result<ConfigDTO, ServiceError>, ConfigRestDTO>(result),
+        state,
+        "getting config",
+    )
 }

@@ -1,86 +1,73 @@
-use std::collections::HashMap;
 use std::ops::Add;
 use std::sync::Arc;
+use std::vec;
 
 use mockall::predicate::*;
 use serde_json::json;
 use shared_types::CredentialId;
+use similar_asserts::assert_eq;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use super::CredentialService;
-use crate::config::core_config::{CoreConfig, KeyAlgorithmType};
+use crate::config::core_config::CoreConfig;
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{
-    Credential, CredentialRole, CredentialStateEnum, GetCredentialList, UpdateCredentialRequest,
+    Credential, CredentialFilterValue, CredentialRole, CredentialStateEnum, GetCredentialList,
 };
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType, LayoutType,
-    WalletStorageTypeEnum,
-};
+use crate::model::credential_schema::{CredentialSchema, KeyStorageSecurity, LayoutType};
 use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::key::Key;
 use crate::model::list_filter::ListFilterValue as _;
 use crate::model::list_query::ListPagination;
 use crate::model::validity_credential::{ValidityCredential, ValidityCredentialType};
+use crate::proto::credential_validity_manager::MockCredentialValidityManager;
+use crate::proto::notification_scheduler::MockNotificationScheduler;
+use crate::proto::session_provider::test::StaticSessionProvider;
+use crate::proto::session_provider::{NoSessionProvider, SessionProvider};
+use crate::provider::blob_storage_provider::MockBlobStorageProvider;
 use crate::provider::credential_formatter::MockCredentialFormatter;
-use crate::provider::credential_formatter::model::{
-    CredentialStatus, CredentialSubject, DetailCredential,
-};
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
-use crate::provider::did_method::provider::MockDidMethodProvider;
-use crate::provider::http_client::reqwest_client::ReqwestClient;
 use crate::provider::issuance_protocol::MockIssuanceProtocol;
 use crate::provider::issuance_protocol::dto::IssuanceProtocolCapabilities;
-use crate::provider::issuance_protocol::openid4vci_draft13::model::ShareResponse;
+use crate::provider::issuance_protocol::model::ShareResponse;
 use crate::provider::issuance_protocol::provider::MockIssuanceProtocolProvider;
-use crate::provider::key_algorithm::MockKeyAlgorithm;
-use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
-use crate::provider::key_storage::provider::MockKeyProvider;
-use crate::provider::revocation::MockRevocationMethod;
-use crate::provider::revocation::model::{
-    CredentialRevocationState, Operation, RevocationMethodCapabilities, RevocationUpdate,
-};
-use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
-use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::interaction_repository::MockInteractionRepository;
-use crate::repository::revocation_list_repository::MockRevocationListRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
 use crate::service::credential;
 use crate::service::credential::dto::{
-    CreateCredentialRequestDTO, CredentialFilterValue, CredentialRequestClaimDTO,
-    DetailCredentialClaimValueResponseDTO, GetCredentialQueryDTO, SuspendCredentialRequestDTO,
+    CreateCredentialRequestDTO, CredentialRequestClaimDTO, DetailCredentialClaimValueResponseDTO,
+    GetCredentialQueryDTO,
 };
 use crate::service::credential::validator::validate_create_request;
 use crate::service::error::{
     BusinessLogicError, EntityNotFoundError, ServiceError, ValidationError,
 };
 use crate::service::test_utilities::{
-    dummy_did, dummy_did_document, dummy_identifier, dummy_key, dummy_organisation, generic_config,
+    dummy_did, dummy_identifier, dummy_key, dummy_organisation, generic_config,
     generic_formatter_capabilities, get_dummy_date,
 };
+use crate::util::key_selection::KeySelectionError;
 
 #[derive(Default)]
 struct Repositories {
     pub credential_repository: MockCredentialRepository,
     pub credential_schema_repository: MockCredentialSchemaRepository,
     pub identifier_repository: MockIdentifierRepository,
-    pub history_repository: MockHistoryRepository,
     pub interaction_repository: MockInteractionRepository,
-    pub revocation_list_repository: MockRevocationListRepository,
-    pub revocation_method_provider: MockRevocationMethodProvider,
     pub formatter_provider: MockCredentialFormatterProvider,
     pub protocol_provider: MockIssuanceProtocolProvider,
-    pub did_method_provider: MockDidMethodProvider,
-    pub key_provider: MockKeyProvider,
-    pub key_algorithm_provider: MockKeyAlgorithmProvider,
     pub config: CoreConfig,
-    pub lvvc_repository: MockValidityCredentialRepository,
+    pub validity_credential_repository: MockValidityCredentialRepository,
+    pub blob_storage_provider: MockBlobStorageProvider,
+    pub credential_validity_manager: MockCredentialValidityManager,
+    pub notification_scheduler: MockNotificationScheduler,
+    pub session_provider: Option<Arc<dyn SessionProvider>>,
 }
 
 fn setup_service(repositories: Repositories) -> CredentialService {
@@ -88,19 +75,17 @@ fn setup_service(repositories: Repositories) -> CredentialService {
         Arc::new(repositories.credential_repository),
         Arc::new(repositories.credential_schema_repository),
         Arc::new(repositories.identifier_repository),
-        Arc::new(repositories.history_repository),
         Arc::new(repositories.interaction_repository),
-        Arc::new(repositories.revocation_list_repository),
-        Arc::new(repositories.revocation_method_provider),
         Arc::new(repositories.formatter_provider),
         Arc::new(repositories.protocol_provider),
-        Arc::new(repositories.did_method_provider),
-        Arc::new(repositories.key_provider),
-        Arc::new(repositories.key_algorithm_provider),
         Arc::new(repositories.config),
-        Arc::new(repositories.lvvc_repository),
-        None,
-        Arc::new(ReqwestClient::default()),
+        Arc::new(repositories.validity_credential_repository),
+        Arc::new(repositories.blob_storage_provider),
+        repositories
+            .session_provider
+            .unwrap_or(Arc::new(NoSessionProvider)),
+        Arc::new(repositories.credential_validity_manager),
+        Arc::new(repositories.notification_scheduler),
     )
 }
 
@@ -114,6 +99,8 @@ fn generic_credential() -> Credential {
         data_type: "NUMBER".to_string(),
         created_date: now,
         last_modified: now,
+        metadata: false,
+        required: true,
     };
     let organisation = dummy_organisation(None);
 
@@ -135,11 +122,12 @@ fn generic_credential() -> Credential {
                 last_modified: OffsetDateTime::now_utc(),
                 public_key: vec![],
                 name: "key_name".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "INTERNAL".to_string(),
                 key_type: "EDDSA".to_string(),
                 organisation: None,
             },
+            reference: "1".to_string(),
         }]),
         deactivated: false,
         log: None,
@@ -148,22 +136,22 @@ fn generic_credential() -> Credential {
     Credential {
         id: credential_id,
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Holder,
         state: CredentialStateEnum::Created,
         suspend_end_date: None,
         claims: Some(vec![Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: now,
             last_modified: now,
-            value: "123".to_string(),
+            value: Some("123".to_string()),
             path: claim_schema.key.clone(),
+            selectively_disclosable: false,
             schema: Some(claim_schema.clone()),
         }]),
         issuer_identifier: Some(Identifier {
@@ -180,32 +168,34 @@ fn generic_credential() -> Credential {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
             deleted_at: None,
-            external_schema: false,
             imported_source_url: "CORE_URL".to_string(),
             created_date: now,
             last_modified: now,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
-            claim_schemas: Some(vec![CredentialSchemaClaim {
-                schema: claim_schema,
-                required: true,
-            }]),
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
+            claim_schemas: Some(vec![claim_schema]),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     }
 }
 
@@ -215,11 +205,10 @@ fn generic_credential_list_entity() -> Credential {
     Credential {
         id: Uuid::new_v4().into(),
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Created,
@@ -251,6 +240,7 @@ fn generic_credential_list_entity() -> Credential {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
@@ -259,21 +249,25 @@ fn generic_credential_list_entity() -> Credential {
             created_date: now,
             last_modified: now,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "JWT".to_string(),
-            external_schema: false,
-            revocation_method: "NONE".to_string(),
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
             claim_schemas: None,
             organisation: None,
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     }
 }
 
@@ -281,7 +275,6 @@ fn generic_credential_list_entity() -> Credential {
 async fn test_delete_credential_success() {
     let mut credential_repository = MockCredentialRepository::default();
     let credential_schema_repository = MockCredentialSchemaRepository::default();
-    let revocation_method_provider = MockRevocationMethodProvider::default();
 
     credential_repository
         .expect_get_credential()
@@ -290,16 +283,9 @@ async fn test_delete_credential_success() {
         .expect_delete_credential()
         .returning(|_| Ok(()));
 
-    let mut history_repository = MockHistoryRepository::new();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
-        revocation_method_provider,
-        history_repository,
         config: generic_config().core,
         ..Default::default()
     });
@@ -338,8 +324,9 @@ async fn test_delete_credential_incorrect_state() {
     let mut credential_repository = MockCredentialRepository::default();
 
     let mut credential = generic_credential();
-    credential.schema.as_mut().unwrap().revocation_method = "BITSTRINGSTATUSLIST".to_string();
+    credential.schema.as_mut().unwrap().revocation_method = Some("BITSTRINGSTATUSLIST".into());
     credential.state = CredentialStateEnum::Accepted;
+    credential.role = CredentialRole::Issuer;
 
     let copy = credential.clone();
     credential_repository
@@ -386,18 +373,20 @@ async fn test_get_credential_list_success() {
         ..Default::default()
     });
 
+    let organisation_id = Uuid::new_v4().into();
     let result = service
-        .get_credential_list(GetCredentialQueryDTO {
-            pagination: Some(ListPagination {
-                page: 0,
-                page_size: 5,
-            }),
-            sorting: None,
-            filtering: Some(
-                CredentialFilterValue::OrganisationId(Uuid::new_v4().into()).condition(),
-            ),
-            include: None,
-        })
+        .get_credential_list(
+            &organisation_id,
+            GetCredentialQueryDTO {
+                pagination: Some(ListPagination {
+                    page: 0,
+                    page_size: 5,
+                }),
+                sorting: None,
+                filtering: Some(CredentialFilterValue::OrganisationId(organisation_id).condition()),
+                include: None,
+            },
+        )
         .await;
 
     assert!(result.is_ok());
@@ -560,7 +549,7 @@ async fn test_get_credential_fail_credential_schema_is_none() {
     });
 
     let result = service.get_credential(&credential.id).await;
-    assert!(result.is_err_and(|e| matches!(e, ServiceError::ResponseMapping(_))));
+    assert!(result.is_err_and(|e| matches!(e, ServiceError::MappingError(_))));
 }
 
 #[tokio::test]
@@ -571,7 +560,8 @@ async fn test_share_credential_success() {
     let mut protocol_provider = MockIssuanceProtocolProvider::default();
 
     let expected_url = "test_url";
-    let interaction_id = Uuid::new_v4();
+    let interaction_id = Uuid::new_v4().into();
+    let expires_at = OffsetDateTime::now_utc();
     protocol
         .expect_issuer_share_credential()
         .times(1)
@@ -579,7 +569,9 @@ async fn test_share_credential_success() {
             Ok(ShareResponse {
                 url: expected_url.to_owned(),
                 interaction_id,
-                context: Default::default(),
+                interaction_data: None,
+                expires_at: Some(expires_at),
+                transaction_code: None,
             })
         });
 
@@ -598,33 +590,27 @@ async fn test_share_credential_success() {
             .times(1)
             .with(eq(clone.id), always())
             .returning(move |_, _| Ok(Some(clone.clone())));
-        credential_repository
-            .expect_update_credential()
-            .times(1)
-            .returning(move |_, _| Ok(()));
     }
 
     let mut interaction_repository = MockInteractionRepository::default();
     interaction_repository
         .expect_create_interaction()
-        .withf(move |interaction| interaction.id == interaction_id)
+        .withf(move |interaction| {
+            interaction.id == interaction_id && interaction.expires_at.unwrap() == expires_at
+        })
         .once()
         .returning(|interaction| Ok(interaction.id));
 
     credential_repository
         .expect_update_credential()
         .once()
-        .withf(move |id, _| *id == credential.id)
+        .withf(move |id, update| {
+            id == &credential.id && update.state == Some(CredentialStateEnum::Pending)
+        })
         .returning(|_, _| Ok(()));
-
-    let mut history_repository = MockHistoryRepository::new();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
 
     let service = setup_service(Repositories {
         credential_repository,
-        history_repository,
         config: generic_config().core,
         protocol_provider,
         interaction_repository,
@@ -636,6 +622,7 @@ async fn test_share_credential_success() {
     assert!(result.is_ok());
     let result = result.unwrap();
     assert_eq!(result.url, expected_url);
+    assert_eq!(result.expires_at.unwrap(), expires_at);
 }
 
 #[tokio::test]
@@ -663,6 +650,34 @@ async fn test_share_credential_failed_invalid_state() {
     assert!(result.is_err_and(|e| matches!(
         e,
         ServiceError::BusinessLogic(BusinessLogicError::InvalidCredentialState { .. })
+    )));
+}
+
+#[tokio::test]
+async fn test_share_credential_failed_inactive_identifier() {
+    let mut credential_repository = MockCredentialRepository::default();
+
+    let mut credential = generic_credential();
+    credential.issuer_identifier.as_mut().unwrap().state = IdentifierState::Deactivated;
+    {
+        let clone = credential.clone();
+        credential_repository
+            .expect_get_credential()
+            .times(1)
+            .with(eq(clone.id), always())
+            .returning(move |_, _| Ok(Some(clone.clone())));
+    }
+
+    let service = setup_service(Repositories {
+        credential_repository,
+        config: generic_config().core,
+        ..Default::default()
+    });
+
+    let result = service.share_credential(&credential.id).await;
+    assert!(result.is_err_and(|e| matches!(
+        e,
+        ServiceError::BusinessLogic(BusinessLogicError::IdentifierIsDeactivated(_))
     )));
 }
 
@@ -706,7 +721,7 @@ async fn test_create_credential_based_on_issuer_did_success() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -722,24 +737,11 @@ async fn test_create_credential_based_on_issuer_did_success() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -760,7 +762,8 @@ async fn test_create_credential_based_on_issuer_did_success() {
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -768,10 +771,15 @@ async fn test_create_credential_based_on_issuer_did_success() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -813,7 +821,7 @@ async fn test_create_credential_based_on_issuer_identifier_success() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -829,24 +837,11 @@ async fn test_create_credential_based_on_issuer_identifier_success() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -858,7 +853,8 @@ async fn test_create_credential_based_on_issuer_identifier_success() {
             issuer: Some(credential.issuer_identifier.as_ref().unwrap().id),
             issuer_did: None,
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -866,14 +862,82 @@ async fn test_create_credential_based_on_issuer_identifier_success() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_create_credential_failed_unsupported_wallet_storage_type() {
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
+    let mut identifier_repository = MockIdentifierRepository::default();
+
+    let Credential {
+        schema,
+        claims,
+        issuer_identifier,
+        ..
+    } = generic_credential();
+
+    let mut schema = schema.unwrap();
+    let claims = claims.unwrap();
+    let issuer_identifier = issuer_identifier.unwrap();
+
+    schema.key_storage_security = Some(KeyStorageSecurity::EnhancedBasic);
+    {
+        let issuer_identifier = issuer_identifier.clone();
+        let credential_schema = schema.clone();
+
+        identifier_repository
+            .expect_get()
+            .return_once(|_, _| Ok(Some(issuer_identifier)));
+
+        credential_schema_repository
+            .expect_get_credential_schema()
+            .times(1)
+            .returning(move |_, _| Ok(Some(credential_schema.clone())));
+    }
+
+    let service = setup_service(Repositories {
+        credential_schema_repository,
+        identifier_repository,
+        config: generic_config().core,
+        ..Default::default()
+    });
+
+    let result = service
+        .create_credential(CreateCredentialRequestDTO {
+            credential_schema_id: schema.id,
+            issuer: Some(issuer_identifier.id),
+            issuer_did: None,
+            issuer_key: None,
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
+            claim_values: vec![CredentialRequestClaimDTO {
+                claim_schema_id: claims[0].schema.as_ref().unwrap().id.to_owned(),
+                value: claims[0].value.to_owned().unwrap(),
+                path: claims[0].path.to_owned(),
+            }],
+            redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
+        })
+        .await;
+
+    assert!(result.is_err_and(|e| matches!(
+        e,
+        ServiceError::Validation(ValidationError::KeyStorageSecurityDisabled(_))
+    )));
 }
 
 #[tokio::test]
@@ -919,7 +983,7 @@ async fn test_create_credential_failed_formatter_doesnt_support_did_identifiers(
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -959,7 +1023,8 @@ async fn test_create_credential_failed_formatter_doesnt_support_did_identifiers(
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -967,10 +1032,15 @@ async fn test_create_credential_failed_formatter_doesnt_support_did_identifiers(
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -1025,7 +1095,7 @@ async fn test_create_credential_failed_issuance_did_method_incompatible() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -1065,7 +1135,8 @@ async fn test_create_credential_failed_issuance_did_method_incompatible() {
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -1073,10 +1144,15 @@ async fn test_create_credential_failed_issuance_did_method_incompatible() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -1090,6 +1166,7 @@ async fn test_create_credential_failed_issuance_did_method_incompatible() {
 
 #[tokio::test]
 async fn test_create_credential_fails_if_did_is_deactivated() {
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
 
     let did_id = Uuid::new_v4();
@@ -1116,8 +1193,42 @@ async fn test_create_credential_fails_if_did_is_deactivated() {
             }))
         });
 
+    let credential = generic_credential();
+    let credential_schema = credential.schema.clone().unwrap();
+    credential_schema_repository
+        .expect_get_credential_schema()
+        .returning(move |_, _| Ok(Some(credential_schema.clone())));
+
+    let mut formatter = MockCredentialFormatter::default();
+    formatter
+        .expect_get_capabilities()
+        .once()
+        .return_once(generic_formatter_capabilities);
+
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+    formatter_provider
+        .expect_get_credential_formatter()
+        .once()
+        .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
+        .return_once(move |_| Some(Arc::new(formatter)));
+
+    let mut dummy_protocol = MockIssuanceProtocol::default();
+    dummy_protocol
+        .expect_get_capabilities()
+        .once()
+        .returning(generic_capabilities);
+    let mut protocol_provider = MockIssuanceProtocolProvider::default();
+    protocol_provider
+        .expect_get_protocol()
+        .once()
+        .return_once(move |_| Some(Arc::new(dummy_protocol)));
+
     let service = setup_service(Repositories {
         identifier_repository,
+        credential_schema_repository,
+        formatter_provider,
+        protocol_provider,
+        config: generic_config().core,
         ..Default::default()
     });
 
@@ -1127,14 +1238,17 @@ async fn test_create_credential_fails_if_did_is_deactivated() {
             issuer: None,
             issuer_did: Some(did_id.into()),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert2::assert!(
-        let ServiceError::BusinessLogic(BusinessLogicError::DidIsDeactivated(_)) = result.err().unwrap()
+        let ServiceError::KeySelection(KeySelectionError::DidDeactivated {..}) = result.err().unwrap()
     );
 }
 
@@ -1147,26 +1261,24 @@ async fn test_create_credential_one_required_claim_missing_success() {
     let credential = generic_credential();
     let credential_schema = CredentialSchema {
         claim_schemas: Some(vec![
-            CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    array: false,
-                    id: Uuid::new_v4().into(),
-                    key: "required".to_string(),
-                    data_type: "STRING".to_string(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                },
+            ClaimSchema {
+                array: false,
+                id: Uuid::new_v4().into(),
+                key: "required".to_string(),
+                data_type: "STRING".to_string(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                metadata: false,
                 required: true,
             },
-            CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    array: false,
-                    id: Uuid::new_v4().into(),
-                    key: "optional".to_string(),
-                    data_type: "STRING".to_string(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                },
+            ClaimSchema {
+                array: false,
+                id: Uuid::new_v4().into(),
+                key: "optional".to_string(),
+                data_type: "STRING".to_string(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                metadata: false,
                 required: false,
             },
         ]),
@@ -1211,7 +1323,7 @@ async fn test_create_credential_one_required_claim_missing_success() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .with(eq(credential_schema.format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
 
@@ -1226,31 +1338,17 @@ async fn test_create_credential_one_required_claim_missing_success() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
     });
 
     let required_claim_schema_id = credential_schema.claim_schemas.as_ref().unwrap()[0]
-        .schema
         .id
         .to_owned();
     let create_request_template = CreateCredentialRequestDTO {
@@ -1267,9 +1365,12 @@ async fn test_create_credential_one_required_claim_missing_success() {
                 .id,
         ),
         issuer_key: None,
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        issuer_certificate: None,
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         claim_values: vec![],
         redirect_uri: None,
+        profile: None,
+        webhook_destination_url: None,
     };
 
     // create a credential with required claims only succeeds
@@ -1279,7 +1380,6 @@ async fn test_create_credential_one_required_claim_missing_success() {
                 claim_schema_id: required_claim_schema_id,
                 value: "value".to_string(),
                 path: credential_schema.claim_schemas.as_ref().unwrap()[0]
-                    .schema
                     .key
                     .to_owned(),
             }],
@@ -1297,26 +1397,24 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
     let credential = generic_credential();
     let credential_schema = CredentialSchema {
         claim_schemas: Some(vec![
-            CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    array: false,
-                    id: Uuid::new_v4().into(),
-                    key: "required".to_string(),
-                    data_type: "STRING".to_string(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                },
+            ClaimSchema {
+                array: false,
+                id: Uuid::new_v4().into(),
+                key: "required".to_string(),
+                data_type: "STRING".to_string(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                metadata: false,
                 required: true,
             },
-            CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    array: false,
-                    id: Uuid::new_v4().into(),
-                    key: "optional".to_string(),
-                    data_type: "STRING".to_string(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                },
+            ClaimSchema {
+                array: false,
+                id: Uuid::new_v4().into(),
+                key: "optional".to_string(),
+                data_type: "STRING".to_string(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                metadata: false,
                 required: false,
             },
         ]),
@@ -1355,7 +1453,7 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .with(eq(credential_schema.format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
 
@@ -1380,7 +1478,6 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
     });
 
     let optional_claim_schema_id = credential_schema.claim_schemas.as_ref().unwrap()[1]
-        .schema
         .id
         .to_owned();
     let create_request_template = CreateCredentialRequestDTO {
@@ -1397,9 +1494,12 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
                 .id,
         ),
         issuer_key: None,
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        issuer_certificate: None,
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         claim_values: vec![],
         redirect_uri: None,
+        profile: None,
+        webhook_destination_url: None,
     };
 
     // create a credential with only an optional claim fails
@@ -1409,7 +1509,6 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
                 claim_schema_id: optional_claim_schema_id,
                 value: "value".to_string(),
                 path: credential_schema.claim_schemas.as_ref().unwrap()[1]
-                    .schema
                     .key
                     .to_owned(),
             }],
@@ -1428,8 +1527,6 @@ async fn test_create_credential_one_required_claim_missing_fail_required_claim_n
 async fn test_create_credential_schema_deleted() {
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
-
-    let revocation_method_provider = MockRevocationMethodProvider::default();
 
     let credential = generic_credential();
     let credential_schema = CredentialSchema {
@@ -1469,7 +1566,7 @@ async fn test_create_credential_schema_deleted() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .with(eq(credential_schema.format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
 
@@ -1488,14 +1585,12 @@ async fn test_create_credential_schema_deleted() {
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        revocation_method_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
     });
 
     let claim_schema_id = credential_schema.claim_schemas.as_ref().unwrap()[0]
-        .schema
         .id
         .to_owned();
 
@@ -1514,16 +1609,18 @@ async fn test_create_credential_schema_deleted() {
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id,
                 value: "value".to_string(),
                 path: credential_schema.claim_schemas.as_ref().unwrap()[0]
-                    .schema
                     .key
                     .to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -1535,325 +1632,10 @@ async fn test_create_credential_schema_deleted() {
 }
 
 #[tokio::test]
-async fn test_check_revocation_invalid_role() {
-    let credential_issuer_role = Credential {
-        role: CredentialRole::Issuer,
-        ..generic_credential()
-    };
-
-    let credential_verifier_role = Credential {
-        role: CredentialRole::Verifier,
-        ..generic_credential()
-    };
-
-    let issuer_credential_id = credential_issuer_role.id;
-    let verifier_credential_id = credential_verifier_role.id;
-
-    let mut credential_repository = MockCredentialRepository::default();
-
-    credential_repository
-        .expect_get_credential()
-        .with(eq(credential_issuer_role.id), always())
-        .returning(move |_, _| Ok(Some(credential_issuer_role.clone())));
-
-    credential_repository
-        .expect_get_credential()
-        .with(eq(credential_verifier_role.id), always())
-        .returning(move |_, _| Ok(Some(credential_verifier_role.clone())));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        ..Default::default()
-    });
-
-    let issuer_revocation_check_resp = service
-        .check_revocation(vec![issuer_credential_id], false)
-        .await;
-
-    let verifier_revocation_check_resp = service
-        .check_revocation(vec![verifier_credential_id], false)
-        .await;
-
-    assert!(issuer_revocation_check_resp.is_err());
-    assert!(matches!(
-        issuer_revocation_check_resp.unwrap_err(),
-        ServiceError::BusinessLogic(BusinessLogicError::RevocationCheckNotAllowedForRole { .. })
-    ));
-
-    assert!(verifier_revocation_check_resp.is_err());
-    assert!(matches!(
-        verifier_revocation_check_resp.unwrap_err(),
-        ServiceError::BusinessLogic(BusinessLogicError::RevocationCheckNotAllowedForRole { .. })
-    ));
-}
-
-#[tokio::test]
-async fn test_check_revocation_invalid_state() {
-    let mut credential_repository = MockCredentialRepository::default();
-
-    let credential = generic_credential();
-    {
-        let credential_clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .returning(move |_, _| Ok(Some(credential_clone.clone())));
-    }
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    let result = service.check_revocation(vec![credential.id], false).await;
-    assert!(result.is_ok());
-    let result = result.unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].credential_id, credential.id);
-    assert!(!result[0].success);
-    assert_eq!(
-        result[0].status,
-        credential::dto::CredentialStateEnum::Created
-    );
-}
-
-#[tokio::test]
-async fn test_check_revocation_non_revocable() {
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut revocation_method_provider = MockRevocationMethodProvider::default();
-    let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    let mut formatter = MockCredentialFormatter::default();
-
-    formatter
-        .expect_extract_credentials_unverified()
-        .returning(|_, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: None,
-                valid_until: None,
-                update_at: None,
-                invalid_before: None,
-                issuer_did: None,
-                subject: None,
-                claims: CredentialSubject {
-                    claims: Default::default(),
-                    id: None,
-                },
-                status: vec![],
-                credential_schema: None,
-            })
-        });
-
-    let formatter = Arc::new(formatter);
-    formatter_provider
-        .expect_get_formatter()
-        .returning(move |_| Some(formatter.clone()));
-
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .returning(|_| Some(Arc::new(MockRevocationMethod::default())));
-
-    let credential = Credential {
-        state: CredentialStateEnum::Accepted,
-        ..generic_credential()
-    };
-
-    {
-        let credential_clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .returning(move |_, _| Ok(Some(credential_clone.clone())));
-    }
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        revocation_method_provider,
-        formatter_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    let result = service
-        .check_revocation(vec![credential.id, Uuid::new_v4().into()], false)
-        .await;
-    assert!(result.is_ok());
-    let result = result.unwrap();
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].credential_id, credential.id);
-    assert!(result[0].success);
-    assert_eq!(
-        result[0].status,
-        credential::dto::CredentialStateEnum::Accepted
-    );
-
-    assert!(result[1].success);
-    assert_eq!(
-        result[1].status,
-        credential::dto::CredentialStateEnum::Accepted
-    );
-}
-
-#[tokio::test]
-async fn test_check_revocation_already_revoked() {
-    let mut credential_repository = MockCredentialRepository::default();
-
-    let credential = Credential {
-        state: CredentialStateEnum::Revoked,
-        suspend_end_date: None,
-        ..generic_credential()
-    };
-
-    {
-        let credential_clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .returning(move |_, _| Ok(Some(credential_clone.clone())));
-    }
-    let mut history_repository = MockHistoryRepository::new();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        history_repository,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    let result = service
-        .check_revocation(vec![credential.id, Uuid::new_v4().into()], false)
-        .await;
-    assert!(result.is_ok());
-    let result = result.unwrap();
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].credential_id, credential.id);
-    assert!(result[0].success);
-    assert_eq!(
-        result[0].status,
-        credential::dto::CredentialStateEnum::Revoked
-    );
-
-    assert!(result[1].success);
-    assert_eq!(
-        result[1].status,
-        credential::dto::CredentialStateEnum::Revoked
-    );
-}
-
-#[tokio::test]
-async fn test_check_revocation_being_revoked() {
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut revocation_method_provider: MockRevocationMethodProvider =
-        MockRevocationMethodProvider::default();
-    let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    let mut formatter = MockCredentialFormatter::default();
-
-    let mut revocation_method = MockRevocationMethod::default();
-
-    formatter
-        .expect_extract_credentials_unverified()
-        .returning(|_, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: None,
-                valid_until: None,
-                update_at: None,
-                invalid_before: None,
-                issuer_did: None,
-                subject: None,
-                claims: CredentialSubject {
-                    claims: Default::default(),
-                    id: None,
-                },
-                status: vec![CredentialStatus {
-                    id: Some("did:status:test".parse().unwrap()),
-                    r#type: "type".to_string(),
-                    status_purpose: Some("purpose".to_string()),
-                    additional_fields: HashMap::default(),
-                }],
-                credential_schema: None,
-            })
-        });
-
-    revocation_method
-        .expect_check_credential_revocation_status()
-        .returning(|_, _, _, _| Ok(CredentialRevocationState::Revoked));
-
-    let formatter = Arc::new(formatter);
-    formatter_provider
-        .expect_get_formatter()
-        .returning(move |_| Some(formatter.clone()));
-
-    let revocation_method = Arc::new(revocation_method);
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .returning(move |_| Some(revocation_method.clone()));
-
-    let credential = Credential {
-        state: CredentialStateEnum::Accepted,
-        suspend_end_date: None,
-        ..generic_credential()
-    };
-
-    {
-        let credential_clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .returning(move |_, _| Ok(Some(credential_clone.clone())));
-    }
-
-    credential_repository
-        .expect_update_credential()
-        .withf(|_, request| {
-            matches!(
-                request,
-                UpdateCredentialRequest {
-                    state: Some(CredentialStateEnum::Revoked),
-                    ..
-                }
-            )
-        })
-        .returning(|_, _| Ok(()));
-
-    let mut history_repository = MockHistoryRepository::new();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        revocation_method_provider,
-        history_repository,
-        formatter_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    let result = service.check_revocation(vec![credential.id], false).await;
-    assert!(result.is_ok());
-    let result = result.unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].credential_id, credential.id);
-    assert!(result[0].success);
-    assert_eq!(
-        result[0].status,
-        credential::dto::CredentialStateEnum::Revoked
-    );
-}
-
-#[tokio::test]
 async fn test_create_credential_key_with_issuer_key() {
     let mut credential_repository = MockCredentialRepository::default();
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
-
-    let mut history_repository = MockHistoryRepository::default();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
 
     let credential = generic_credential();
     let issuer_did = credential
@@ -1897,7 +1679,7 @@ async fn test_create_credential_key_with_issuer_key() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -1913,25 +1695,11 @@ async fn test_create_credential_key_with_issuer_key() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
-        history_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -1952,7 +1720,8 @@ async fn test_create_credential_key_with_issuer_key() {
                     .id,
             ),
             issuer_key: Some(issuer_did.keys.unwrap()[0].key.id),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -1960,10 +1729,15 @@ async fn test_create_credential_key_with_issuer_key() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -1975,11 +1749,6 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
     let mut credential_repository = MockCredentialRepository::default();
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
-
-    let mut history_repository = MockHistoryRepository::default();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
 
     let credential = generic_credential();
     let key_id = Uuid::new_v4();
@@ -1993,11 +1762,12 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
                     last_modified: OffsetDateTime::now_utc(),
                     public_key: vec![],
                     name: "key_name".to_string(),
-                    key_reference: vec![],
+                    key_reference: None,
                     storage_type: "INTERNAL".to_string(),
                     key_type: "EDDSA".to_string(),
                     organisation: None,
                 },
+                reference: "1".to_string(),
             },
             RelatedKey {
                 role: KeyRole::AssertionMethod,
@@ -2007,11 +1777,12 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
                     last_modified: OffsetDateTime::now_utc(),
                     public_key: vec![],
                     name: "key_name".to_string(),
-                    key_reference: vec![],
+                    key_reference: None,
                     storage_type: "INTERNAL".to_string(),
                     key_type: "EDDSA".to_string(),
                     organisation: None,
                 },
+                reference: "1".to_string(),
             },
         ]),
         ..credential.issuer_identifier.clone().unwrap().did.unwrap()
@@ -2048,7 +1819,7 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2064,25 +1835,11 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .returning(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
-        history_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -2103,7 +1860,8 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
                     .id,
             ),
             issuer_key: Some(key_id.into()),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2111,10 +1869,15 @@ async fn test_create_credential_key_with_issuer_key_and_repeating_key() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -2136,11 +1899,12 @@ async fn test_fail_to_create_credential_no_assertion_key() {
                 last_modified: OffsetDateTime::now_utc(),
                 public_key: vec![],
                 name: "key_name".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "INTERNAL".to_string(),
                 key_type: "EDDSA".to_string(),
                 organisation: None,
             },
+            reference: "1".to_string(),
         }]),
         ..credential.issuer_identifier.clone().unwrap().did.unwrap()
     };
@@ -2169,7 +1933,7 @@ async fn test_fail_to_create_credential_no_assertion_key() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2185,23 +1949,10 @@ async fn test_fail_to_create_credential_no_assertion_key() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -2222,7 +1973,8 @@ async fn test_fail_to_create_credential_no_assertion_key() {
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2230,16 +1982,23 @@ async fn test_fail_to_create_credential_no_assertion_key() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(ValidationError::InvalidKey(_)))
+        Err(ServiceError::KeySelection(
+            KeySelectionError::NoKeyMatchingFilter { .. }
+        ))
     ));
 }
 
@@ -2281,7 +2040,7 @@ async fn test_fail_to_create_credential_unknown_key_id() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2297,23 +2056,10 @@ async fn test_fail_to_create_credential_unknown_key_id() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -2334,7 +2080,8 @@ async fn test_fail_to_create_credential_unknown_key_id() {
                     .id,
             ),
             issuer_key: Some(Uuid::new_v4().into()),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2342,16 +2089,23 @@ async fn test_fail_to_create_credential_unknown_key_id() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(ValidationError::InvalidKey(_)))
+        Err(ServiceError::KeySelection(
+            KeySelectionError::KeyDidMismatch { .. }
+        ))
     ));
 }
 
@@ -2371,11 +2125,12 @@ async fn test_fail_to_create_credential_key_id_points_to_wrong_key_role() {
                 last_modified: OffsetDateTime::now_utc(),
                 public_key: vec![],
                 name: "key_name".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "INTERNAL".to_string(),
                 key_type: "EDDSA".to_string(),
                 organisation: None,
             },
+            reference: "1".to_string(),
         }]),
         ..credential.issuer_identifier.clone().unwrap().did.unwrap()
     };
@@ -2403,7 +2158,7 @@ async fn test_fail_to_create_credential_key_id_points_to_wrong_key_role() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2419,23 +2174,10 @@ async fn test_fail_to_create_credential_key_id_points_to_wrong_key_role() {
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -2456,7 +2198,8 @@ async fn test_fail_to_create_credential_key_id_points_to_wrong_key_role() {
                     .id,
             ),
             issuer_key: Some(key_id.into()),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2464,16 +2207,23 @@ async fn test_fail_to_create_credential_key_id_points_to_wrong_key_role() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(ValidationError::InvalidKey(_)))
+        Err(ServiceError::KeySelection(
+            KeySelectionError::KeyNotMatchingFilter { .. }
+        ))
     ));
 }
 
@@ -2493,11 +2243,12 @@ async fn test_fail_to_create_credential_key_id_points_to_unsupported_key_algorit
                 last_modified: OffsetDateTime::now_utc(),
                 public_key: vec![],
                 name: "key_name".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "INTERNAL".to_string(),
                 key_type: "unsupported".to_string(),
                 organisation: None,
             },
+            reference: "1".to_string(),
         }]),
         ..credential.issuer_identifier.clone().unwrap().did.unwrap()
     };
@@ -2525,7 +2276,7 @@ async fn test_fail_to_create_credential_key_id_points_to_unsupported_key_algorit
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2541,23 +2292,10 @@ async fn test_fail_to_create_credential_key_id_points_to_unsupported_key_algorit
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Ecdsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -2578,7 +2316,8 @@ async fn test_fail_to_create_credential_key_id_points_to_unsupported_key_algorit
                     .id,
             ),
             issuer_key: Some(key_id.into()),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2586,16 +2325,23 @@ async fn test_fail_to_create_credential_key_id_points_to_unsupported_key_algorit
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(ValidationError::InvalidKey(_)))
+        Err(ServiceError::KeySelection(
+            KeySelectionError::KeyNotMatchingFilter { .. }
+        ))
     ));
 }
 
@@ -2634,7 +2380,7 @@ async fn test_create_credential_fail_incompatible_format_and_tranposrt_protocol(
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2674,7 +2420,8 @@ async fn test_create_credential_fail_incompatible_format_and_tranposrt_protocol(
                     .id,
             ),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2682,10 +2429,15 @@ async fn test_create_credential_fail_incompatible_format_and_tranposrt_protocol(
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -2701,11 +2453,6 @@ async fn test_create_credential_fail_incompatible_format_and_tranposrt_protocol(
 async fn test_create_credential_fail_invalid_redirect_uri() {
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
-
-    let mut history_repository = MockHistoryRepository::default();
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
 
     let credential = generic_credential();
     let issuer_did = credential.issuer_identifier.clone().unwrap().did.unwrap();
@@ -2734,7 +2481,7 @@ async fn test_create_credential_fail_invalid_redirect_uri() {
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
         .return_once(move |_| Some(Arc::new(formatter)));
@@ -2753,7 +2500,6 @@ async fn test_create_credential_fail_invalid_redirect_uri() {
     let service = setup_service(Repositories {
         credential_schema_repository,
         identifier_repository,
-        history_repository,
         formatter_provider,
         protocol_provider,
         config: generic_config().core,
@@ -2775,7 +2521,8 @@ async fn test_create_credential_fail_invalid_redirect_uri() {
                     .id,
             ),
             issuer_key: Some(issuer_did.keys.unwrap()[0].key.id),
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: vec![CredentialRequestClaimDTO {
                 claim_schema_id: credential.claims.as_ref().unwrap()[0]
                     .schema
@@ -2783,10 +2530,15 @@ async fn test_create_credential_fail_invalid_redirect_uri() {
                     .unwrap()
                     .id
                     .to_owned(),
-                value: credential.claims.as_ref().unwrap()[0].value.to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
                 path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
             }],
             redirect_uri: Some("invalid://domain.com".to_string()),
+            profile: None,
+            webhook_destination_url: None,
         })
         .await;
 
@@ -2799,408 +2551,92 @@ async fn test_create_credential_fail_invalid_redirect_uri() {
 }
 
 #[tokio::test]
-async fn test_revoke_credential_success_with_accepted_credential() {
-    let mut credential = generic_credential();
-    credential.state = CredentialStateEnum::Accepted;
+async fn test_create_credential_fail_webhook_not_allowed() {
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
+    let mut identifier_repository = MockIdentifierRepository::default();
 
-    let mut history_repository = MockHistoryRepository::default();
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut did_method_provider = MockDidMethodProvider::default();
-    did_method_provider
-        .expect_resolve()
-        .once()
-        .returning(|did| Ok(dummy_did_document(did)));
+    let credential = generic_credential();
     {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
+        let issuer_identifier = credential.issuer_identifier.clone().unwrap();
+        let credential_schema = credential.schema.clone().unwrap();
+
+        identifier_repository
+            .expect_get()
+            .return_once(|_, _| Ok(Some(issuer_identifier)));
+
+        credential_schema_repository
+            .expect_get_credential_schema()
             .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
+            .returning(move |_, _| Ok(Some(credential_schema.clone())));
     }
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
+    let mut formatter = MockCredentialFormatter::default();
+    formatter
         .expect_get_capabilities()
         .once()
-        .return_once(move || RevocationMethodCapabilities {
-            operations: vec![Operation::Revoke],
-        });
-    revocation_method
-        .expect_mark_credential_as()
+        .return_once(generic_formatter_capabilities);
+
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+    formatter_provider
+        .expect_get_credential_formatter()
         .once()
-        .with(always(), eq(CredentialRevocationState::Revoked), always())
-        .return_once(move |_, _, _| {
-            Ok(RevocationUpdate {
-                status_type: "NONE".to_string(),
-                data: vec![],
-            })
-        });
-    revocation_method
-        .expect_get_status_type()
-        .return_once(|| "NONE".to_string());
+        .with(eq(credential.schema.as_ref().unwrap().format.to_owned()))
+        .return_once(move |_| Some(Arc::new(formatter)));
 
-    credential_repository
-        .expect_update_credential()
-        .once()
-        .returning(move |_, request| {
-            assert_eq!(CredentialStateEnum::Revoked, request.state.unwrap());
-            Ok(())
-        });
-
-    history_repository
-        .expect_create_history()
-        .return_once(move |_| Ok(Uuid::new_v4().into()));
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::default();
-    let revocation_method = Arc::new(revocation_method);
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .times(1)
-        .returning(move |_| Some(revocation_method.clone()));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        history_repository,
-        revocation_method_provider,
-        did_method_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    service.revoke_credential(&credential.id).await.unwrap();
-}
-
-#[tokio::test]
-async fn test_revoke_credential_success_with_suspended_credential() {
-    let mut credential = generic_credential();
-
-    credential.state = CredentialStateEnum::Suspended;
-
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut did_method_provider = MockDidMethodProvider::default();
-    let mut history_repository = MockHistoryRepository::default();
-    did_method_provider
-        .expect_resolve()
-        .once()
-        .returning(|did| Ok(dummy_did_document(did)));
-
-    {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
-    }
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
+    let mut dummy_protocol = MockIssuanceProtocol::default();
+    dummy_protocol
         .expect_get_capabilities()
         .once()
-        .return_once(move || RevocationMethodCapabilities {
-            operations: vec![Operation::Revoke],
-        });
-    revocation_method
-        .expect_mark_credential_as()
+        .returning(generic_capabilities);
+    let mut protocol_provider = MockIssuanceProtocolProvider::default();
+    protocol_provider
+        .expect_get_protocol()
         .once()
-        .with(always(), eq(CredentialRevocationState::Revoked), always())
-        .return_once(move |_, _, _| {
-            Ok(RevocationUpdate {
-                status_type: "NONE".to_string(),
-                data: vec![],
-            })
-        });
-    revocation_method
-        .expect_get_status_type()
-        .return_once(|| "NONE".to_string());
-
-    credential_repository
-        .expect_update_credential()
-        .once()
-        .returning(move |_, request| {
-            assert_eq!(CredentialStateEnum::Revoked, request.state.unwrap());
-            Ok(())
-        });
-
-    history_repository
-        .expect_create_history()
-        .return_once(move |_| Ok(Uuid::new_v4().into()));
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::default();
-    let revocation_method = Arc::new(revocation_method);
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .times(1)
-        .returning(move |_| Some(revocation_method.clone()));
+        .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
     let service = setup_service(Repositories {
-        credential_repository,
-        history_repository,
-        revocation_method_provider,
-        did_method_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    service.revoke_credential(&credential.id).await.unwrap();
-}
-
-#[tokio::test]
-async fn test_suspend_credential_success() {
-    let now = OffsetDateTime::now_utc();
-
-    let mut credential = generic_credential();
-
-    credential.state = CredentialStateEnum::Accepted;
-
-    let suspend_end_date = now.add(Duration::days(1));
-
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut did_method_provider = MockDidMethodProvider::default();
-    let mut history_repository = MockHistoryRepository::default();
-
-    did_method_provider
-        .expect_resolve()
-        .once()
-        .returning(|did| Ok(dummy_did_document(did)));
-
-    {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
-    }
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .once()
-        .return_once(move || RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-    revocation_method
-        .expect_mark_credential_as()
-        .once()
-        .with(
-            always(),
-            eq(CredentialRevocationState::Suspended {
-                suspend_end_date: Some(suspend_end_date),
-            }),
-            always(),
-        )
-        .return_once(move |_, _, _| {
-            Ok(RevocationUpdate {
-                status_type: "NONE".to_string(),
-                data: vec![],
-            })
-        });
-    revocation_method
-        .expect_get_status_type()
-        .return_once(|| "NONE".to_string());
-
-    credential_repository
-        .expect_update_credential()
-        .once()
-        .returning(move |_, request| {
-            assert_eq!(CredentialStateEnum::Suspended, request.state.unwrap());
-            Ok(())
-        });
-
-    history_repository
-        .expect_create_history()
-        .return_once(move |_| Ok(Uuid::new_v4().into()));
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::default();
-    let revocation_method = Arc::new(revocation_method);
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .times(1)
-        .returning(move |_| Some(revocation_method.clone()));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        history_repository,
-        revocation_method_provider,
-        did_method_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    service
-        .suspend_credential(
-            &credential.id,
-            SuspendCredentialRequestDTO {
-                suspend_end_date: Some(suspend_end_date),
-            },
-        )
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn test_suspend_credential_failed_cannot_suspend_revoked_credential() {
-    let mut credential = generic_credential();
-
-    credential.state = CredentialStateEnum::Revoked;
-
-    let mut credential_repository = MockCredentialRepository::default();
-    {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
-    }
-
-    let mut did_method_provider = MockDidMethodProvider::default();
-    did_method_provider
-        .expect_resolve()
-        .once()
-        .returning(|did| Ok(dummy_did_document(did)));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        did_method_provider,
+        credential_schema_repository,
+        identifier_repository,
+        formatter_provider,
+        protocol_provider,
         config: generic_config().core,
         ..Default::default()
     });
 
     let result = service
-        .suspend_credential(
-            &credential.id,
-            SuspendCredentialRequestDTO {
-                suspend_end_date: None,
-            },
-        )
-        .await
-        .unwrap_err();
+        .create_credential(CreateCredentialRequestDTO {
+            credential_schema_id: credential.schema.as_ref().unwrap().id.to_owned(),
+            issuer: Some(credential.issuer_identifier.as_ref().unwrap().id),
+            issuer_did: None,
+            issuer_key: None,
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
+            claim_values: vec![CredentialRequestClaimDTO {
+                claim_schema_id: credential.claims.as_ref().unwrap()[0]
+                    .schema
+                    .as_ref()
+                    .unwrap()
+                    .id
+                    .to_owned(),
+                value: credential.claims.as_ref().unwrap()[0]
+                    .value
+                    .to_owned()
+                    .unwrap(),
+                path: credential.claims.as_ref().unwrap()[0].path.to_owned(),
+            }],
+            redirect_uri: None,
+            profile: None,
+            webhook_destination_url: Some("http://webhook.url".to_string()),
+        })
+        .await;
 
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(BusinessLogicError::InvalidCredentialState { .. })
-    ));
-}
-
-#[tokio::test]
-async fn test_reactivate_credential_success() {
-    let mut credential = generic_credential();
-
-    credential.state = CredentialStateEnum::Suspended;
-
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut did_method_provider = MockDidMethodProvider::default();
-    let mut history_repository = MockHistoryRepository::default();
-
-    did_method_provider
-        .expect_resolve()
-        .returning(|did| Ok(dummy_did_document(did)));
-    {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
-    }
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .once()
-        .return_once(move || RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-    revocation_method
-        .expect_mark_credential_as()
-        .once()
-        .with(always(), eq(CredentialRevocationState::Valid), always())
-        .return_once(move |_, _, _| {
-            Ok(RevocationUpdate {
-                status_type: "NONE".to_string(),
-                data: vec![],
-            })
-        });
-    revocation_method
-        .expect_get_status_type()
-        .return_once(|| "NONE".to_string());
-
-    credential_repository
-        .expect_update_credential()
-        .once()
-        .returning(move |_, request| {
-            assert_eq!(CredentialStateEnum::Accepted, request.state.unwrap());
-            Ok(())
-        });
-
-    history_repository
-        .expect_create_history()
-        .return_once(move |_| Ok(Uuid::new_v4().into()));
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::default();
-    let revocation_method = Arc::new(revocation_method);
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .times(1)
-        .returning(move |_| Some(revocation_method.clone()));
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        history_repository,
-        did_method_provider,
-        revocation_method_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    service.reactivate_credential(&credential.id).await.unwrap();
-}
-
-#[tokio::test]
-async fn test_reactivate_credential_failed_cannot_reactivate_revoked_credential() {
-    let mut credential = generic_credential();
-
-    credential.state = CredentialStateEnum::Revoked;
-
-    let mut credential_repository = MockCredentialRepository::default();
-    let mut did_method_provider = MockDidMethodProvider::default();
-    {
-        let clone = credential.clone();
-        credential_repository
-            .expect_get_credential()
-            .times(1)
-            .with(eq(clone.id), always())
-            .returning(move |_, _| Ok(Some(clone.clone())));
-
-        did_method_provider
-            .expect_resolve()
-            .once()
-            .returning(|did| Ok(dummy_did_document(did)));
-    }
-
-    let service = setup_service(Repositories {
-        credential_repository,
-        did_method_provider,
-        config: generic_config().core,
-        ..Default::default()
-    });
-
-    let result = service
-        .reactivate_credential(&credential.id)
-        .await
-        .unwrap_err();
-
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(BusinessLogicError::InvalidCredentialState { .. })
-    ));
+    assert2::assert!(
+        let ServiceError::Validation(ValidationError::NotificationsNotAllowed {..}) = result.err().unwrap()
+    );
 }
 
 fn generate_credential_schema_with_claim_schemas(
-    claim_schemas: Vec<CredentialSchemaClaim>,
+    claim_schemas: Vec<ClaimSchema>,
 ) -> CredentialSchema {
     let now = OffsetDateTime::now_utc();
     CredentialSchema {
@@ -3208,19 +2644,19 @@ fn generate_credential_schema_with_claim_schemas(
         deleted_at: None,
         imported_source_url: "CORE_URL".to_string(),
         created_date: now,
-        external_schema: false,
         last_modified: now,
         name: "nested".to_string(),
-        format: "".to_string(),
-        revocation_method: "".to_string(),
-        wallet_storage_type: None,
+        format: "".into(),
+        revocation_method: None,
+        key_storage_security: None,
         layout_type: LayoutType::Card,
         layout_properties: None,
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         schema_id: "".to_string(),
         claim_schemas: Some(claim_schemas),
         organisation: None,
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     }
 }
 
@@ -3233,56 +2669,50 @@ fn test_validate_create_request_all_nested_claims_are_required() {
 
     let now = OffsetDateTime::now_utc();
     let schema = generate_credential_schema_with_claim_schemas(vec![
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: address_claim_id,
-                key: "address".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: address_claim_id,
+            key: "address".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_claim_id,
-                key: "location".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_claim_id,
+            key: "location".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_x_claim_id,
-                key: "location/x".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_x_claim_id,
+            key: "location/x".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_y_claim_id,
-                key: "location/y".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_y_claim_id,
+            key: "location/y".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
     ]);
 
     validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[
             CredentialRequestClaimDTO {
                 claim_schema_id: address_claim_id,
@@ -3309,6 +2739,7 @@ fn test_validate_create_request_all_nested_claims_are_required() {
 
 fn generic_capabilities() -> IssuanceProtocolCapabilities {
     IssuanceProtocolCapabilities {
+        features: vec![crate::provider::issuance_protocol::dto::Features::SupportsRejection],
         did_methods: vec![crate::config::core_config::DidType::Key],
     }
 }
@@ -3322,56 +2753,50 @@ fn test_validate_create_request_all_optional_nested_object_with_required_claims(
 
     let now = OffsetDateTime::now_utc();
     let schema = generate_credential_schema_with_claim_schemas(vec![
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: address_claim_id,
-                key: "address".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: address_claim_id,
+            key: "address".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_claim_id,
-                key: "location".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_claim_id,
+            key: "location".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: false,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_x_claim_id,
-                key: "location/x".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_x_claim_id,
+            key: "location/x".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_y_claim_id,
-                key: "location/y".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_y_claim_id,
+            key: "location/y".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
     ]);
 
     validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[
             CredentialRequestClaimDTO {
                 claim_schema_id: address_claim_id,
@@ -3396,9 +2821,7 @@ fn test_validate_create_request_all_optional_nested_object_with_required_claims(
     .unwrap();
 
     validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[CredentialRequestClaimDTO {
             claim_schema_id: address_claim_id,
             value: "Somewhere".to_string(),
@@ -3411,9 +2834,7 @@ fn test_validate_create_request_all_optional_nested_object_with_required_claims(
     .unwrap();
 
     let result = validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[
             CredentialRequestClaimDTO {
                 claim_schema_id: address_claim_id,
@@ -3434,56 +2855,6 @@ fn test_validate_create_request_all_optional_nested_object_with_required_claims(
         result,
         Err(ServiceError::Validation(
             ValidationError::CredentialMissingClaim { .. }
-        ))
-    ));
-}
-
-#[test]
-fn test_validate_create_request_did_methods() {
-    let address_claim_id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
-    let schema = generate_credential_schema_with_claim_schemas(vec![CredentialSchemaClaim {
-        schema: ClaimSchema {
-            array: false,
-            id: address_claim_id,
-            key: "address".to_string(),
-            data_type: "STRING".to_string(),
-            created_date: now,
-            last_modified: now,
-        },
-        required: true,
-    }]);
-
-    let claims = vec![CredentialRequestClaimDTO {
-        claim_schema_id: address_claim_id,
-        value: "Somewhere".to_string(),
-        path: "address".to_string(),
-    }];
-
-    validate_create_request(
-        "KEY",
-        "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
-        &claims,
-        &schema,
-        &generic_formatter_capabilities(),
-        &generic_config().core,
-    )
-    .unwrap();
-
-    let result = validate_create_request(
-        "INVALID",
-        "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
-        &claims,
-        &schema,
-        &generic_formatter_capabilities(),
-        &generic_config().core,
-    );
-    assert!(matches!(
-        result,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::InvalidDidMethod { .. }
         ))
     ));
 }
@@ -3497,56 +2868,50 @@ fn test_validate_create_request_all_required_nested_object_with_optional_claims(
 
     let now = OffsetDateTime::now_utc();
     let schema = generate_credential_schema_with_claim_schemas(vec![
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: address_claim_id,
-                key: "address".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: address_claim_id,
+            key: "address".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_claim_id,
-                key: "location".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_claim_id,
+            key: "location".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_x_claim_id,
-                key: "location/x".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_x_claim_id,
+            key: "location/x".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                array: false,
-                id: location_y_claim_id,
-                key: "location/y".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-            },
+        ClaimSchema {
+            array: false,
+            id: location_y_claim_id,
+            key: "location/y".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            metadata: false,
             required: false,
         },
     ]);
 
     validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[
             CredentialRequestClaimDTO {
                 claim_schema_id: address_claim_id,
@@ -3571,9 +2936,7 @@ fn test_validate_create_request_all_required_nested_object_with_optional_claims(
     .unwrap();
 
     let result = validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[CredentialRequestClaimDTO {
             claim_schema_id: address_claim_id,
             value: "Somewhere".to_string(),
@@ -3591,9 +2954,7 @@ fn test_validate_create_request_all_required_nested_object_with_optional_claims(
     ));
 
     validate_create_request(
-        "KEY",
         "OPENID4VCI_DRAFT13",
-        &generic_capabilities(),
         &[
             CredentialRequestClaimDTO {
                 claim_schema_id: address_claim_id,
@@ -3626,6 +2987,8 @@ async fn test_get_credential_success_with_non_required_nested_object() {
         data_type: "OBJECT".to_string(),
         created_date: now,
         last_modified: now,
+        metadata: false,
+        required: false,
     };
     let location_x_claim_schema = ClaimSchema {
         array: false,
@@ -3634,6 +2997,8 @@ async fn test_get_credential_success_with_non_required_nested_object() {
         data_type: "STRING".to_string(),
         created_date: now,
         last_modified: now,
+        metadata: false,
+        required: false,
     };
 
     let mut credential = generic_credential();
@@ -3644,24 +3009,16 @@ async fn test_get_credential_success_with_non_required_nested_object() {
         .unwrap()
         .claim_schemas
         .as_mut()
-        .unwrap() = vec![
-        CredentialSchemaClaim {
-            schema: location_claim_schema,
-            required: false,
-        },
-        CredentialSchemaClaim {
-            schema: location_x_claim_schema.to_owned(),
-            required: false,
-        },
-    ];
+        .unwrap() = vec![location_claim_schema, location_x_claim_schema.to_owned()];
 
     *credential.claims.as_mut().unwrap() = vec![Claim {
-        id: Uuid::new_v4(),
+        id: Uuid::new_v4().into(),
         credential_id: credential.id,
         created_date: now,
         last_modified: now,
-        value: "123".to_string(),
+        value: Some("123".to_string()),
         path: location_x_claim_schema.key.clone(),
+        selectively_disclosable: false,
         schema: Some(location_x_claim_schema.clone()),
     }];
 
@@ -3700,6 +3057,8 @@ fn generate_claim_schema(key: &str, datatype: &str, array: bool) -> ClaimSchema 
         data_type: datatype.to_string(),
         created_date: now,
         last_modified: now,
+        metadata: false,
+        required: true,
     }
 }
 
@@ -3712,12 +3071,13 @@ fn generate_claim(
     let now = get_dummy_date();
 
     Claim {
-        id: Uuid::new_v4(),
+        id: Uuid::new_v4().into(),
         credential_id,
         created_date: now,
         last_modified: now,
-        value: value.to_string(),
+        value: Some(value.to_string()),
         path: path.to_string(),
+        selectively_disclosable: false,
         schema: Some(claim_schema.to_owned()),
     }
 }
@@ -3781,11 +3141,10 @@ async fn test_get_credential_success_array_complex_nested_all() {
     let credential = Credential {
         id,
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Created,
@@ -3818,11 +3177,12 @@ async fn test_get_credential_success_array_complex_nested_all() {
                         last_modified: OffsetDateTime::now_utc(),
                         public_key: vec![],
                         name: "key_name".to_string(),
-                        key_reference: vec![],
+                        key_reference: None,
                         storage_type: "INTERNAL".to_string(),
                         key_type: "EDDSA".to_string(),
                         organisation: None,
                     },
+                    reference: "1".to_string(),
                 }]),
                 deactivated: false,
                 log: None,
@@ -3830,6 +3190,7 @@ async fn test_get_credential_success_array_complex_nested_all() {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
@@ -3838,29 +3199,25 @@ async fn test_get_credential_success_array_complex_nested_all() {
             imported_source_url: "CORE_URL".to_string(),
             last_modified: now,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
-            claim_schemas: Some(
-                claim_schemas
-                    .into_iter()
-                    .map(|schema| CredentialSchemaClaim {
-                        required: true,
-                        schema,
-                    })
-                    .collect(),
-            ),
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
+            claim_schemas: Some(claim_schemas),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     };
 
     {
@@ -4346,11 +3703,10 @@ async fn test_get_credential_success_array_index_sorting() {
     let credential = Credential {
         id,
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Created,
@@ -4383,11 +3739,12 @@ async fn test_get_credential_success_array_index_sorting() {
                         last_modified: OffsetDateTime::now_utc(),
                         public_key: vec![],
                         name: "key_name".to_string(),
-                        key_reference: vec![],
+                        key_reference: None,
                         storage_type: "INTERNAL".to_string(),
                         key_type: "EDDSA".to_string(),
                         organisation: None,
                     },
+                    reference: "1".to_string(),
                 }]),
                 deactivated: false,
                 log: None,
@@ -4395,6 +3752,7 @@ async fn test_get_credential_success_array_index_sorting() {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
@@ -4402,30 +3760,26 @@ async fn test_get_credential_success_array_index_sorting() {
             deleted_at: None,
             created_date: now,
             last_modified: now,
-            external_schema: false,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
-            claim_schemas: Some(
-                claim_schemas
-                    .into_iter()
-                    .map(|schema| CredentialSchemaClaim {
-                        required: true,
-                        schema,
-                    })
-                    .collect(),
-            ),
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
+            claim_schemas: Some(claim_schemas),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     };
 
     {
@@ -4660,11 +4014,10 @@ async fn test_get_credential_success_array_complex_nested_first_case() {
     let credential = Credential {
         id,
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Created,
@@ -4697,11 +4050,12 @@ async fn test_get_credential_success_array_complex_nested_first_case() {
                         last_modified: OffsetDateTime::now_utc(),
                         public_key: vec![],
                         name: "key_name".to_string(),
-                        key_reference: vec![],
+                        key_reference: None,
                         storage_type: "INTERNAL".to_string(),
                         key_type: "EDDSA".to_string(),
                         organisation: None,
                     },
+                    reference: "1".to_string(),
                 }]),
                 deactivated: false,
                 log: None,
@@ -4709,6 +4063,7 @@ async fn test_get_credential_success_array_complex_nested_first_case() {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
@@ -4717,29 +4072,25 @@ async fn test_get_credential_success_array_complex_nested_first_case() {
             created_date: now,
             last_modified: now,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
-            format: "MDOC".to_string(),
-            revocation_method: "NONE".to_string(),
-            claim_schemas: Some(
-                claim_schemas
-                    .into_iter()
-                    .map(|schema| CredentialSchemaClaim {
-                        required: true,
-                        schema,
-                    })
-                    .collect(),
-            ),
+            key_storage_security: None,
+            format: "MDOC".into(),
+            revocation_method: None,
+            claim_schemas: Some(claim_schemas),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     };
 
     {
@@ -4768,7 +4119,7 @@ async fn test_get_credential_success_array_complex_nested_first_case() {
     let service = setup_service(Repositories {
         credential_repository,
         config: generic_config().core,
-        lvvc_repository: validity_credential_repository,
+        validity_credential_repository,
         ..Default::default()
     });
 
@@ -4877,11 +4228,10 @@ async fn test_get_credential_success_array_single_element() {
     let credential = Credential {
         id,
         created_date: now,
-        issuance_date: now,
+        issuance_date: None,
         last_modified: now,
         deleted_at: None,
-        credential: vec![],
-        exchange: "OPENID4VCI_DRAFT13".to_string(),
+        protocol: "OPENID4VCI_DRAFT13".to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Created,
@@ -4914,11 +4264,12 @@ async fn test_get_credential_success_array_single_element() {
                         last_modified: OffsetDateTime::now_utc(),
                         public_key: vec![],
                         name: "key_name".to_string(),
-                        key_reference: vec![],
+                        key_reference: None,
                         storage_type: "INTERNAL".to_string(),
                         key_type: "EDDSA".to_string(),
                         organisation: None,
                     },
+                    reference: "1".to_string(),
                 }]),
                 deactivated: false,
                 log: None,
@@ -4926,6 +4277,7 @@ async fn test_get_credential_success_array_single_element() {
             key: None,
             certificates: None,
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
@@ -4934,29 +4286,25 @@ async fn test_get_credential_success_array_single_element() {
             last_modified: now,
             imported_source_url: "CORE_URL".to_string(),
             name: "schema".to_string(),
-            external_schema: false,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
-            claim_schemas: Some(
-                claim_schemas
-                    .into_iter()
-                    .map(|schema| CredentialSchemaClaim {
-                        required: true,
-                        schema,
-                    })
-                    .collect(),
-            ),
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
+            claim_schemas: Some(claim_schemas),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: None,
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     };
 
     {
@@ -5047,7 +4395,6 @@ async fn test_create_credential_array(
     let mut credential_repository = MockCredentialRepository::default();
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut identifier_repository = MockIdentifierRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
 
     let organisation = dummy_organisation(None);
 
@@ -5058,25 +4405,17 @@ async fn test_create_credential_array(
         last_modified: OffsetDateTime::now_utc(),
         imported_source_url: "CORE_URL".to_string(),
         name: "str array".to_string(),
-        format: "JWT".to_string(),
-        revocation_method: "NONE".to_string(),
-        external_schema: false,
-        wallet_storage_type: None,
+        format: "JWT".into(),
+        revocation_method: None,
+        key_storage_security: None,
         layout_type: LayoutType::Card,
         layout_properties: None,
         schema_id: "".to_string(),
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
-        claim_schemas: Some(
-            claim_schemas
-                .iter()
-                .map(|schema| CredentialSchemaClaim {
-                    schema: schema.to_owned(),
-                    required: true,
-                })
-                .collect(),
-        ),
+        claim_schemas: Some(claim_schemas),
         organisation: Some(organisation.to_owned()),
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     };
 
     let mut formatter = MockCredentialFormatter::default();
@@ -5093,29 +4432,29 @@ async fn test_create_credential_array(
             .expect_get_credential_schema()
             .return_once(move |_, _| Ok(Some(credential_schema)));
         formatter_provider
-            .expect_get_formatter()
+            .expect_get_credential_formatter()
             .once()
             .return_once(move |_| Some(Arc::new(formatter)));
         credential_repository
             .expect_create_credential()
             .return_once(move |_| Ok(Uuid::new_v4().into()));
-        history_repository
-            .expect_create_history()
-            .return_once(move |_| Ok(Uuid::new_v4().into()));
     }
 
+    let did = Did {
+        did_method: "KEY".to_string(),
+        keys: Some(vec![RelatedKey {
+            role: KeyRole::AssertionMethod,
+            key: dummy_key(),
+            reference: "1".to_string(),
+        }]),
+        ..dummy_did()
+    };
+    let did_clone = did.clone();
     identifier_repository
         .expect_get_from_did_id()
         .return_once(|_, _| {
             Ok(Some(Identifier {
-                did: Some(Did {
-                    did_method: "KEY".to_string(),
-                    keys: Some(vec![RelatedKey {
-                        role: KeyRole::AssertionMethod,
-                        key: dummy_key(),
-                    }]),
-                    ..dummy_did()
-                }),
+                did: Some(did_clone),
                 ..dummy_identifier()
             }))
         });
@@ -5131,25 +4470,11 @@ async fn test_create_credential_array(
         .once()
         .return_once(move |_| Some(Arc::new(dummy_protocol)));
 
-    let mut key_algorithm_provider = MockKeyAlgorithmProvider::default();
-    key_algorithm_provider
-        .expect_key_algorithm_from_type()
-        .return_once(|_| {
-            let mut key_algorithm = MockKeyAlgorithm::new();
-            key_algorithm
-                .expect_algorithm_type()
-                .return_once(|| KeyAlgorithmType::Eddsa);
-
-            Some(Arc::new(key_algorithm))
-        });
-
     let service = setup_service(Repositories {
         credential_repository,
         credential_schema_repository,
         identifier_repository,
         formatter_provider,
-        history_repository,
-        key_algorithm_provider,
         protocol_provider,
         config: generic_config().core,
         ..Default::default()
@@ -5159,18 +4484,21 @@ async fn test_create_credential_array(
         .create_credential(CreateCredentialRequestDTO {
             credential_schema_id: Uuid::new_v4().into(),
             issuer: None,
-            issuer_did: Some(Uuid::new_v4().into()),
+            issuer_did: Some(did.id),
             issuer_key: None,
-            exchange: "OPENID4VCI_DRAFT13".to_string(),
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
             claim_values: claims
                 .iter()
                 .map(|claim| CredentialRequestClaimDTO {
                     claim_schema_id: claim.schema.to_owned().unwrap().id,
-                    value: claim.value.to_owned(),
+                    value: claim.value.to_owned().unwrap(),
                     path: claim.path.to_owned(),
                 })
                 .collect(),
             redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
         })
         .await
 }
@@ -5398,4 +4726,100 @@ async fn test_create_credential_number_named_claims() {
     test_create_credential_array(claim_schemas.to_owned(), claims)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn test_create_credential_session_org_mismatch() {
+    let mut identifier_repository = MockIdentifierRepository::new();
+    identifier_repository
+        .expect_get()
+        .return_once(|_, _| Ok(Some(generic_credential().issuer_identifier.unwrap())));
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
+    credential_schema_repository
+        .expect_get_credential_schema()
+        .return_once(|_, _| Ok(Some(generic_credential().schema.unwrap())));
+    let service = setup_service(Repositories {
+        credential_schema_repository,
+        config: generic_config().core,
+        identifier_repository,
+        session_provider: Some(Arc::new(StaticSessionProvider::new_random())),
+        ..Default::default()
+    });
+
+    let result = service
+        .create_credential(CreateCredentialRequestDTO {
+            credential_schema_id: Uuid::new_v4().into(),
+            issuer: Some(Uuid::new_v4().into()),
+            issuer_did: None,
+            issuer_key: None,
+            issuer_certificate: None,
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
+            claim_values: vec![],
+            redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
+        })
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ServiceError::Validation(ValidationError::Forbidden))
+    ))
+}
+
+#[tokio::test]
+async fn test_list_credential_session_org_mismatch() {
+    let service = setup_service(Repositories {
+        config: generic_config().core,
+        session_provider: Some(Arc::new(StaticSessionProvider::new_random())),
+        ..Default::default()
+    });
+
+    let result = service
+        .get_credential_list(
+            &Uuid::new_v4().into(),
+            GetCredentialQueryDTO {
+                pagination: None,
+                sorting: None,
+                filtering: None,
+                include: None,
+            },
+        )
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(ServiceError::Validation(ValidationError::Forbidden))
+    ))
+}
+
+#[tokio::test]
+async fn test_credential_ops_session_org_mismatch() {
+    let mut credential_repository = MockCredentialRepository::default();
+    credential_repository
+        .expect_get_credential()
+        .returning(|_, _| Ok(Some(generic_credential())));
+    let service = setup_service(Repositories {
+        credential_repository,
+        config: generic_config().core,
+        session_provider: Some(Arc::new(StaticSessionProvider::new_random())),
+        ..Default::default()
+    });
+
+    let result = service.get_credential(&Uuid::new_v4().into()).await;
+    assert!(matches!(
+        result,
+        Err(ServiceError::Validation(ValidationError::Forbidden))
+    ));
+    let result = service.delete_credential(&Uuid::new_v4().into()).await;
+    assert!(matches!(
+        result,
+        Err(ServiceError::Validation(ValidationError::Forbidden))
+    ));
+    let result = service.share_credential(&Uuid::new_v4().into()).await;
+    assert!(matches!(
+        result,
+        Err(ServiceError::Validation(ValidationError::Forbidden))
+    ));
+    // revocation related operations are checked by the credential validity manager
 }

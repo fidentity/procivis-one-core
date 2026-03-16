@@ -1,11 +1,10 @@
-use one_core::model::did::{Did, DidFilterValue, GetDidList, SortableDidColumn};
+use one_core::model::did::{Did, DidFilterValue, SortableDidColumn};
+use one_core::model::list_filter::ListFilterCondition;
 use one_core::repository::error::DataLayerError;
-use one_dto_mapper::convert_inner;
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::sea_query::{IntoCondition, SimpleExpr};
 use sea_orm::{ColumnTrait, IntoSimpleExpr, JoinType, RelationTrait, Set};
 
-use crate::common::calculate_pages_count;
 use crate::entity::{self, did, key, key_did};
 use crate::list_query_generic::{
     IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation, get_equals_condition,
@@ -45,7 +44,7 @@ impl IntoSortingColumn for SortableDidColumn {
 }
 
 impl IntoFilterCondition for DidFilterValue {
-    fn get_condition(self) -> sea_orm::Condition {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> sea_orm::Condition {
         match self {
             Self::Name(string_match) => get_string_match_condition(did::Column::Name, string_match),
             Self::Method(method) => get_equals_condition(did::Column::Method, method),
@@ -105,18 +104,6 @@ impl IntoJoinRelations for DidFilterValue {
             }
             _ => vec![],
         }
-    }
-}
-
-pub(super) fn create_list_response(
-    dids: Vec<did::Model>,
-    limit: Option<u64>,
-    items_count: u64,
-) -> GetDidList {
-    GetDidList {
-        values: convert_inner(dids),
-        total_pages: calculate_pages_count(items_count, limit.unwrap_or(0)),
-        total_items: items_count,
     }
 }
 

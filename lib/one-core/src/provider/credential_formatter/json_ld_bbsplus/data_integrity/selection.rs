@@ -4,8 +4,9 @@ use json_ld::{BlankIdBuf, JsonLdProcessor, Loader, RemoteDocument, rdf_types};
 use sophia_api::quad::Spog;
 
 use super::skolemize::to_deskolemized_nquads;
+use crate::error::ContextWithErrorCode;
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::json_ld::canonization::TermAdapter;
+use crate::util::rdf_canonization::TermAdapter;
 
 pub struct SelectionResult {
     pub _selected_document: json_syntax::Value,
@@ -23,16 +24,11 @@ pub async fn select_canonical_nquads(
     let selected_document = select_json_ld(document, pointers)
         .map(json_syntax::Value::from_serde_json)
         .map(|selected| RemoteDocument::new(None, None, selected))
-        .map_err(|e| FormatterError::Failed(format!("Failed to select document: {e}")))?;
+        .error_while("selecting document")?;
 
     let expanded = selected_document
         .expand_with_using(&mut (), &loader, options)
-        .await
-        .map_err(|e| {
-            FormatterError::Failed(format!(
-                "Failed to expand document during selection step: {e}"
-            ))
-        })?;
+        .await?;
 
     let deskolemized_nquads: HashSet<Spog<TermAdapter>> = to_deskolemized_nquads(&expanded);
 
@@ -59,7 +55,8 @@ fn relabel_blank_node(term: TermAdapter, label_map: &BTreeMap<String, String>) -
             let suffix = &bid[2..];
             let new_label = &label_map[suffix];
             let iri = format!("_:{new_label}");
-            let bid = BlankIdBuf::new(iri).unwrap();
+            #[allow(clippy::expect_used)]
+            let bid = BlankIdBuf::new(iri).expect("should always be a valid BlankIdBuf");
             let term = rdf_types::Term::Id(rdf_types::Id::Blank(bid));
             TermAdapter(term)
         }
@@ -72,18 +69,24 @@ pub fn select_json_ld(
     pointers: &[String],
 ) -> Result<serde_json::Value, FormatterError> {
     if !document.is_object() {
-        return Err(FormatterError::Failed(
+        return Err(FormatterError::CouldNotFormat(
             "Document is not an object".to_string(),
         ));
     }
 
     if pointers.is_empty() {
-        return Err(FormatterError::Failed("No pointers provided".to_string()));
+        return Err(FormatterError::CouldNotFormat(
+            "No pointers provided".to_string(),
+        ));
     }
 
     let mut selection_document = initialize_selection(document);
+
     if let Some(context) = document.get("@context") {
-        selection_document["@context"] = context.clone();
+        let Some(document) = selection_document.as_object_mut() else {
+            return Err(FormatterError::JsonMapping("Invalid document".to_string()));
+        };
+        document.insert("@context".to_string(), context.to_owned());
     }
 
     for pointer in pointers {
@@ -95,7 +98,7 @@ pub fn select_json_ld(
 
         selection_document =
             select_paths(document, &paths, selection_document).ok_or_else(|| {
-                FormatterError::Failed(format!("Failed to select for pointer: {pointer}"))
+                FormatterError::CouldNotFormat(format!("Failed to select for pointer: {pointer}"))
             })?;
     }
 
@@ -105,22 +108,22 @@ pub fn select_json_ld(
 }
 
 fn initialize_selection(source: &serde_json::Value) -> serde_json::Value {
-    let mut value = serde_json::json!({});
+    let mut value = serde_json::map::Map::<String, serde_json::Value>::new();
 
-    if let Some(id) = source.get("id") {
-        if id.as_str().is_some_and(|id_str| !id_str.starts_with("_:")) {
-            value["id"] = id.clone();
-        }
+    if let Some(id) = source.get("id")
+        && id.as_str().is_some_and(|id_str| !id_str.starts_with("_:"))
+    {
+        value.insert("id".to_string(), id.to_owned());
     }
 
-    if let Some(type_val) = source.get("type") {
-        value["type"] = type_val.clone();
+    if let Some(r#type) = source.get("type") {
+        value.insert("type".to_string(), r#type.to_owned());
     }
 
-    value
+    serde_json::Value::Object(value)
 }
 
-fn parse_pointer(pointer: &str) -> Vec<PathComponent> {
+fn parse_pointer(pointer: &str) -> Vec<PathComponent<'_>> {
     pointer
         .split('/')
         .skip(1)
@@ -221,6 +224,8 @@ impl PathComponent<'_> {
 
 #[cfg(test)]
 mod tests {
+    use similar_asserts::assert_eq;
+
     use super::*;
 
     #[test]

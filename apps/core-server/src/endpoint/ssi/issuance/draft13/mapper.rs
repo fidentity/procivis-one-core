@@ -1,4 +1,4 @@
-use one_core::provider::issuance_protocol::openid4vci_draft13::error::OpenID4VCIError;
+use one_core::provider::issuance_protocol::error::OpenID4VCIError;
 use one_core::provider::issuance_protocol::openid4vci_draft13::model::{
     ExtendedSubjectClaimsDTO, OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCITokenRequestDTO,
     Timestamp,
@@ -30,6 +30,7 @@ impl From<OpenID4VCIIssuerMetadataResponseDTO> for OpenID4VCIIssuerMetadataRespo
         Self {
             credential_issuer: value.credential_issuer,
             credential_endpoint: value.credential_endpoint,
+            notification_endpoint: value.notification_endpoint,
             credential_configurations_supported: value
                 .credential_configurations_supported
                 .into_iter()
@@ -60,24 +61,26 @@ impl TryFrom<OpenID4VCITokenRequestRestDTO> for OpenID4VCITokenRequestDTO {
             value.grant_type.as_str(),
             value.pre_authorized_code,
             value.refresh_token,
+            value.tx_code,
         ) {
             (
                 "urn:ietf:params:oauth:grant-type:pre-authorized_code",
                 Some(pre_authorized_code),
                 None,
+                tx_code,
             ) => Ok(Self::PreAuthorizedCode {
                 pre_authorized_code,
-                tx_code: None,
+                tx_code,
             }),
-            ("refresh_token", None, Some(refresh_token)) => {
+            ("refresh_token", None, Some(refresh_token), None) => {
                 Ok(Self::RefreshToken { refresh_token })
             }
-            ("urn:ietf:params:oauth:grant-type:pre-authorized_code" | "refresh_token", _, _) => {
+            ("urn:ietf:params:oauth:grant-type:pre-authorized_code" | "refresh_token", _, _, _) => {
                 Err(ServiceError::OpenID4VCIError(
                     OpenID4VCIError::InvalidRequest,
                 ))
             }
-            (grant, _, _) if !grant.is_empty() => Err(ServiceError::OpenID4VCIError(
+            (grant, _, _, _) if !grant.is_empty() => Err(ServiceError::OpenID4VCIError(
                 OpenID4VCIError::UnsupportedGrantType,
             )),
             _ => Err(ServiceError::OpenID4VCIError(

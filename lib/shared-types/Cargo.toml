@@ -5,6 +5,7 @@ license           = "Apache-2.0"
 name              = "shared-types"
 publish           = false
 version.workspace = true
+rust-version.workspace = true
 
 # disable doctests
 [lib]
@@ -15,7 +16,6 @@ sea-orm = ["dep:sea-orm"]
 utoipa  = ["dep:utoipa"]
 
 [dependencies]
-anyhow    = { version = "1.0" }
 regex     = { workspace = true }
 sea-orm   = { workspace = true, features = ["macros"], optional = true }
 serde     = { workspace = true, features = ["derive"] }
@@ -23,6 +23,9 @@ thiserror = { workspace = true }
 url       = { version = "2.5", features = ["serde"] }
 utoipa    = { workspace = true, features = ["uuid"], optional = true }
 uuid      = { workspace = true }
+
+[dev-dependencies]
+similar-asserts.workspace = true
 
 [lints]
 workspace = true

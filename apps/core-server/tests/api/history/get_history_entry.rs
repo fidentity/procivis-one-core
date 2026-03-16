@@ -1,6 +1,7 @@
+use one_core::error::ErrorCode;
 use one_core::model::history::{HistoryErrorMetadata, HistoryMetadata};
 use one_core::service::backup::dto::UnexportableEntitiesResponseDTO;
-use one_core::service::error::ErrorCode;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
@@ -44,10 +45,12 @@ async fn test_get_history_entry_with_unexportable_metadata() {
                         keys: vec![],
                         dids: vec![],
                         identifiers: vec![],
+                        history: vec![],
                         total_credentials: 3,
                         total_keys: 1,
                         total_dids: 2,
                         total_identifiers: 0,
+                        total_histories: 1,
                     },
                 )),
                 ..Default::default()
@@ -140,4 +143,31 @@ async fn test_get_history_entry_with_target() {
     let resp = resp.json_value().await;
     resp["id"].assert_eq(&history.id);
     resp["target"].assert_eq(&"Foo".to_string());
+}
+
+#[tokio::test]
+async fn test_get_history_entry_with_user() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let history = context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                user: Some("TestUser".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN
+    let resp = context.api.histories.get(history.id).await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+
+    let resp = resp.json_value().await;
+    resp["id"].assert_eq(&history.id);
+    resp["user"].assert_eq(&"TestUser".to_string());
 }

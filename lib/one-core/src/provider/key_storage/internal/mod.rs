@@ -2,22 +2,22 @@
 
 use std::sync::Arc;
 
-use one_crypto::SignerError;
 use one_crypto::encryption::{decrypt_data, encrypt_data};
 use secrecy::SecretSlice;
 use serde::Deserialize;
 use shared_types::KeyId;
+use standardized_types::jwk::PrivateJwk;
 
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::Key;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::params::deserialize_encryption_key;
+use crate::model::key::{Key, PrivateJwkExt};
+use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::KeyStorage;
 use crate::provider::key_storage::error::KeyStorageError;
-use crate::provider::key_storage::model::{
-    Features, KeySecurity, KeyStorageCapabilities, StorageGeneratedKey,
-};
-use crate::util::params::deserialize_encryption_key;
+use crate::provider::key_storage::model::{Features, KeyStorageCapabilities, StorageGeneratedKey};
 
 #[cfg(test)]
 mod test;
@@ -50,11 +50,10 @@ impl KeyStorage for InternalKeyProvider {
             algorithms: vec![
                 KeyAlgorithmType::Ecdsa,
                 KeyAlgorithmType::Eddsa,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
                 KeyAlgorithmType::BbsPlus,
             ],
-            security: vec![KeySecurity::Software],
-            features: vec![Features::Exportable],
+            features: vec![Features::Exportable, Features::Importable],
         }
     }
 
@@ -68,26 +67,93 @@ impl KeyStorage for InternalKeyProvider {
             .key_algorithm_from_type(key_type)
             .ok_or(KeyStorageError::InvalidKeyAlgorithm(key_type.to_string()))?
             .generate_key()
-            .map_err(KeyStorageError::KeyAlgorithmError)?;
+            .error_while("generating key")?;
 
         Ok(StorageGeneratedKey {
             public_key: key_pair.public,
-            key_reference: encrypt_data(&key_pair.private, &self.encryption_key)
-                .map_err(KeyStorageError::Encryption)?,
+            key_reference: Some(encrypt_data(&key_pair.private, &self.encryption_key)?),
         })
     }
 
-    fn key_handle(&self, key: &Key) -> Result<KeyHandle, SignerError> {
+    async fn import(
+        &self,
+        _key_id: KeyId,
+        key_type: KeyAlgorithmType,
+        jwk: PrivateJwk,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        if !self
+            .get_capabilities()
+            .features
+            .contains(&Features::Importable)
+        {
+            return Err(KeyStorageError::UnsupportedFeature {
+                feature: Features::Importable,
+            });
+        }
+        if jwk.supported_key_type() != key_type {
+            return Err(KeyStorageError::InvalidKeyAlgorithm(key_type.to_string()));
+        };
+
+        let key_pair = self
+            .key_algorithm_provider
+            .key_algorithm_from_type(key_type)
+            .ok_or(KeyStorageError::InvalidKeyAlgorithm(key_type.to_string()))?
+            .parse_private_jwk(jwk)
+            .error_while("parsing private JWK")?;
+
+        Ok(StorageGeneratedKey {
+            public_key: key_pair.public,
+            key_reference: Some(encrypt_data(&key_pair.private, &self.encryption_key)?),
+        })
+    }
+
+    fn key_handle(&self, key: &Key) -> Result<KeyHandle, KeyStorageError> {
         let algorithm = key
             .key_algorithm_type()
             .and_then(|alg| self.key_algorithm_provider.key_algorithm_from_type(alg))
-            .ok_or(SignerError::MissingAlgorithm(key.key_type.clone()))?;
+            .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                key.key_type.clone(),
+            ))
+            .error_while("getting key algorithm")?;
 
-        let private_key = decrypt_data(&key.key_reference, &self.encryption_key)
-            .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
+        let key_reference = key
+            .key_reference
+            .as_ref()
+            .ok_or(KeyStorageError::MissingKeyReference)?;
+        let private_key = decrypt_data(key_reference, &self.encryption_key)?;
 
-        algorithm
+        Ok(algorithm
             .reconstruct_key(&key.public_key, Some(private_key), None)
-            .map_err(|_| SignerError::CouldNotExtractKeyPair)
+            .error_while("reconstructing key")?)
+    }
+
+    async fn generate_attestation_key(
+        &self,
+        _key_id: KeyId,
+        _nonce: Option<String>,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn generate_attestation(
+        &self,
+        _key: &Key,
+        _nonce: Option<String>,
+    ) -> Result<Vec<String>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn sign_with_attestation_key(
+        &self,
+        _key: &Key,
+        _data: &[u8],
+    ) -> Result<Vec<u8>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
     }
 }

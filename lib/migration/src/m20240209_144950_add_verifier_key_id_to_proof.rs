@@ -21,7 +21,10 @@ pub struct KeyDidQueryResult {
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         match manager.get_database_backend() {
-            DbBackend::MySql | DbBackend::Postgres => sane_migration(manager).await,
+            // Skip because it is not supported. If support for Postgres is added in the future
+            // the schema can be setup in its entirety in a new, later migration.
+            DbBackend::Postgres => Ok(()),
+            DbBackend::MySql => sane_migration(manager).await,
             DbBackend::Sqlite => sqlite_migration(manager).await,
         }
     }
@@ -259,8 +262,7 @@ async fn get_verifier_key_id(
     .one(db)
     .await?
     .ok_or(DbErr::Migration(format!(
-        "Did {} does not have any related ASSERTION_METHOD keys",
-        verifier_did_id
+        "Did {verifier_did_id} does not have any related ASSERTION_METHOD keys"
     )))?
     .key_id;
     Ok((verifier_did_id, verifier_key_id))

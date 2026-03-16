@@ -1,12 +1,15 @@
-use std::str::FromStr;
 use std::sync::Arc;
 use std::vec;
 
-use one_core::model::interaction::{Interaction, InteractionRelations};
+use one_core::model::interaction::{
+    Interaction, InteractionRelations, InteractionType, UpdateInteractionRequest,
+};
+use one_core::repository::error::DataLayerError;
 use one_core::repository::interaction_repository::InteractionRepository;
 use one_core::repository::organisation_repository::MockOrganisationRepository;
 use sea_orm::DbErr;
-use url::Url;
+use shared_types::InteractionId;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::InteractionProvider;
@@ -14,6 +17,7 @@ use crate::test_utilities::{
     dummy_organisation, get_dummy_date, get_interaction, insert_interaction,
     insert_organisation_to_database, setup_test_data_layer_and_connection,
 };
+use crate::transaction_context::TransactionManagerImpl;
 
 #[derive(Default)]
 struct Repositories {
@@ -31,7 +35,7 @@ async fn setup(repositories: Repositories) -> TestSetup {
 
     TestSetup {
         provider: InteractionProvider {
-            db: db.clone(),
+            db: TransactionManagerImpl::new(db.clone()),
             organisation_repository: Arc::from(repositories.organisation_repository),
         },
         db,
@@ -41,32 +45,33 @@ async fn setup(repositories: Repositories) -> TestSetup {
 struct TestSetupWithInteraction {
     pub db: sea_orm::DatabaseConnection,
     pub provider: InteractionProvider,
-    pub interaction_id: Uuid,
-    pub host: Url,
+    pub interaction_id: InteractionId,
     pub data: Vec<u8>,
 }
 
 async fn setup_with_interaction() -> TestSetupWithInteraction {
     let setup = setup(Repositories::default()).await;
 
-    let host: Url = "http://www.host.co".parse().unwrap();
     let data = vec![1, 2, 3];
 
     let organisation_id = insert_organisation_to_database(&setup.db, None, None)
         .await
         .unwrap();
 
-    let id = insert_interaction(&setup.db, host.as_str(), &data, organisation_id)
-        .await
-        .unwrap();
-
-    let id = Uuid::from_str(&id).unwrap();
+    let id = insert_interaction(
+        &setup.db,
+        &data,
+        organisation_id,
+        None,
+        crate::entity::interaction::InteractionType::Issuance,
+    )
+    .await
+    .unwrap();
 
     TestSetupWithInteraction {
         db: setup.db,
         provider: setup.provider,
         interaction_id: id,
-        host,
         data,
     }
 }
@@ -80,14 +85,17 @@ async fn test_create_interaction() {
 
     let organisation = dummy_organisation(Some(organisation_id));
 
-    let id = Uuid::new_v4();
+    let id = Uuid::new_v4().into();
+    let nonce_id = Uuid::new_v4().into();
     let interaction = Interaction {
         id,
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        host: Some("http://www.host.co".parse().unwrap()),
         data: Some(vec![1, 2, 3]),
         organisation: Some(organisation),
+        nonce_id: Some(nonce_id),
+        interaction_type: InteractionType::Issuance,
+        expires_at: None,
     };
 
     let result = setup.provider.create_interaction(interaction).await;
@@ -96,8 +104,8 @@ async fn test_create_interaction() {
     assert_eq!(result.unwrap(), id);
 
     let model = get_interaction(&setup.db, &id).await.unwrap();
-    assert_eq!(model.host, Some("http://www.host.co/".to_owned()));
     assert_eq!(model.data, Some(vec![1, 2, 3]));
+    assert_eq!(model.nonce_id, Some(nonce_id));
 }
 
 #[tokio::test]
@@ -106,14 +114,131 @@ async fn test_get_interaction() {
 
     let result = setup
         .provider
-        .get_interaction(&setup.interaction_id, &InteractionRelations::default())
+        .get_interaction(
+            &setup.interaction_id,
+            &InteractionRelations::default(),
+            None,
+        )
         .await
         .unwrap();
 
     let interaction = result.unwrap();
 
     assert_eq!(interaction.data, Some(setup.data));
-    assert_eq!(interaction.host, Some(setup.host));
+}
+
+#[tokio::test]
+async fn test_mark_nonce_as_used() {
+    let setup = setup(Repositories::default()).await;
+
+    let organisation_id = insert_organisation_to_database(&setup.db, None, None)
+        .await
+        .unwrap();
+    let interaction_id = insert_interaction(
+        &setup.db,
+        &[],
+        organisation_id,
+        None,
+        crate::entity::interaction::InteractionType::Issuance,
+    )
+    .await
+    .unwrap();
+
+    let nonce_id = Uuid::new_v4().into();
+    setup
+        .provider
+        .mark_nonce_as_used(&interaction_id, nonce_id)
+        .await
+        .unwrap();
+
+    let interaction = setup
+        .provider
+        .get_interaction(&interaction_id, &InteractionRelations::default(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(interaction.nonce_id, Some(nonce_id));
+}
+
+#[tokio::test]
+async fn test_mark_nonce_as_used_already_used() {
+    let setup = setup(Repositories::default()).await;
+
+    let organisation_id = insert_organisation_to_database(&setup.db, None, None)
+        .await
+        .unwrap();
+    let nonce_id = Uuid::new_v4().into();
+    let interaction_id = insert_interaction(
+        &setup.db,
+        &[],
+        organisation_id,
+        Some(nonce_id),
+        crate::entity::interaction::InteractionType::Issuance,
+    )
+    .await
+    .unwrap();
+
+    let result = setup
+        .provider
+        .mark_nonce_as_used(&interaction_id, nonce_id)
+        .await;
+    assert!(matches!(result, Err(DataLayerError::RecordNotUpdated)));
+}
+
+#[tokio::test]
+async fn test_mark_nonce_as_used_already_used_different_interaction() {
+    let setup = setup(Repositories::default()).await;
+
+    let organisation_id = insert_organisation_to_database(&setup.db, None, None)
+        .await
+        .unwrap();
+    let nonce_id = Uuid::new_v4().into();
+    insert_interaction(
+        &setup.db,
+        &[],
+        organisation_id,
+        Some(nonce_id),
+        crate::entity::interaction::InteractionType::Issuance,
+    )
+    .await
+    .unwrap();
+    let interaction_id = insert_interaction(
+        &setup.db,
+        &[],
+        organisation_id,
+        None,
+        crate::entity::interaction::InteractionType::Issuance,
+    )
+    .await
+    .unwrap();
+
+    let result = setup
+        .provider
+        .mark_nonce_as_used(&interaction_id, nonce_id)
+        .await;
+    assert!(matches!(result, Err(DataLayerError::AlreadyExists)));
+}
+
+#[tokio::test]
+async fn test_update_interaction() {
+    let setup = setup_with_interaction().await;
+
+    let data = "foo".as_bytes().to_vec();
+    setup
+        .provider
+        .update_interaction(
+            setup.interaction_id,
+            UpdateInteractionRequest {
+                data: Some(Some(data.clone())),
+            },
+        )
+        .await
+        .unwrap();
+
+    let result = get_interaction(&setup.db, &setup.interaction_id)
+        .await
+        .unwrap();
+    assert_eq!(result.data, Some(data));
 }
 
 #[tokio::test]

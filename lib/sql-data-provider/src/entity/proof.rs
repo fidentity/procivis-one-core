@@ -1,7 +1,9 @@
 use one_core::model::proof::{ProofRole as ModelProofRole, ProofStateEnum};
 use one_dto_mapper::{From, Into};
 use sea_orm::entity::prelude::*;
-use shared_types::{DidId, IdentifierId, KeyId, ProofId, ProofSchemaId};
+use shared_types::{
+    BlobId, CertificateId, DidId, IdentifierId, InteractionId, KeyId, ProofId, ProofSchemaId,
+};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -12,20 +14,23 @@ pub struct Model {
 
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub issuance_date: OffsetDateTime,
-    pub exchange: String,
+    pub protocol: String,
     pub transport: String,
     pub redirect_uri: Option<String>,
     pub state: ProofRequestState,
     pub role: ProofRole,
     pub requested_date: Option<OffsetDateTime>,
     pub completed_date: Option<OffsetDateTime>,
+    pub profile: Option<String>,
+    pub proof_blob_id: Option<BlobId>,
+    pub engagement: Option<String>,
+    pub webhook_url: Option<String>,
 
     pub verifier_identifier_id: Option<IdentifierId>,
-    pub holder_identifier_id: Option<IdentifierId>,
     pub proof_schema_id: Option<ProofSchemaId>,
     pub verifier_key_id: Option<KeyId>,
-    pub interaction_id: Option<String>,
+    pub verifier_certificate_id: Option<CertificateId>,
+    pub interaction_id: Option<InteractionId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, Into, From)]
@@ -47,6 +52,8 @@ pub enum ProofRequestState {
     Retracted,
     #[sea_orm(string_value = "ERROR")]
     Error,
+    #[sea_orm(string_value = "INTERACTION_EXPIRED")]
+    InteractionExpired,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
@@ -61,14 +68,6 @@ pub enum Relation {
         on_delete = "Restrict"
     )]
     VerifierIdentifier,
-    #[sea_orm(
-        belongs_to = "super::identifier::Entity",
-        from = "Column::HolderIdentifierId",
-        to = "super::identifier::Column::Id",
-        on_update = "Restrict",
-        on_delete = "Restrict"
-    )]
-    HolderIdentifier,
     #[sea_orm(
         belongs_to = "super::interaction::Entity",
         from = "Column::InteractionId",
@@ -95,6 +94,14 @@ pub enum Relation {
         on_delete = "Restrict"
     )]
     VerifierKey,
+    #[sea_orm(
+        belongs_to = "super::certificate::Entity",
+        from = "Column::VerifierCertificateId",
+        to = "super::certificate::Column::Id",
+        on_update = "Restrict",
+        on_delete = "Restrict"
+    )]
+    VerifierCertificate,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, Into, From)]

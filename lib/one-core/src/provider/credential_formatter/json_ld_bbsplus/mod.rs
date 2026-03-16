@@ -1,56 +1,65 @@
 //! Implementation of JSON-LD credential format with BBS+ signatures, allowing for selective disclosure.
 //! https://www.w3.org/TR/vc-di-bbs/
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::vec;
 
 use async_trait::async_trait;
+use mapper::convert_to_detail_credential;
 use one_crypto::CryptoProvider;
 use serde::Deserialize;
 use serde_json::json;
-use serde_with::{DurationSeconds, serde_as};
+use serde_with::DurationSeconds;
 use shared_types::DidValue;
 use time::{Duration, OffsetDateTime};
 use url::Url;
+use uuid::Uuid;
+use verify_proof::extract_mandatory_pointers;
 
-use super::CredentialFormatter;
-use super::json_ld::context::caching_loader::ContextCache;
-use super::json_ld::{json_ld_processor_options, jsonld_forbidden_claim_names};
-use super::model::{CredentialData, HolderBindingCtx, Issuer};
+use super::error::FormatterError;
+use super::json_claims::{parse_claims, prepare_identifier};
+use super::model::{
+    AuthenticationFn, CredentialData, CredentialPresentation, DetailCredential, Features,
+    FormatterCapabilities, IdentifierDetails, Issuer, SelectiveDisclosure, TokenVerifier,
+    VerificationFn,
+};
+use super::vcdm::{VcdmCredential, VcdmCredentialSubject, vcdm_metadata_claims};
+use super::{CredentialFormatter, MetadataClaimSchema};
 use crate::config::core_config::{
     DidType, IdentifierType, IssuanceProtocolType, KeyAlgorithmType, KeyStorageType,
     RevocationType, VerificationProtocolType,
 };
-use crate::model::credential_schema::CredentialSchema;
-use crate::model::did::Did;
-use crate::model::revocation_list::StatusListType;
-use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::json_ld::context::caching_loader::JsonLdCachingLoader;
-use crate::provider::credential_formatter::model::{
-    AuthenticationFn, CredentialPresentation, DetailCredential, ExtractPresentationCtx, Features,
-    FormatPresentationCtx, FormatterCapabilities, Presentation, SelectiveDisclosure,
-    VerificationFn,
+use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
+use crate::model::identifier::Identifier;
+use crate::proto::http_client::HttpClient;
+use crate::provider::caching_loader::json_ld_context::{ContextCache, JsonLdCachingLoader};
+use crate::provider::credential_formatter::json_ld_bbsplus::mapper::{
+    mark_claims_selectively_disclosable, metadata_claims_with_sd_flags,
 };
-use crate::provider::credential_formatter::vcdm::{VcdmCredential, VcdmCredentialSubject};
+use crate::provider::credential_formatter::mapper::default_2_years;
+use crate::provider::data_type::provider::DataTypeProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
-use crate::provider::http_client::HttpClient;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::revocation::bitstring_status_list::model::StatusPurpose;
+use crate::util::rdf_canonization::json_ld_processor_options;
+use crate::util::vcdm_jsonld_contexts::jsonld_forbidden_claim_names;
 
 mod data_integrity;
+mod mapper;
 pub mod model;
 mod verify_proof;
 
 #[cfg(test)]
 mod test;
 
-#[allow(dead_code)]
 pub struct JsonLdBbsplus {
-    pub base_url: Option<String>,
-    pub crypto: Arc<dyn CryptoProvider>,
-    pub did_method_provider: Arc<dyn DidMethodProvider>,
-    pub key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    pub caching_loader: ContextCache,
+    crypto: Arc<dyn CryptoProvider>,
+    did_method_provider: Arc<dyn DidMethodProvider>,
+    data_type_provider: Arc<dyn DataTypeProvider>,
+    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    caching_loader: ContextCache,
     params: Params,
 }
 
@@ -63,14 +72,17 @@ pub struct Params {
     #[serde(default)]
     pub embed_layout_properties: bool,
     pub allowed_contexts: Option<Vec<Url>>,
+    #[serde_as(as = "DurationSeconds<i64>")]
+    #[serde(default = "default_2_years")]
+    pub expiration_time: Duration,
 }
 
 impl JsonLdBbsplus {
     pub fn new(
         params: Params,
         crypto: Arc<dyn CryptoProvider>,
-        base_url: Option<String>,
         did_method_provider: Arc<dyn DidMethodProvider>,
+        data_type_provider: Arc<dyn DataTypeProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         caching_loader: JsonLdCachingLoader,
         client: Arc<dyn HttpClient>,
@@ -78,8 +90,8 @@ impl JsonLdBbsplus {
         Self {
             params,
             crypto,
-            base_url,
             did_method_provider,
+            data_type_provider,
             key_algorithm_provider,
             caching_loader: ContextCache::new(caching_loader, client),
         }
@@ -102,16 +114,31 @@ impl CredentialFormatter for JsonLdBbsplus {
             .ok_or_else(|| FormatterError::CouldNotFormat("Missing jwk key id".to_string()))?;
 
         let mut vcdm = credential_data.vcdm;
+
+        let now = OffsetDateTime::now_utc();
+        if vcdm.valid_from.is_none() {
+            vcdm.valid_from = Some(now);
+        }
+        if vcdm.valid_until.is_none() {
+            vcdm.valid_until = Some(now + self.params.expiration_time);
+        }
+
+        let holder_did = credential_data
+            .holder_identifier
+            .as_ref()
+            .and_then(|identifier| identifier.did.as_ref())
+            .map(|did| did.did.clone().into_url());
+
         if let Some(cs) = vcdm
             .credential_subject
             .first_mut()
             .filter(|cs| cs.id.is_none())
         {
-            cs.id = credential_data.holder_did.map(|did| did.into_url());
+            cs.id = holder_did;
         }
 
         let mandatory_pointers = generate_mandatory_pointers(&vcdm);
-        let proof = data_integrity::create_base_proof(
+        let proof = data_integrity::base_proof::create_base_proof(
             &vcdm,
             mandatory_pointers,
             verification_method,
@@ -124,21 +151,21 @@ impl CredentialFormatter for JsonLdBbsplus {
 
         vcdm.proof = Some(proof);
 
-        serde_json::to_string(&vcdm).map_err(|e| FormatterError::CouldNotFormat(e.to_string()))
+        Ok(serde_json::to_string(&vcdm)?)
     }
 
     async fn format_status_list(
         &self,
         revocation_list_url: String,
-        issuer_did: &Did,
+        issuer_identifier: &Identifier,
         encoded_list: String,
         _algorithm: KeyAlgorithmType,
         auth_fn: AuthenticationFn,
         status_purpose: StatusPurpose,
-        status_list_type: StatusListType,
+        status_list_type: RevocationType,
     ) -> Result<String, FormatterError> {
-        if status_list_type != StatusListType::BitstringStatusList {
-            return Err(FormatterError::Failed(
+        if status_list_type != RevocationType::BitstringStatusList {
+            return Err(FormatterError::CouldNotFormat(
                 "Only BitstringStatusList can be formatted with JSON_LD_BBSPLUS formatter"
                     .to_string(),
             ));
@@ -147,28 +174,19 @@ impl CredentialFormatter for JsonLdBbsplus {
             return Err(FormatterError::BBSOnly);
         }
 
-        let issuer = Issuer::Url(
-            issuer_did
-                .did
-                .as_str()
-                .parse()
-                .map_err(|_| FormatterError::Failed("Invalid issuer DID".to_string()))?,
-        );
+        let issuer = Issuer::Url(issuer_identifier.as_url().ok_or(
+            FormatterError::CouldNotFormat("Invalid issuer DID".to_string()),
+        )?);
 
-        let credential_subject_id: Url =
-            format!("{revocation_list_url}#list").parse().map_err(|_| {
-                FormatterError::Failed("Invalid issuer credential subject id".to_string())
-            })?;
+        let credential_subject_id: Url = format!("{revocation_list_url}#list").parse()?;
         let credential_subject = VcdmCredentialSubject::new([
             ("type", json!("BitstringStatusList")),
             ("statusPurpose", json!(status_purpose)),
             ("encodedList", json!(encoded_list)),
-        ])
+        ])?
         .with_id(credential_subject_id);
 
-        let credential_id = Url::parse(&revocation_list_url).map_err(|_| {
-            FormatterError::Failed("Revocation list is not a valid URL".to_string())
-        })?;
+        let credential_id = Url::parse(&revocation_list_url)?;
 
         let mut vcdm = VcdmCredential::new_v2(issuer, credential_subject)
             .with_id(credential_id)
@@ -182,7 +200,7 @@ impl CredentialFormatter for JsonLdBbsplus {
         let mut mandatory_pointers = generate_mandatory_pointers(&vcdm);
         mandatory_pointers.push("/credentialSubject".to_string());
 
-        let proof = data_integrity::create_base_proof(
+        let proof = data_integrity::base_proof::create_base_proof(
             &vcdm,
             mandatory_pointers,
             verification_method,
@@ -195,7 +213,7 @@ impl CredentialFormatter for JsonLdBbsplus {
 
         vcdm.proof = Some(proof);
 
-        serde_json::to_string(&vcdm).map_err(|e| FormatterError::CouldNotFormat(e.to_string()))
+        Ok(serde_json::to_string(&vcdm)?)
     }
 
     async fn extract_credentials<'a>(
@@ -203,9 +221,15 @@ impl CredentialFormatter for JsonLdBbsplus {
         credential: &str,
         _credential_schema: Option<&'a CredentialSchema>,
         verification_fn: VerificationFn,
-        _holder_binding_ctx: Option<HolderBindingCtx>,
     ) -> Result<DetailCredential, FormatterError> {
-        self.verify(credential, verification_fn).await
+        let mut vcdm: VcdmCredential = serde_json::from_str(credential)?;
+        let mandatory_pointers = self.verify(&mut vcdm, verification_fn).await?;
+        let metadata_claims = self
+            .get_metadata_claims()
+            .into_iter()
+            .map(|c| c.key)
+            .collect::<Vec<_>>();
+        convert_to_detail_credential(vcdm, mandatory_pointers, &metadata_claims)
     }
 
     async fn extract_credentials_unverified<'a>(
@@ -213,22 +237,22 @@ impl CredentialFormatter for JsonLdBbsplus {
         credential: &str,
         _credential_schema: Option<&'a CredentialSchema>,
     ) -> Result<DetailCredential, FormatterError> {
-        let vc: VcdmCredential = serde_json::from_str(credential).map_err(|e| {
-            FormatterError::CouldNotVerify(format!("Could not deserialize base proof: {e}"))
-        })?;
+        let vc: VcdmCredential = serde_json::from_str(credential)?;
 
-        DetailCredential::try_from(vc)
+        let metadata_claims = self
+            .get_metadata_claims()
+            .into_iter()
+            .map(|c| c.key)
+            .collect::<Vec<_>>();
+        let mandatory_pointers = extract_mandatory_pointers(&vc)?;
+        convert_to_detail_credential(vc, mandatory_pointers, &metadata_claims)
     }
 
-    async fn format_credential_presentation(
+    async fn prepare_selective_disclosure(
         &self,
         credential: CredentialPresentation,
-        _holder_binding_ctx: Option<HolderBindingCtx>,
-        _holder_binding_fn: Option<AuthenticationFn>,
     ) -> Result<String, FormatterError> {
-        let mut vcdm: VcdmCredential = serde_json::from_str(&credential.token).map_err(|e| {
-            FormatterError::CouldNotFormat(format!("Could not deserialize base proof: {e}"))
-        })?;
+        let mut vcdm: VcdmCredential = serde_json::from_str(&credential.token)?;
 
         let Some(proof) = vcdm.proof.take() else {
             return Err(FormatterError::CouldNotFormat("Missing proof".to_string()));
@@ -261,30 +285,9 @@ impl CredentialFormatter for JsonLdBbsplus {
         )
         .await?;
 
-        let resp = serde_json::to_string(&revealed_document)
-            .map_err(|e| FormatterError::CouldNotExtractCredentials(e.to_string()))?;
+        let resp = serde_json::to_string(&revealed_document)?;
 
         Ok(resp)
-    }
-
-    async fn format_presentation(
-        &self,
-        _tokens: &[String],
-        _holder_did: &DidValue,
-        _algorithm: KeyAlgorithmType,
-        _auth_fn: AuthenticationFn,
-        _context: FormatPresentationCtx,
-    ) -> Result<String, FormatterError> {
-        unimplemented!()
-    }
-
-    async fn extract_presentation(
-        &self,
-        _json_ld: &str,
-        _verification_fn: VerificationFn,
-        _context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        unimplemented!()
     }
 
     fn get_leeway(&self) -> u64 {
@@ -297,16 +300,12 @@ impl CredentialFormatter for JsonLdBbsplus {
             features: vec![
                 Features::SupportsCredentialDesign,
                 Features::SelectiveDisclosure,
+                Features::SupportsCombinedPresentation,
+                Features::SupportsTxCode,
             ],
             selective_disclosure: vec![SelectiveDisclosure::AnyLevel],
-            issuance_did_methods: vec![
-                DidType::Key,
-                DidType::Web,
-                DidType::Jwk,
-                DidType::X509,
-                DidType::WebVh,
-            ],
-            allowed_schema_ids: vec![],
+            issuance_did_methods: vec![DidType::Key, DidType::Web, DidType::Jwk, DidType::WebVh],
+            ecosystem_schema_ids: vec![],
             datatypes: vec![
                 "STRING".to_string(),
                 "BOOLEAN".to_string(),
@@ -320,21 +319,21 @@ impl CredentialFormatter for JsonLdBbsplus {
                 "OBJECT".to_string(),
                 "ARRAY".to_string(),
             ],
-            issuance_exchange_protocols: vec![IssuanceProtocolType::OpenId4VciDraft13],
+            issuance_exchange_protocols: vec![
+                IssuanceProtocolType::OpenId4VciDraft13,
+                IssuanceProtocolType::OpenId4VciFinal1_0,
+            ],
             proof_exchange_protocols: vec![
                 VerificationProtocolType::OpenId4VpDraft20,
                 VerificationProtocolType::OpenId4VpDraft25,
+                VerificationProtocolType::OpenId4VpFinal1_0,
                 VerificationProtocolType::OpenId4VpProximityDraft00,
             ],
-            revocation_methods: vec![
-                RevocationType::None,
-                RevocationType::BitstringStatusList,
-                RevocationType::Lvvc,
-            ],
+            revocation_methods: vec![RevocationType::None, RevocationType::BitstringStatusList],
             verification_key_algorithms: vec![
                 KeyAlgorithmType::Eddsa,
                 KeyAlgorithmType::Ecdsa,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
             verification_key_storages: vec![
                 KeyStorageType::Internal,
@@ -343,19 +342,183 @@ impl CredentialFormatter for JsonLdBbsplus {
             ],
             forbidden_claim_names: [jsonld_forbidden_claim_names(), vec!["0".to_string()]].concat(),
             issuance_identifier_types: vec![IdentifierType::Did],
-            verification_identifier_types: vec![IdentifierType::Did],
+            verification_identifier_types: vec![IdentifierType::Did, IdentifierType::Certificate],
             holder_identifier_types: vec![IdentifierType::Did],
             holder_key_algorithms: vec![KeyAlgorithmType::Ecdsa, KeyAlgorithmType::Eddsa],
             holder_did_methods: vec![DidType::Web, DidType::Key, DidType::Jwk, DidType::WebVh],
         }
     }
 
-    async fn extract_presentation_unverified(
+    fn get_metadata_claims(&self) -> Vec<MetadataClaimSchema> {
+        let selectively_disclosable_vcdm_claims = vec![
+            // VCDM 2.0
+            MetadataClaimSchema {
+                key: "validFrom".to_string(),
+                data_type: "DATE".to_string(),
+                array: false,
+                required: false,
+            },
+            MetadataClaimSchema {
+                key: "validUntil".to_string(),
+                data_type: "DATE".to_string(),
+                array: false,
+                required: false,
+            },
+            // VCDM v1.1
+            MetadataClaimSchema {
+                key: "issuanceDate".to_string(),
+                data_type: "DATE".to_string(),
+                array: false,
+                required: false,
+            },
+            MetadataClaimSchema {
+                key: "expirationDate".to_string(),
+                data_type: "DATE".to_string(),
+                array: false,
+                required: false,
+            },
+        ];
+
+        [
+            vcdm_metadata_claims(None),
+            selectively_disclosable_vcdm_claims,
+        ]
+        .concat()
+    }
+
+    fn user_claims_path(&self) -> Vec<String> {
+        vec!["credentialSubject".to_string()]
+    }
+
+    async fn parse_credential(
         &self,
-        _token: &str,
-        _context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        unimplemented!()
+        credential: &str,
+        verification: Box<dyn TokenVerifier>,
+    ) -> Result<Credential, FormatterError> {
+        let now = OffsetDateTime::now_utc();
+
+        let mut vcdm: VcdmCredential = serde_json::from_str(credential)?;
+
+        let revocation_method = if let Some(status) = vcdm.credential_status.first() {
+            match status.r#type.as_str() {
+                "BitstringStatusListEntry" => Some(RevocationType::BitstringStatusList),
+                _ => {
+                    return Err(FormatterError::CouldNotVerify(format!(
+                        "Unknown revocation method: {}",
+                        status.r#type
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
+        let mandatory_pointers = self.verify(&mut vcdm, verification).await?;
+        let metadata_claim_keys = self
+            .get_metadata_claims()
+            .into_iter()
+            .map(|c| c.key)
+            .collect::<Vec<_>>();
+        let metadata_claims =
+            metadata_claims_with_sd_flags(&vcdm, &mandatory_pointers, &metadata_claim_keys)?;
+        let vc_types = vcdm.r#type;
+        let schema_name = vc_types
+            .iter()
+            .find(|t| t != &"VerifiableCredential")
+            .cloned()
+            .unwrap_or_else(|| "VerifiableCredential".to_string());
+
+        // Parse claims from credential subject
+        let credential_subject = vcdm.credential_subject.first().ok_or_else(|| {
+            FormatterError::CouldNotExtractCredentials("Missing credential subject".to_string())
+        })?;
+
+        let credential_id = Uuid::new_v4().into();
+        let mut claims = HashMap::from_iter(credential_subject.claims.clone());
+        mark_claims_selectively_disclosable(&mut claims, mandatory_pointers);
+        let (mut claims, mut claim_schemas) =
+            parse_claims(claims, self.data_type_provider.as_ref(), credential_id)?;
+
+        // Add parsed metadata claims
+        let (metadata_claims, metadata_claim_schemas) = parse_claims(
+            metadata_claims,
+            self.data_type_provider.as_ref(),
+            credential_id,
+        )?;
+        claims.extend(metadata_claims);
+        claim_schemas.extend(metadata_claim_schemas);
+
+        let schema_id = vcdm
+            .credential_schema
+            .as_ref()
+            .and_then(|schema| schema.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| schema_name.clone());
+
+        let schema = CredentialSchema {
+            id: Uuid::new_v4().into(),
+            deleted_at: None,
+            created_date: now,
+            last_modified: now,
+            name: schema_name,
+            format: "".into(),
+            revocation_method: revocation_method.map(|v| v.to_string().into()),
+            key_storage_security: None,
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id,
+            imported_source_url: "".to_string(),
+            allow_suspension: false,
+            requires_wallet_instance_attestation: false,
+            claim_schemas: Some(claim_schemas),
+            organisation: None,
+            transaction_code: None,
+        };
+
+        let issuer_identifier = prepare_identifier(
+            &IdentifierDetails::Did(vcdm.issuer.to_did_value()?),
+            self.key_algorithm_provider.as_ref(),
+        )?;
+
+        let credential_subject = vcdm.credential_subject.into_iter().next().ok_or_else(|| {
+            FormatterError::CouldNotExtractCredentials(
+                "Missing credential subject in JSON-LD credential".to_string(),
+            )
+        })?;
+        let holder_identifier = credential_subject
+            .id
+            .and_then(|id| DidValue::from_did_url(id).ok())
+            .map(IdentifierDetails::Did)
+            .map(|details| prepare_identifier(&details, self.key_algorithm_provider.as_ref()))
+            .transpose()?;
+
+        Ok(Credential {
+            id: credential_id,
+            created_date: now,
+            issuance_date: vcdm.issuance_date,
+            last_modified: now,
+            deleted_at: None,
+            protocol: "".to_string(),
+            redirect_uri: None,
+            role: CredentialRole::Holder,
+            state: CredentialStateEnum::Accepted,
+            suspend_end_date: None,
+            profile: None,
+            credential_blob_id: None,
+            wallet_unit_attestation_blob_id: None,
+            wallet_instance_attestation_blob_id: None,
+            claims: Some(claims),
+            issuer_certificate: issuer_identifier
+                .certificates
+                .as_ref()
+                .and_then(|certs| certs.first().cloned()),
+            issuer_identifier: Some(issuer_identifier),
+            holder_identifier,
+            schema: Some(schema),
+            interaction: None,
+            key: None,
+            webhook_url: None,
+        })
     }
 }
 

@@ -1,9 +1,12 @@
-use one_core::service::history::dto::HistoryResponseDTO;
+use one_core::service::history::dto::{
+    CreateHistoryRequestDTO, HistoryErrorMetadataDTO, HistoryResponseDTO,
+};
 use one_dto_mapper::{From, Into, TryFrom, convert_inner, try_convert_inner};
+use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
+use serde_json::Value;
 use shared_types::{
-    CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId,
+    CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId, ProofId,
     ProofSchemaId,
 };
 use time::OffsetDateTime;
@@ -11,44 +14,62 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::ListQueryParamsRest;
-use crate::dto::error::ErrorCode;
-use crate::endpoint::credential::dto::GetCredentialResponseRestDTO;
+use crate::dto::common::{Boolean, ListQueryParamsRest};
+use crate::endpoint::credential::dto::{
+    CredentialDetailClaimResponseRestDTO, GetCredentialResponseRestDTO,
+};
 use crate::endpoint::did::dto::DidListItemResponseRestDTO;
 use crate::endpoint::key::dto::KeyListItemResponseRestDTO;
 use crate::mapper::MapperError;
 use crate::serialize::front_time;
 
-pub type GetHistoryQuery =
+pub(crate) type GetHistoryQuery =
     ListQueryParamsRest<HistoryFilterQueryParamsRest, SortableHistoryColumnRestDTO>;
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, Into)]
+#[into(CreateHistoryRequestDTO)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateHistoryRequestRestDTO {
+    pub action: HistoryAction,
+    pub name: String,
+    pub entity_id: Option<EntityId>,
+    pub entity_type: HistoryEntityType,
+    pub organisation_id: Option<OrganisationId>,
+    pub source: ExternalHistorySource,
+    pub target: Option<String>,
+    pub metadata: Option<Value>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[from(HistoryResponseDTO)]
 #[serde(rename_all = "camelCase")]
-pub struct HistoryResponseRestDTO {
+pub(crate) struct HistoryResponseRestDTO {
     pub id: HistoryId,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     pub action: HistoryAction,
     pub name: String,
     #[from(with_fn = convert_inner)]
     pub entity_id: Option<Uuid>,
     pub entity_type: HistoryEntityType,
-    pub organisation_id: OrganisationId,
+    pub organisation_id: Option<OrganisationId>,
+    pub source: HistorySource,
     pub target: Option<String>,
+    pub user: Option<String>,
 }
 
-#[skip_serializing_none]
+#[options_not_nullable]
 #[derive(Serialize, ToSchema, TryFrom)]
 #[try_from(T = HistoryResponseDTO, Error = MapperError)]
 #[serde(rename_all = "camelCase")]
-pub struct HistoryResponseDetailRestDTO {
+pub(crate) struct HistoryResponseDetailRestDTO {
     #[try_from(infallible)]
     pub id: HistoryId,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     #[try_from(infallible)]
     pub created_date: OffsetDateTime,
     #[try_from(infallible)]
@@ -60,25 +81,31 @@ pub struct HistoryResponseDetailRestDTO {
     #[try_from(infallible)]
     pub entity_type: HistoryEntityType,
     #[try_from(infallible)]
-    pub organisation_id: OrganisationId,
+    pub organisation_id: Option<OrganisationId>,
     #[try_from(with_fn = try_convert_inner)]
     pub metadata: Option<HistoryMetadataRestEnum>,
     #[try_from(infallible)]
+    pub source: HistorySource,
+    #[try_from(infallible)]
     pub target: Option<String>,
+    #[try_from(with_fn = convert_inner, infallible)]
+    pub user: Option<String>,
 }
 
 #[derive(Serialize, ToSchema, TryFrom)]
 #[try_from(T = one_core::service::history::dto::HistoryMetadataResponse, Error = MapperError)]
-pub enum HistoryMetadataRestEnum {
+pub(crate) enum HistoryMetadataRestEnum {
     UnexportableEntities(UnexportableEntitiesResponseRestDTO),
     ErrorMetadata(#[try_from(infallible)] HistoryErrorMetadataRestDTO),
+    WalletUnitJWT(#[try_from(infallible)] String),
+    External(#[try_from(infallible)] serde_json::Value),
 }
 
 #[derive(Debug, Serialize, ToSchema, TryFrom)]
 #[try_from(T = one_core::service::backup::dto::UnexportableEntitiesResponseDTO, Error = MapperError)]
-pub struct UnexportableEntitiesResponseRestDTO {
-    #[try_from(with_fn = convert_inner, infallible)]
-    pub credentials: Vec<GetCredentialResponseRestDTO>,
+pub(crate) struct UnexportableEntitiesResponseRestDTO {
+    #[try_from(with_fn = try_convert_inner)]
+    pub credentials: Vec<GetCredentialResponseRestDTO<CredentialDetailClaimResponseRestDTO>>,
     #[try_from(with_fn = try_convert_inner)]
     pub keys: Vec<KeyListItemResponseRestDTO>,
     #[try_from(with_fn = convert_inner, infallible)]
@@ -91,11 +118,19 @@ pub struct UnexportableEntitiesResponseRestDTO {
     pub total_dids: u64,
 }
 
-#[derive(Serialize, ToSchema, From)]
-#[from("one_core::service::history::dto::HistoryErrorMetadataDTO")]
-pub struct HistoryErrorMetadataRestDTO {
-    pub error_code: ErrorCode,
+#[derive(Serialize, ToSchema)]
+pub(crate) struct HistoryErrorMetadataRestDTO {
+    pub error_code: &'static str,
     pub message: String,
+}
+
+impl From<HistoryErrorMetadataDTO> for HistoryErrorMetadataRestDTO {
+    fn from(value: HistoryErrorMetadataDTO) -> Self {
+        Self {
+            error_code: value.error_code.into(),
+            message: value.message,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
@@ -127,6 +162,10 @@ pub enum HistoryAction {
     Updated,
     Reactivated,
     Expired,
+    InteractionCreated,
+    InteractionErrored,
+    InteractionExpired,
+    Delivered,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
@@ -146,72 +185,106 @@ pub enum HistoryEntityType {
     Backup,
     TrustAnchor,
     TrustEntity,
+    WalletUnit,
+    User,
+    Provider,
+    WalletRelyingParty,
+    StsRole,
+    StsOrganisation,
+    StsIamRole,
+    StsSession,
+    StsToken,
+    Signature,
+    Notification,
+    SupervisoryAuthority,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[from("one_core::model::history::HistorySource")]
+#[into("one_core::model::history::HistorySource")]
+pub enum HistorySource {
+    Core,
+    Bridge,
+    Sts,
+    Wrpr,
+    Bff,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into("one_core::model::history::HistorySource")]
+pub(crate) enum ExternalHistorySource {
+    Bridge,
+    Sts,
+    Wrpr,
+    Bff,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
 #[into("one_core::model::history::SortableHistoryColumn")]
-pub enum SortableHistoryColumnRestDTO {
+pub(crate) enum SortableHistoryColumnRestDTO {
     CreatedDate,
     Action,
     EntityType,
+    Source,
+    User,
+    OrganisationId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryFilterQueryParamsRest {
+#[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetHistoryQuery
+pub(crate) struct HistoryFilterQueryParamsRest {
     /// Return only events associated with the specified entity type(s).
     #[param(rename = "entityTypes[]", inline, nullable = false)]
     pub entity_types: Option<Vec<HistoryEntityType>>,
-    /// Return only events associated with the provided entity UUID.
-    #[param(nullable = false)]
-    pub entity_id: Option<EntityId>,
+    /// Return only events associated with the provided entity UUID(s).
+    #[param(rename = "entityIds[]", inline, nullable = false)]
+    pub entity_ids: Option<Vec<EntityId>>,
     /// Return only events of the specified action(s).
-    #[param(nullable = false)]
-    pub action: Option<HistoryAction>,
+    #[param(rename = "actions[]", inline, nullable = false)]
+    pub actions: Option<Vec<HistoryAction>>,
     /// Return only events which occurred after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
-    #[param(value_type = String)]
-    pub created_date_from: Option<OffsetDateTime>,
+    #[param(nullable = false)]
+    pub created_date_after: Option<OffsetDateTime>,
     /// Return only events which occurred before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
-    #[param(value_type = String)]
-    pub created_date_to: Option<OffsetDateTime>,
+    #[param(nullable = false)]
+    pub created_date_before: Option<OffsetDateTime>,
     /// Return only events associated with the provided Identifier UUID.
     #[param(nullable = false)]
     pub identifier_id: Option<IdentifierId>,
     /// Return only events associated with the provided credential UUID.
     #[param(nullable = false)]
     pub credential_id: Option<CredentialId>,
+    /// Return only events associated with the provided proof UUID.
+    #[param(nullable = false)]
+    pub proof_id: Option<ProofId>,
     /// Return only events associated with the provided credential schema UUID.
     #[param(nullable = false)]
     pub credential_schema_id: Option<CredentialSchemaId>,
     /// Return only events associated with the provided proof schema UUID.
     #[param(nullable = false)]
     pub proof_schema_id: Option<ProofSchemaId>,
-    /// Search for a string.
-    #[param(nullable = false)]
-    pub search_text: Option<String>,
-    /// Changes where `searchText` is searched. If no value is provided, events
-    /// that have any field matching `searchText` will be returned.
-    #[param(nullable = false)]
-    pub search_type: Option<HistorySearchEnumRest>,
-    /// Specify the organizaton from which to return history events.
-    pub organisation_id: OrganisationId,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into)]
-#[into("one_core::model::history::HistorySearchEnum")]
-#[serde(rename_all = "camelCase")]
-pub enum HistorySearchEnumRest {
-    ClaimName,
-    ClaimValue,
-    CredentialSchemaName,
-    IssuerDid,
-    IssuerName,
-    VerifierDid,
-    VerifierName,
-    ProofSchemaName,
+    /// Return only events associated with the provided users. Only applicable
+    /// in STS authentication mode.
+    #[param(rename = "users[]", nullable = false)]
+    pub users: Option<Vec<String>>,
+    /// Return only events associated with the provided sources.
+    #[param(rename = "sources[]", inline, nullable = false)]
+    pub sources: Option<Vec<HistorySource>>,
+    /// Specify the organizaton(s) from which to return history events.
+    #[param(rename = "organisationIds[]", inline, nullable = false)]
+    pub organisation_ids: Option<Vec<OrganisationId>>,
+    /// Controls cross-organization access. When `false` (default), returns
+    /// events from the organization in your STS token, or requires at least
+    /// one value in `organisationIds[]` if not using STS authentication.
+    /// When `true`, returns events from all organizations; requires
+    /// `SYSTEM_HISTORY_LIST` permission in STS authentication mode.
+    #[param(inline, nullable = false)]
+    pub show_system_history: Option<Boolean>,
 }

@@ -1,15 +1,20 @@
 use autometrics::autometrics;
+use futures::FutureExt;
 use one_core::model::organisation::{
-    Organisation, OrganisationRelations, UpdateOrganisationRequest,
+    GetOrganisationList, Organisation, OrganisationListQuery, OrganisationRelations,
+    UpdateOrganisationRequest,
 };
+use one_core::proto::transaction_manager::IsolationLevel;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::organisation_repository::OrganisationRepository;
 use one_dto_mapper::convert_inner;
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use shared_types::OrganisationId;
 
 use super::OrganisationProvider;
+use crate::common::list_query_with_base_model;
 use crate::entity::organisation;
+use crate::list_query_generic::SelectWithListQuery;
 use crate::mapper::{to_data_layer_error, to_update_data_layer_error};
 
 #[autometrics]
@@ -19,13 +24,25 @@ impl OrganisationRepository for OrganisationProvider {
         &self,
         organisation: Organisation,
     ) -> Result<OrganisationId, DataLayerError> {
-        let organisation =
-            organisation::Entity::insert(organisation::ActiveModel::from(organisation))
-                .exec(&self.db)
-                .await
-                .map_err(to_data_layer_error)?;
-
-        Ok(organisation.last_insert_id)
+        let organisation_id = organisation.id;
+        self.db
+            .tx_with_config(
+                async {
+                    organisation::Entity::insert(organisation::ActiveModel::from(organisation))
+                        .exec(&self.db)
+                        .await
+                        .map_err(to_data_layer_error)?;
+                    Ok::<_, DataLayerError>(())
+                }
+                .boxed(),
+                // In isolation mode "read committed" InnoDB will _not_ create gap locks. Given there
+                // are multiple unique indexes, this is necessary to avoid deadlocks during parallel
+                // inserts.
+                Some(IsolationLevel::ReadCommitted),
+                None,
+            )
+            .await??;
+        Ok(organisation_id)
     }
 
     async fn update_organisation(
@@ -52,12 +69,25 @@ impl OrganisationRepository for OrganisationProvider {
         Ok(convert_inner(organisation))
     }
 
-    async fn get_organisation_list(&self) -> Result<Vec<Organisation>, DataLayerError> {
-        let organisations: Vec<organisation::Model> = organisation::Entity::find()
-            .all(&self.db)
+    async fn get_organisation_for_wallet_provider(
+        &self,
+        wallet_provider: &str,
+    ) -> Result<Option<Organisation>, DataLayerError> {
+        let organisations: Option<organisation::Model> = organisation::Entity::find()
+            .filter(organisation::Column::WalletProvider.eq(wallet_provider))
+            .one(&self.db)
             .await
             .map_err(to_data_layer_error)?;
 
         Ok(convert_inner(organisations))
+    }
+
+    async fn get_organisation_list(
+        &self,
+        query_params: OrganisationListQuery,
+    ) -> Result<GetOrganisationList, DataLayerError> {
+        let query = organisation::Entity::find().with_list_query(&query_params);
+
+        list_query_with_base_model(query, query_params, &self.db).await
     }
 }

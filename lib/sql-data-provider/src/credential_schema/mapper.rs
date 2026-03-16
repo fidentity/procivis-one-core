@@ -1,6 +1,8 @@
+use one_core::model::claim_schema::ClaimSchema;
 use one_core::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, SortableCredentialSchemaColumn,
+    CredentialSchema, SortableCredentialSchemaColumn, TransactionCode,
 };
+use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::organisation::Organisation;
 use one_core::repository::error::DataLayerError;
 use one_core::service::credential_schema::dto::CredentialSchemaFilterValue;
@@ -11,9 +13,11 @@ use sea_orm::sea_query::query::IntoCondition;
 use sea_orm::{ColumnTrait, IntoSimpleExpr};
 use shared_types::CredentialSchemaId;
 
-use crate::entity::{claim_schema, credential_schema, credential_schema_claim_schema};
+use crate::entity::credential_schema::KeyStorageSecurity;
+use crate::entity::{claim_schema, credential_schema};
 use crate::list_query_generic::{
-    IntoFilterCondition, IntoSortingColumn, get_equals_condition, get_string_match_condition,
+    IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_equals_condition,
+    get_string_match_condition,
 };
 
 impl IntoSortingColumn for SortableCredentialSchemaColumn {
@@ -27,7 +31,7 @@ impl IntoSortingColumn for SortableCredentialSchemaColumn {
 }
 
 impl IntoFilterCondition for CredentialSchemaFilterValue {
-    fn get_condition(self) -> sea_orm::Condition {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> sea_orm::Condition {
         match self {
             Self::Name(string_match) => {
                 get_string_match_condition(credential_schema::Column::Name, string_match)
@@ -35,9 +39,9 @@ impl IntoFilterCondition for CredentialSchemaFilterValue {
             Self::SchemaId(string_match) => {
                 get_string_match_condition(credential_schema::Column::SchemaId, string_match)
             }
-            Self::Format(string_match) => {
-                get_string_match_condition(credential_schema::Column::Format, string_match)
-            }
+            Self::Formats(formats) => credential_schema::Column::Format
+                .is_in(formats)
+                .into_condition(),
             Self::OrganisationId(organisation_id) => get_equals_condition(
                 credential_schema::Column::OrganisationId,
                 organisation_id.to_string(),
@@ -45,6 +49,22 @@ impl IntoFilterCondition for CredentialSchemaFilterValue {
             Self::CredentialSchemaIds(ids) => credential_schema::Column::Id
                 .is_in(ids.iter())
                 .into_condition(),
+            Self::CreatedDate(value) => {
+                get_comparison_condition(credential_schema::Column::CreatedDate, value)
+            }
+            Self::LastModified(value) => {
+                get_comparison_condition(credential_schema::Column::LastModified, value)
+            }
+            Self::RequiresWalletInstanceAttestation(requires_wia) => get_equals_condition(
+                credential_schema::Column::RequiresWalletInstanceAttestation,
+                requires_wia,
+            ),
+            Self::KeyStorageSecurity(security_levels) => {
+                let security_levels: Vec<KeyStorageSecurity> = convert_inner(security_levels);
+                credential_schema::Column::KeyStorageSecurity
+                    .is_in(security_levels)
+                    .into_condition()
+            }
         }
     }
 }
@@ -55,6 +75,16 @@ impl TryFrom<CredentialSchema> for credential_schema::ActiveModel {
     fn try_from(value: CredentialSchema) -> Result<Self, Self::Error> {
         let organisation_id = value.organisation.ok_or(DataLayerError::MappingError)?.id;
 
+        let (transaction_code_type, transaction_code_length, transaction_code_description) =
+            match value.transaction_code {
+                Some(code) => (
+                    Some(code.r#type.into()),
+                    Some(code.length),
+                    code.description,
+                ),
+                None => (None, None, None),
+            };
+
         Ok(Self {
             id: Set(value.id),
             deleted_at: Set(value.deleted_at),
@@ -64,66 +94,68 @@ impl TryFrom<CredentialSchema> for credential_schema::ActiveModel {
             imported_source_url: Set(value.imported_source_url),
             format: Set(value.format),
             revocation_method: Set(value.revocation_method),
-            external_schema: Set(value.external_schema),
             organisation_id: Set(organisation_id),
-            wallet_storage_type: Set(convert_inner(value.wallet_storage_type)),
+            key_storage_security: Set(convert_inner(value.key_storage_security)),
             layout_type: Set(value.layout_type.into()),
             layout_properties: Set(convert_inner(value.layout_properties)),
-            schema_type: Set(value.schema_type.into()),
             schema_id: Set(value.schema_id),
             allow_suspension: Set(value.allow_suspension),
+            requires_wallet_instance_attestation: Set(value.requires_wallet_instance_attestation),
+            transaction_code_type: Set(transaction_code_type),
+            transaction_code_length: Set(transaction_code_length),
+            transaction_code_description: Set(transaction_code_description),
         })
     }
 }
 
 pub(super) fn claim_schemas_to_model_vec(
-    claim_schemas: Vec<CredentialSchemaClaim>,
+    claim_schemas: Vec<ClaimSchema>,
+    credential_schema_id: &CredentialSchemaId,
 ) -> Vec<claim_schema::ActiveModel> {
     claim_schemas
         .into_iter()
-        .map(|claim_schema| claim_schema::ActiveModel {
-            id: Set(claim_schema.schema.id),
-            created_date: Set(claim_schema.schema.created_date),
-            last_modified: Set(claim_schema.schema.last_modified),
-            key: Set(claim_schema.schema.key),
-            datatype: Set(claim_schema.schema.data_type),
-            array: Set(claim_schema.schema.array),
-        })
-        .collect()
-}
-
-pub(super) fn claim_schemas_to_relations(
-    claim_schemas: &[CredentialSchemaClaim],
-    credential_schema_id: &CredentialSchemaId,
-) -> Vec<credential_schema_claim_schema::ActiveModel> {
-    claim_schemas
-        .iter()
         .enumerate()
-        .map(
-            |(i, claim_schema)| credential_schema_claim_schema::ActiveModel {
-                claim_schema_id: Set(claim_schema.schema.id),
-                credential_schema_id: Set(credential_schema_id.to_string()),
-                required: Set(claim_schema.required),
-                order: Set(i as u32),
-            },
-        )
+        .map(|(index, claim_schema)| claim_schema::ActiveModel {
+            id: Set(claim_schema.id),
+            created_date: Set(claim_schema.created_date),
+            last_modified: Set(claim_schema.last_modified),
+            key: Set(claim_schema.key),
+            datatype: Set(claim_schema.data_type),
+            array: Set(claim_schema.array),
+            metadata: Set(claim_schema.metadata),
+            credential_schema_id: Set(*credential_schema_id),
+            required: Set(claim_schema.required),
+            order: Set(index as u32),
+        })
         .collect()
 }
 
 pub(super) fn credential_schema_from_models(
     credential_schema: credential_schema::Model,
-    claim_schemas: Option<Vec<CredentialSchemaClaim>>,
+    claim_schemas: Option<Vec<ClaimSchema>>,
     organisation: Option<Organisation>,
     skip_layout_properties: bool,
-) -> CredentialSchema {
-    CredentialSchema {
+) -> Result<CredentialSchema, DataLayerError> {
+    let transaction_code = match (
+        credential_schema.transaction_code_type,
+        credential_schema.transaction_code_length,
+    ) {
+        (Some(r#type), Some(length)) => Some(TransactionCode {
+            r#type: r#type.into(),
+            length,
+            description: credential_schema.transaction_code_description,
+        }),
+        (None, None) => None,
+        _ => return Err(DataLayerError::MappingError),
+    };
+
+    Ok(CredentialSchema {
         id: credential_schema.id,
         deleted_at: credential_schema.deleted_at,
         created_date: credential_schema.created_date,
         last_modified: credential_schema.last_modified,
         name: credential_schema.name,
-        external_schema: credential_schema.external_schema,
-        wallet_storage_type: convert_inner(credential_schema.wallet_storage_type),
+        key_storage_security: convert_inner(credential_schema.key_storage_security),
         format: credential_schema.format,
         revocation_method: credential_schema.revocation_method,
         claim_schemas,
@@ -134,9 +166,11 @@ pub(super) fn credential_schema_from_models(
         } else {
             convert_inner(credential_schema.layout_properties)
         },
-        schema_type: credential_schema.schema_type.into(),
         imported_source_url: credential_schema.imported_source_url,
         schema_id: credential_schema.schema_id,
         allow_suspension: credential_schema.allow_suspension,
-    }
+        requires_wallet_instance_attestation: credential_schema
+            .requires_wallet_instance_attestation,
+        transaction_code,
+    })
 }

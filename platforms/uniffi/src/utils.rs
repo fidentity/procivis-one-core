@@ -14,28 +14,35 @@ const TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] = time:
 
 impl TimestampFormat for OffsetDateTime {
     fn format_timestamp(&self) -> String {
-        self.format(&TIMESTAMP_FORMAT).unwrap()
+        #[allow(clippy::expect_used)]
+        self.format(&TIMESTAMP_FORMAT)
+            .expect("Failed to compile timestamp format")
     }
 }
 
-pub fn format_timestamp_opt(datetime: Option<OffsetDateTime>) -> Option<String> {
-    datetime.as_ref().map(OffsetDateTime::format_timestamp)
-}
-
-pub fn from_id_opt<T: Into<Uuid>>(input: Option<T>) -> Option<String> {
+pub(crate) fn from_id_opt<T: Into<Uuid>>(input: Option<T>) -> Option<String> {
     input.map(|f| f.into().to_string())
 }
 
-pub fn into_id<T: From<Uuid>>(input: impl AsRef<str>) -> Result<T, ServiceError> {
+pub(crate) fn into_id<T: From<Uuid>>(input: impl AsRef<str>) -> Result<T, ServiceError> {
     Uuid::parse_str(input.as_ref())
         .map_err(Into::into)
         .map(Into::into)
 }
 
-pub fn into_id_opt<T: From<Uuid>>(input: Option<String>) -> Result<Option<T>, ServiceError> {
+pub(crate) fn into_id_opt<T: From<Uuid>>(input: Option<String>) -> Result<Option<T>, ServiceError> {
     input.as_deref().map(into_id::<T>).transpose()
 }
 
-pub fn into_timestamp(input: &str) -> Result<OffsetDateTime, ServiceError> {
+pub(crate) fn into_timestamp(input: &str) -> Result<OffsetDateTime, ServiceError> {
     OffsetDateTime::parse(input, &Rfc3339).map_err(|e| ServiceError::MappingError(e.to_string()))
+}
+
+pub(crate) fn into_timestamp_opt(
+    input: Option<impl AsRef<str>>,
+) -> Result<Option<OffsetDateTime>, ServiceError> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    into_timestamp(input.as_ref()).map(Some)
 }

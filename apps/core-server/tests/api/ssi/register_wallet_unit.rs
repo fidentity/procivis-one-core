@@ -1,0 +1,305 @@
+use one_core::model::wallet_unit::{WalletUnitListQuery, WalletUnitStatus};
+use one_core::provider::key_algorithm::KeyAlgorithm;
+use one_core::provider::key_algorithm::ecdsa::Ecdsa;
+use similar_asserts::assert_eq;
+
+use crate::fixtures::wallet_provider::{
+    create_key_possession_proof, create_wallet_unit_attestation_issuer_identifier,
+};
+use crate::utils::context::TestContext;
+use crate::utils::field_match::FieldHelpers;
+
+#[tokio::test]
+async fn test_register_wallet_unit_successfully_integrity_check_disabled() {
+    let config = indoc::indoc! {"
+      walletProvider:
+        PROCIVIS_ONE:
+            params:
+              public:
+                walletInstanceAttestation:
+                    integrityCheck:
+                        enabled: false
+    "}
+    .to_string();
+    // given
+    let (context, org) = TestContext::new_with_organisation(Some(config)).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "ANDROID",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 201);
+    let resp_json = resp.json_value().await;
+
+    assert!(resp_json["id"].as_str().is_some());
+
+    let wallet_units = context
+        .db
+        .wallet_units
+        .list(WalletUnitListQuery::default())
+        .await;
+    assert_eq!(wallet_units.values.len(), 1);
+    let wallet_unit = &wallet_units.values[0];
+    assert_eq!(wallet_unit.status, WalletUnitStatus::Active);
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_successfully_integrity_check_enabled() {
+    // given
+    let (context, org) = TestContext::new_with_organisation(None).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet("PROCIVIS_ONE", "ANDROID", None, None)
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 201);
+    let resp_json = resp.json_value().await;
+
+    assert!(resp_json["id"].as_str().is_some());
+    let wallet_units = context
+        .db
+        .wallet_units
+        .list(WalletUnitListQuery::default())
+        .await;
+    assert_eq!(wallet_units.values.len(), 1);
+    let wallet_unit = &wallet_units.values[0];
+    resp_json["nonce"].assert_eq(&wallet_unit.nonce);
+    assert_eq!(wallet_unit.status, WalletUnitStatus::Pending);
+    assert_eq!(wallet_unit.last_issuance, None);
+    assert_eq!(wallet_unit.authentication_key_jwk, None);
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_fail_integrity_check_disabled_no_proof_and_pubkey() {
+    let config = indoc::indoc! {"
+      walletProvider:
+        PROCIVIS_ONE:
+            params:
+              public:
+                walletInstanceAttestation:
+                    integrityCheck:
+                        enabled: false
+    "}
+    .to_string();
+    // given
+    let (context, org) = TestContext::new_with_organisation(Some(config)).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet("PROCIVIS_ONE", "ANDROID", None, None)
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    let resp_json = resp.json_value().await;
+    assert_eq!(resp_json["code"], "BR_0279");
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_successfully_integrity_check_enabled_web() {
+    // given
+    let (context, org) = TestContext::new_with_organisation(None).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "WEB",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 201);
+    let resp_json = resp.json_value().await;
+
+    assert!(resp_json["id"].as_str().is_some());
+    let wallet_units = context
+        .db
+        .wallet_units
+        .list(WalletUnitListQuery::default())
+        .await;
+    assert_eq!(wallet_units.values.len(), 1);
+    let wallet_unit = &wallet_units.values[0];
+    assert_eq!(wallet_unit.status, WalletUnitStatus::Active);
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_fail_on_disabled_wallet_provider() {
+    // given
+    let config_changes = indoc::indoc! {"
+    walletProvider:
+        PROCIVIS_ONE:
+            enabled: false
+    "}
+    .to_string();
+    let (context, org) = TestContext::new_with_organisation(Some(config_changes)).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "ANDROID",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    let resp_json = resp.json_value().await;
+    assert_eq!(resp_json["code"], "BR_0260");
+    assert_eq!(
+        resp_json["message"],
+        "Wallet provider not enabled in config"
+    );
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_fail_on_duplicate_public_key() {
+    // given
+    let (context, org) = TestContext::new_with_organisation(None).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "WEB",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+    assert_eq!(resp.status(), 201);
+
+    // duplicate registration
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "WEB",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    let resp_json = resp.json_value().await;
+    assert_eq!(resp_json["code"], "BR_0271");
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_provider_no_org() {
+    // given
+    let (context, _) = TestContext::new_with_organisation(None).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "WEB",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.error_code().await, "BR_0286");
+}
+
+#[tokio::test]
+async fn test_register_wallet_unit_provider_org_disabled() {
+    // given
+    let (context, org) = TestContext::new_with_organisation(None).await;
+    create_wallet_unit_attestation_issuer_identifier(&context, &org).await;
+    context.db.organisations.deactivate(&org.id).await;
+
+    let holder_key_pair = Ecdsa.generate_key().unwrap();
+    let holder_public_jwk = holder_key_pair.key.public_key_as_jwk().unwrap();
+
+    let proof =
+        create_key_possession_proof(&holder_key_pair, context.config.app.core_base_url.clone())
+            .await;
+
+    // when
+    let resp = context
+        .api
+        .wallet_provider
+        .register_wallet(
+            "PROCIVIS_ONE",
+            "WEB",
+            Some(&holder_public_jwk),
+            Some(&proof),
+        )
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.error_code().await, "BR_0284");
+}

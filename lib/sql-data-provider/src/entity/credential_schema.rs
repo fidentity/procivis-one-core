@@ -1,10 +1,10 @@
 use one_core::model;
-use one_core::model::credential_schema::WalletStorageTypeEnum as ModelWalletStorageTypeEnum;
+use one_core::model::credential_schema::KeyStorageSecurity as ModelKeyStorageSecurity;
 use one_dto_mapper::{From, Into, convert_inner};
 use sea_orm::FromJsonQueryResult;
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
-use shared_types::{CredentialSchemaId, OrganisationId};
+use shared_types::{CredentialFormat, CredentialSchemaId, OrganisationId, RevocationMethodId};
 use time::OffsetDateTime;
 
 use crate::common::bool_from_int;
@@ -18,139 +18,41 @@ pub struct Model {
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
     pub name: String,
-    pub format: String,
-    pub revocation_method: String,
-    pub wallet_storage_type: Option<WalletStorageType>,
-    pub external_schema: bool,
+    pub format: CredentialFormat,
+    pub revocation_method: Option<RevocationMethodId>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub organisation_id: OrganisationId,
     #[sea_orm(column_type = "Text")]
     pub layout_type: LayoutType,
     #[sea_orm(column_type = "Json")]
     pub layout_properties: Option<LayoutProperties>,
-    pub schema_type: CredentialSchemaType,
     pub schema_id: String,
     pub imported_source_url: String,
     #[serde(deserialize_with = "bool_from_int")]
     pub allow_suspension: bool,
-}
-
-#[derive(Debug, Clone, EnumIter, From, Into, PartialEq, Eq, Deserialize)]
-#[from(model::credential_schema::CredentialSchemaType)]
-#[into(model::credential_schema::CredentialSchemaType)]
-pub enum CredentialSchemaType {
-    ProcivisOneSchema2024,
-    FallbackSchema2024,
-    Mdoc,
-    SdJwtVc,
-    Other(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CredentialSchemaTypeEnum;
-
-impl sea_orm::sea_query::Iden for CredentialSchemaTypeEnum {
-    fn unquoted(&self, s: &mut dyn std::fmt::Write) {
-        write!(s, "CredentialSchemaType").unwrap();
-    }
-}
-
-impl sea_orm::ActiveEnum for CredentialSchemaType {
-    type Value = String;
-    type ValueVec = Vec<String>;
-
-    fn name() -> sea_orm::sea_query::DynIden {
-        sea_orm::sea_query::SeaRc::new(CredentialSchemaTypeEnum) as _
-    }
-
-    fn to_value(&self) -> Self::Value {
-        match self {
-            Self::ProcivisOneSchema2024 => "ProcivisOneSchema2024",
-            Self::FallbackSchema2024 => "FallbackSchema2024",
-            Self::SdJwtVc => "SdJwtVc",
-            Self::Mdoc => "mdoc",
-            Self::Other(val) => val,
-        }
-        .to_owned()
-    }
-
-    fn try_from_value(v: &Self::Value) -> std::result::Result<Self, sea_orm::DbErr> {
-        match v.as_ref() {
-            "ProcivisOneSchema2024" => Ok(Self::ProcivisOneSchema2024),
-            "FallbackSchema2024" => Ok(Self::FallbackSchema2024),
-            "SdJwtVc" => Ok(Self::SdJwtVc),
-            "mdoc" => Ok(Self::Mdoc),
-            val => Ok(Self::Other(val.to_owned())),
-        }
-    }
-
-    fn db_type() -> sea_orm::ColumnDef {
-        sea_orm::prelude::ColumnTypeTrait::def(sea_orm::ColumnType::string(Some(1)))
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<sea_orm::sea_query::Value> for CredentialSchemaType {
-    fn into(self) -> sea_orm::sea_query::Value {
-        <Self as sea_orm::ActiveEnum>::to_value(&self).into()
-    }
-}
-
-impl sea_orm::TryGetable for CredentialSchemaType {
-    fn try_get_by<I: sea_orm::ColIdx>(
-        res: &sea_orm::QueryResult,
-        idx: I,
-    ) -> std::result::Result<Self, sea_orm::TryGetError> {
-        let value =
-            <<Self as sea_orm::ActiveEnum>::Value as sea_orm::TryGetable>::try_get_by(res, idx)?;
-        <Self as sea_orm::ActiveEnum>::try_from_value(&value).map_err(sea_orm::TryGetError::DbErr)
-    }
-}
-
-impl sea_orm::sea_query::ValueType for CredentialSchemaType {
-    fn try_from(
-        v: sea_orm::sea_query::Value,
-    ) -> std::result::Result<Self, sea_orm::sea_query::ValueTypeErr> {
-        let value =
-            <<Self as sea_orm::ActiveEnum>::Value as sea_orm::sea_query::ValueType>::try_from(v)?;
-        <Self as sea_orm::ActiveEnum>::try_from_value(&value)
-            .map_err(|_| sea_orm::sea_query::ValueTypeErr)
-    }
-
-    fn type_name() -> String {
-        <<Self as sea_orm::ActiveEnum>::Value as sea_orm::sea_query::ValueType>::type_name()
-    }
-
-    fn array_type() -> sea_orm::sea_query::ArrayType {
-        <<Self as sea_orm::ActiveEnum>::Value as sea_orm::sea_query::ValueType>::array_type()
-    }
-
-    fn column_type() -> sea_orm::sea_query::ColumnType {
-        <Self as sea_orm::ActiveEnum>::db_type()
-            .get_column_type()
-            .to_owned()
-    }
-}
-
-impl sea_orm::sea_query::Nullable for CredentialSchemaType {
-    fn null() -> sea_orm::sea_query::Value {
-        <<Self as sea_orm::ActiveEnum>::Value as sea_orm::sea_query::Nullable>::null()
-    }
+    #[serde(deserialize_with = "bool_from_int")]
+    pub requires_wallet_instance_attestation: bool,
+    pub transaction_code_type: Option<TransactionCodeType>,
+    pub transaction_code_length: Option<u32>,
+    pub transaction_code_description: Option<String>,
 }
 
 #[derive(
     Copy, Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, Into, From, Deserialize,
 )]
-#[from(ModelWalletStorageTypeEnum)]
-#[into(ModelWalletStorageTypeEnum)]
+#[from(ModelKeyStorageSecurity)]
+#[into(ModelKeyStorageSecurity)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum WalletStorageType {
-    #[sea_orm(string_value = "HARDWARE")]
-    Hardware,
-    #[sea_orm(string_value = "SOFTWARE")]
-    Software,
-    #[sea_orm(string_value = "REMOTE_SECURE_ELEMENT")]
-    RemoteSecureElement,
+pub enum KeyStorageSecurity {
+    #[sea_orm(string_value = "HIGH")]
+    High,
+    #[sea_orm(string_value = "MODERATE")]
+    Moderate,
+    #[sea_orm(string_value = "ENHANCED_BASIC")]
+    EnhancedBasic,
+    #[sea_orm(string_value = "BASIC")]
+    Basic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
@@ -164,6 +66,17 @@ pub enum LayoutType {
     Document,
     #[sea_orm(string_value = "SINGLE_ATTRIBUTE")]
     SingleAttribute,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+#[from(model::credential_schema::TransactionCodeType)]
+#[into(model::credential_schema::TransactionCodeType)]
+pub enum TransactionCodeType {
+    #[sea_orm(string_value = "NUMERIC")]
+    Numeric,
+    #[sea_orm(string_value = "ALPHANUMERIC")]
+    Alphanumeric,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, FromJsonQueryResult, From, Into)]
@@ -223,8 +136,8 @@ pub enum CodeTypeEnum {
 pub enum Relation {
     #[sea_orm(has_many = "super::credential::Entity")]
     Credential,
-    #[sea_orm(has_many = "super::credential_schema_claim_schema::Entity")]
-    CredentialSchemaClaimSchema,
+    #[sea_orm(has_many = "super::claim_schema::Entity")]
+    ClaimSchema,
     #[sea_orm(
         belongs_to = "super::organisation::Entity",
         from = "Column::OrganisationId",
@@ -243,28 +156,15 @@ impl Related<super::credential::Entity> for Entity {
     }
 }
 
-impl Related<super::credential_schema_claim_schema::Entity> for Entity {
+impl Related<super::claim_schema::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::CredentialSchemaClaimSchema.def()
+        Relation::ClaimSchema.def()
     }
 }
 
 impl Related<super::organisation::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Organisation.def()
-    }
-}
-
-impl Related<super::claim_schema::Entity> for Entity {
-    fn to() -> RelationDef {
-        super::credential_schema_claim_schema::Relation::ClaimSchema.def()
-    }
-    fn via() -> Option<RelationDef> {
-        Some(
-            super::credential_schema_claim_schema::Relation::CredentialSchema
-                .def()
-                .rev(),
-        )
     }
 }
 

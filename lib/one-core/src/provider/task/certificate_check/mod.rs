@@ -6,34 +6,35 @@ use shared_types::{CertificateId, IdentifierId};
 use time::OffsetDateTime;
 
 use super::Task;
+use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin};
 use crate::model::certificate::{
     CertificateFilterValue, CertificateListQuery, CertificateState, UpdateCertificateRequest,
 };
 use crate::model::identifier::{IdentifierRelations, IdentifierState, UpdateIdentifierRequest};
 use crate::model::list_filter::{ComparisonType, ListFilterValue, ValueComparison};
+use crate::proto::certificate_validator::{CertificateValidationOptions, CertificateValidator};
 use crate::repository::certificate_repository::CertificateRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
-use crate::service::certificate::CertificateService;
-use crate::service::error::{EntityNotFoundError, ServiceError, ValidationError};
+use crate::service::error::{EntityNotFoundError, ServiceError};
 
 pub mod dto;
 
 pub struct CertificateCheck {
     certificate_repository: Arc<dyn CertificateRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
-    certificate_service: CertificateService,
+    certificate_validator: Arc<dyn CertificateValidator>,
 }
 
 impl CertificateCheck {
-    pub fn new(
+    pub(crate) fn new(
         certificate_repository: Arc<dyn CertificateRepository>,
         identifier_repository: Arc<dyn IdentifierRepository>,
-        certificate_service: CertificateService,
+        certificate_validator: Arc<dyn CertificateValidator>,
     ) -> Self {
         Self {
             certificate_repository,
             identifier_repository,
-            certificate_service,
+            certificate_validator,
         }
     }
 }
@@ -66,7 +67,8 @@ impl Task for CertificateCheck {
                         ..Default::default()
                     },
                 )
-                .await?
+                .await
+                .error_while("getting identifier")?
                 .ok_or(EntityNotFoundError::Identifier(identifier_id))?;
 
             if identifier.state == IdentifierState::Active
@@ -86,7 +88,8 @@ impl Task for CertificateCheck {
                             ..Default::default()
                         },
                     )
-                    .await?;
+                    .await
+                    .error_while("updating identifier")?;
                 deactivated_identifier_ids.push(identifier_id);
             }
         }
@@ -141,7 +144,8 @@ impl CertificateCheck {
                 ),
                 ..Default::default()
             })
-            .await?;
+            .await
+            .error_while("getting certificates")?;
 
         let mut expired_certificate_ids: Vec<ExpirationCheckResult> =
             Vec::with_capacity(active_expired_certificates.total_items as usize);
@@ -154,7 +158,8 @@ impl CertificateCheck {
                         ..Default::default()
                     },
                 )
-                .await?;
+                .await
+                .error_while("updating certificate")?;
             expired_certificate_ids.push(ExpirationCheckResult {
                 certificate_id: certificate.id,
                 identifier_id: certificate.identifier_id,
@@ -173,17 +178,21 @@ impl CertificateCheck {
                 ),
                 ..Default::default()
             })
-            .await?;
+            .await
+            .error_while("getting certificates")?;
 
         let mut results: Vec<RevocationCheckResult> = vec![];
         for certificate in active_certificates.values {
             match self
-                .certificate_service
-                .parse_pem_chain(certificate.chain.as_bytes(), true, None)
+                .certificate_validator
+                .parse_pem_chain(
+                    &certificate.chain,
+                    CertificateValidationOptions::signature_and_revocation(None),
+                )
                 .await
             {
                 Ok(_) => {}
-                Err(ServiceError::Validation(ValidationError::CertificateRevoked)) => {
+                Err(error) if error.error_code() == ErrorCode::BR_0212 => {
                     results.push(RevocationCheckResult {
                         certificate_id: certificate.id,
                         identifier_id: certificate.identifier_id,
@@ -198,7 +207,8 @@ impl CertificateCheck {
                                 ..Default::default()
                             },
                         )
-                        .await?;
+                        .await
+                        .error_while("updating certificate")?;
                 }
                 Err(err) => {
                     results.push(RevocationCheckResult {

@@ -1,219 +1,394 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::FutureExt;
-use futures::future::{BoxFuture, Shared};
+use async_trait::async_trait;
+use futures::future::BoxFuture;
+use shared_types::{InteractionId, ProofId};
 use time::{Duration, OffsetDateTime};
+use tokio::select;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::Instrument;
+use url::Url;
 
-use super::model::{MQTTOpenID4VPInteractionDataVerifier, MQTTOpenId4VpResponse};
+use super::model::{MQTTOpenID4VPInteractionDataVerifier, MQTTVerifierProtocolData};
+use super::{ConfigParams, SubscriptionHandle, extract_host_and_port};
 use crate::config::core_config::TransportType;
-use crate::model::did::Did;
-use crate::model::history::HistoryErrorMetadata;
-use crate::model::interaction::InteractionId;
-use crate::model::proof::{Proof, ProofStateEnum};
-use crate::provider::credential_formatter::model::AuthenticationFn;
-use crate::provider::mqtt_client::MqttTopic;
+use crate::error::ContextWithErrorCode;
+use crate::model::proof::Proof;
+use crate::proto::mqtt_client::{MqttClient, MqttTopic};
 use crate::provider::verification_protocol::error::VerificationProtocolError;
-use crate::provider::verification_protocol::openid4vp::draft20::model::OpenID4VP20AuthorizationRequest;
-use crate::provider::verification_protocol::openid4vp::model::OpenID4VPPresentationDefinition;
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::KeyAgreementKey;
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::async_verifier_flow::{
-    AsyncTransportHooks, AsyncVerifierFlowParams, FlowState, async_verifier_flow, never,
-    set_proof_state_infallible,
+    HolderResponse, HolderSubmission, ProximityVerifierTransport, SubmissionData,
 };
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::IdentityRequest;
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::mappers::parse_identity_request;
+use crate::provider::verification_protocol::openid4vp::proximity_draft00::dto::{
+    IdentityRequest, ProtocolVersion, WithProtocolVersion,
+};
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::peer_encryption::PeerEncryption;
-use crate::repository::interaction_repository::InteractionRepository;
-use crate::repository::proof_repository::ProofRepository;
-use crate::service::error::ErrorCode::BR_0000;
 
-pub(super) struct Topics {
-    pub(super) identify: Mutex<Box<dyn MqttTopic>>,
-    pub(super) presentation_definition: Mutex<Box<dyn MqttTopic>>,
-    pub(super) accept: Mutex<Box<dyn MqttTopic>>,
-    pub(super) reject: Mutex<Box<dyn MqttTopic>>,
+pub(crate) struct MqttVerifier {
+    mqtt_client: Arc<dyn MqttClient>,
+    params: ConfigParams,
+    handle: Mutex<HashMap<ProofId, SubscriptionHandle>>,
 }
 
-#[tracing::instrument(level = "debug", skip_all, err(Debug))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn mqtt_verifier_flow(
-    topics: Topics,
-    keypair: KeyAgreementKey,
-    proof: Proof,
-    presentation_definition: OpenID4VPPresentationDefinition,
-    auth_fn: AuthenticationFn,
-    did: Did,
-    proof_repository: Arc<dyn ProofRepository>,
-    interaction_repository: Arc<dyn InteractionRepository>,
-    interaction_id: InteractionId,
-    cancellation_token: CancellationToken,
-    on_submission_callback: Option<Shared<BoxFuture<'static, ()>>>,
-) -> Result<(), VerificationProtocolError> {
-    let hooks = AsyncTransportHooks {
-        wallet_connect: wallet_connect(topics, keypair),
-        wallet_disconnect: never, // MQTT does not provide information about peers disconnecting
-        wallet_reject,
-        send_presentation_request,
-        receive_presentation,
-        interaction_data_from_response,
-    };
-
-    let flow_params = AsyncVerifierFlowParams {
-        proof: &proof,
-        presentation_definition,
-        did: &did.did,
-        interaction_id,
-        proof_repository: &*proof_repository,
-        interaction_repository: &*interaction_repository,
-        transport_type: TransportType::Mqtt,
-        cancellation_token,
-    };
-
-    let result = async_verifier_flow(flow_params, hooks, auth_fn).await;
-    match &result {
-        Ok(FlowState::Finished) => {
-            if let Some(callback) = on_submission_callback {
-                callback.await;
-            }
+impl MqttVerifier {
+    pub(crate) fn new(mqtt_client: Arc<dyn MqttClient>, params: ConfigParams) -> MqttVerifier {
+        MqttVerifier {
+            mqtt_client,
+            params,
+            handle: Mutex::new(HashMap::new()),
         }
-        Err(err) => {
-            let message = format!("MQTT verifier flow failure: {err}");
-            info!(message);
-            let error_metadata = HistoryErrorMetadata {
-                error_code: BR_0000,
-                message,
-            };
-            set_proof_state_infallible(
-                &proof,
-                ProofStateEnum::Error,
-                Some(error_metadata),
-                &*proof_repository,
-            )
-            .await;
-        }
-        Ok(_) => {} // cancel or reject -> nothing to do
     }
-    Ok(())
+
+    async fn subscribe_to_topic(
+        &self,
+        topic: String,
+    ) -> Result<Box<dyn MqttTopic>, VerificationProtocolError> {
+        let (host, port) = extract_host_and_port(&self.params.broker_url)?;
+
+        Ok(self
+            .mqtt_client
+            .subscribe(host, port, topic.clone())
+            .await
+            .error_while(format!("subscribing topic `{topic}`"))?)
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    async fn start_detached_subscriber(
+        &self,
+        topic_prefix: String,
+        proof_id: ProofId,
+        flow: impl FnOnce(MqttVerifierTransport) -> BoxFuture<'static, ()> + Send + 'static,
+    ) -> Result<(), VerificationProtocolError> {
+        let (identify, presentation_definition, accept, reject) = tokio::try_join!(
+            self.subscribe_to_topic(topic_prefix.clone() + "/presentation-submission/identify"),
+            self.subscribe_to_topic(topic_prefix.clone() + "/presentation-definition"),
+            self.subscribe_to_topic(topic_prefix.clone() + "/presentation-submission/accept"),
+            self.subscribe_to_topic(topic_prefix + "/presentation-submission/reject"),
+        )?;
+
+        let topics = MqttVerifierTransport {
+            identify,
+            presentation_definition,
+            accept,
+            reject,
+        };
+
+        let handle = tokio::spawn(flow(topics).in_current_span());
+
+        let old = self.handle.lock().await.insert(
+            proof_id,
+            SubscriptionHandle {
+                task_handle: handle,
+            },
+        );
+
+        if let Some(old) = old {
+            old.task_handle.abort()
+        };
+
+        Ok(())
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
+    pub(crate) async fn schedule_verifier_flow(
+        &self,
+        key_agreement: &KeyAgreementKey,
+        url_scheme: &str,
+        interaction_id: InteractionId,
+        proof_id: ProofId,
+        flow: impl FnOnce(MqttVerifierTransport) -> BoxFuture<'static, ()> + Send + 'static,
+    ) -> Result<Url, VerificationProtocolError> {
+        let url = {
+            let mut url: Url = format!("{url_scheme}://connect").parse().map_err(|e| {
+                VerificationProtocolError::Failed(format!("Failed to parse url: `{e}`"))
+            })?;
+            url.query_pairs_mut()
+                .append_pair("key", &hex::encode(key_agreement.public_key_bytes()))
+                .append_pair(
+                    "brokerUrl",
+                    self.params.broker_url.as_str().trim_end_matches('/'),
+                )
+                .append_pair("topicId", &interaction_id.to_string());
+
+            url
+        };
+
+        let topic_prefix = format!("/proof/{interaction_id}");
+        self.start_detached_subscriber(topic_prefix, proof_id, flow)
+            .await?;
+
+        Ok(url)
+    }
+
+    pub(crate) async fn retract_proof(
+        &self,
+        proof: &Proof,
+    ) -> Result<(), VerificationProtocolError> {
+        if let Some(old) = self.handle.lock().await.remove(&proof.id) {
+            old.task_handle.abort()
+        };
+
+        Ok(())
+    }
 }
 
-struct MQTTVerifierContext {
-    shared_key: PeerEncryption,
-    identity_request: IdentityRequest,
-    topics: Topics,
+pub(crate) struct MqttVerifierTransport {
+    identify: Box<dyn MqttTopic>,
+    presentation_definition: Box<dyn MqttTopic>,
+    accept: Box<dyn MqttTopic>,
+    reject: Box<dyn MqttTopic>,
 }
-fn wallet_connect(
-    topics: Topics,
-    keypair: KeyAgreementKey,
-) -> BoxFuture<'static, Result<MQTTVerifierContext, VerificationProtocolError>> {
-    async {
-        let identify_bytes = topics
+
+pub(crate) struct MqttVerifierContext {
+    identity_request: IdentityRequest,
+    shared_key: PeerEncryption,
+    enveloping: bool,
+}
+
+impl WithProtocolVersion for MqttVerifierContext {
+    fn protocol_version(&self) -> ProtocolVersion {
+        self.identity_request.version
+    }
+}
+
+#[async_trait]
+impl ProximityVerifierTransport for MqttVerifierTransport {
+    type Context = MqttVerifierContext;
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Mqtt
+    }
+
+    async fn wallet_connect(
+        &mut self,
+        key_agreement: &KeyAgreementKey,
+    ) -> Result<Self::Context, VerificationProtocolError> {
+        let (identify_bytes, enveloped) = self
             .identify
-            .lock()
-            .await
             .recv()
             .await
-            .map_err(VerificationProtocolError::Transport)?;
+            .error_while("connecting to wallet")?;
         let identity_request =
-            parse_identity_request(identify_bytes).map_err(VerificationProtocolError::Transport)?;
-        let (encryption_key, decryption_key) = keypair
+            IdentityRequest::parse(identify_bytes).map_err(VerificationProtocolError::Other)?;
+        let (encryption_key, decryption_key) = key_agreement
             .derive_session_secrets(identity_request.key, identity_request.nonce)
-            .map_err(VerificationProtocolError::Transport)?;
+            .map_err(VerificationProtocolError::Other)?;
         let shared_key =
             PeerEncryption::new(encryption_key, decryption_key, identity_request.nonce);
-        Ok(MQTTVerifierContext {
-            shared_key,
+        Ok(MqttVerifierContext {
             identity_request,
-            topics,
+            shared_key,
+            enveloping: enveloped,
         })
     }
-    .boxed()
+
+    async fn send_presentation_request(
+        &mut self,
+        context: &Self::Context,
+        signed_presentation_request: String,
+    ) -> Result<(), VerificationProtocolError> {
+        let bytes = context
+            .shared_key
+            .encrypt(&signed_presentation_request)
+            .map_err(VerificationProtocolError::Other)?;
+        self.presentation_definition
+            .send(bytes, context.enveloping)
+            .await
+            .error_while("sending presentation request")?;
+        Ok(())
+    }
+
+    async fn receive_presentation(
+        &mut self,
+        context: &mut Self::Context,
+    ) -> Result<HolderResponse, VerificationProtocolError> {
+        let (response, enveloped) = select! {
+            biased;
+            _ = wallet_reject(&mut *self.reject, &context.shared_key) => {
+                return Ok(HolderResponse::Rejection)
+            }
+            response = self.accept.recv() => response
+        }
+        .error_while("receiving presentation")?;
+
+        if enveloped != context.enveloping {
+            tracing::warn!(
+                "Mismatched enveloping, identity_request: {}, presentation: {enveloped}",
+                context.enveloping
+            );
+        }
+
+        Ok(HolderResponse::Submission(
+            match context.identity_request.version {
+                ProtocolVersion::V1 => HolderSubmission::V1(
+                    context
+                        .shared_key
+                        .decrypt(&response)
+                        .map_err(VerificationProtocolError::Other)?,
+                ),
+                ProtocolVersion::V2 => HolderSubmission::V2(
+                    context
+                        .shared_key
+                        .decrypt(&response)
+                        .map_err(VerificationProtocolError::Other)?,
+                ),
+            },
+        ))
+    }
+
+    fn interaction_data_from_submission(
+        &self,
+        context: Self::Context,
+        nonce: String,
+        data: SubmissionData,
+    ) -> Result<Vec<u8>, VerificationProtocolError> {
+        let interaction_data = match data {
+            SubmissionData::V1 {
+                request,
+                submission,
+                presentation_definition,
+            } => MQTTOpenID4VPInteractionDataVerifier {
+                nonce,
+                client_id: request.client_id,
+                mdoc_generated_nonce: Some(hex::encode(context.identity_request.nonce)),
+                protocol_data: MQTTVerifierProtocolData::V1 {
+                    submission,
+                    presentation_definition,
+                },
+            },
+            SubmissionData::V2 {
+                request,
+                submission,
+                dcql_query,
+            } => MQTTOpenID4VPInteractionDataVerifier {
+                nonce,
+                client_id: request.client_id,
+                mdoc_generated_nonce: None,
+                protocol_data: MQTTVerifierProtocolData::V2 {
+                    dcql_query,
+                    submission,
+                },
+            },
+        };
+
+        Ok(serde_json::to_vec(&interaction_data)?)
+    }
+
+    async fn clean_up(&self) {
+        // nothing to do
+    }
 }
 
-fn wallet_reject(context: Arc<MQTTVerifierContext>) -> BoxFuture<'static, ()> {
-    async move {
-        loop {
-            let Ok(reject) = context.topics.reject.lock().await.recv().await else {
-                continue;
-            };
+async fn wallet_reject(rejection_topic: &mut dyn MqttTopic, shared_key: &PeerEncryption) {
+    loop {
+        let Ok((reject, _)) = rejection_topic.recv().await else {
+            continue;
+        };
 
-            let Ok(timestamp) = context.shared_key.decrypt::<i64>(&reject) else {
-                continue;
-            };
+        let Ok(timestamp) = shared_key.decrypt::<i64>(&reject) else {
+            continue;
+        };
 
-            if let Ok(timestamp_date) = OffsetDateTime::from_unix_timestamp(timestamp) {
-                let now = OffsetDateTime::now_utc();
+        if let Ok(timestamp_date) = OffsetDateTime::from_unix_timestamp(timestamp) {
+            let now = OffsetDateTime::now_utc();
 
-                let diff = now - timestamp_date;
-                if diff < Duration::minutes(5) {
-                    break;
-                }
+            let diff = now - timestamp_date;
+            if diff < Duration::minutes(5) {
+                break;
             }
         }
     }
-    .boxed()
 }
 
-fn send_presentation_request(
-    request: String,
-    context: Arc<MQTTVerifierContext>,
-) -> BoxFuture<'static, Result<(), VerificationProtocolError>> {
-    async move {
-        let bytes = context
-            .shared_key
-            .encrypt(&request)
-            .map_err(VerificationProtocolError::Transport)?;
-        context
-            .topics
-            .presentation_definition
-            .lock()
+#[cfg(test)]
+mod test {
+    use mockall::predicate::{always, eq};
+    use similar_asserts::assert_eq;
+
+    use super::*;
+    use crate::proto::mqtt_client::MockMqttTopic;
+
+    #[tokio::test]
+    async fn test_mqtt_verifier_transport_enveloped() {
+        let mut identify = MockMqttTopic::new();
+        identify.expect_recv().once().return_once(|| {
+            Ok((
+                IdentityRequest {
+                    key: [0u8; 32],
+                    nonce: [0u8; 12],
+                    version: ProtocolVersion::V1,
+                }
+                .encode(),
+                true,
+            ))
+        });
+        let mut presentation_definition = MockMqttTopic::new();
+        presentation_definition
+            .expect_send()
+            .once()
+            .with(always(), eq(true))
+            .returning(|_, _| Ok(()));
+
+        let mut transport = MqttVerifierTransport {
+            identify: Box::new(identify),
+            presentation_definition: Box::new(presentation_definition),
+            accept: Box::new(MockMqttTopic::new()),
+            reject: Box::new(MockMqttTopic::new()),
+        };
+
+        let context = transport
+            .wallet_connect(&KeyAgreementKey::new_random())
             .await
-            .send(bytes)
+            .unwrap();
+
+        assert_eq!(context.enveloping, true);
+
+        transport
+            .send_presentation_request(&context, "request".to_string())
             .await
-            .map_err(VerificationProtocolError::Transport)
+            .unwrap();
     }
-    .boxed()
-}
 
-fn receive_presentation(
-    context: Arc<MQTTVerifierContext>,
-) -> BoxFuture<'static, Result<MQTTOpenId4VpResponse, VerificationProtocolError>> {
-    (async move {
-        let credential = context
-            .topics
-            .accept
-            .lock()
-            .await
-            .recv()
-            .await
-            .map_err(VerificationProtocolError::Transport)?;
-        context
-            .shared_key
-            .decrypt(&credential)
-            .map_err(VerificationProtocolError::Transport)
-    })
-    .boxed()
-}
+    #[tokio::test]
+    async fn test_mqtt_verifier_transport_non_enveloped() {
+        let mut identify = MockMqttTopic::new();
+        identify.expect_recv().once().return_once(|| {
+            Ok((
+                IdentityRequest {
+                    key: [0u8; 32],
+                    nonce: [0u8; 12],
+                    version: ProtocolVersion::V1,
+                }
+                .encode(),
+                false,
+            ))
+        });
+        let mut presentation_definition = MockMqttTopic::new();
+        presentation_definition
+            .expect_send()
+            .once()
+            .with(always(), eq(false))
+            .returning(|_, _| Ok(()));
 
-fn interaction_data_from_response(
-    nonce: String,
-    presentation_definition: OpenID4VPPresentationDefinition,
-    request: OpenID4VP20AuthorizationRequest,
-    submission: MQTTOpenId4VpResponse,
-    context: Arc<MQTTVerifierContext>,
-) -> Result<Vec<u8>, VerificationProtocolError> {
-    serde_json::to_vec(&MQTTOpenID4VPInteractionDataVerifier {
-        presentation_definition,
-        presentation_submission: submission,
-        nonce,
-        client_id: request.client_id,
-        identity_request_nonce: hex::encode(context.identity_request.nonce),
-    })
-    .map_err(|err| {
-        VerificationProtocolError::Failed(format!(
-            "failed to serialize presentation_submission: {err}"
-        ))
-    })
+        let mut transport = MqttVerifierTransport {
+            identify: Box::new(identify),
+            presentation_definition: Box::new(presentation_definition),
+            accept: Box::new(MockMqttTopic::new()),
+            reject: Box::new(MockMqttTopic::new()),
+        };
+
+        let context = transport
+            .wallet_connect(&KeyAgreementKey::new_random())
+            .await
+            .unwrap();
+
+        assert_eq!(context.enveloping, false);
+
+        transport
+            .send_presentation_request(&context, "request".to_string())
+            .await
+            .unwrap();
+    }
 }

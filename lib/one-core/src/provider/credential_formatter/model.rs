@@ -1,14 +1,16 @@
 //! Methods for signing and verifying credentials, as well as `struct`s and `enum`s.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use async_trait::async_trait;
 use indexmap::IndexMap;
-use one_crypto::SignerError;
-use serde::{Deserialize, Serialize};
+use serde::de::Error;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::skip_serializing_none;
 use shared_types::DidValue;
+use standardized_types::jwk::PublicJwk;
 use strum::{Display, IntoStaticStr};
 use time::OffsetDateTime;
 use url::Url;
@@ -19,11 +21,38 @@ use crate::config::core_config::{
     DidType, IdentifierType, IssuanceProtocolType, KeyAlgorithmType, KeyStorageType,
     RevocationType, VerificationProtocolType,
 };
+use crate::error::ContextWithErrorCode;
+use crate::model::certificate::Certificate;
 use crate::model::credential_schema::{LayoutProperties, LayoutType};
+use crate::model::identifier::Identifier;
+use crate::proto::jwt::TokenError;
+use crate::provider::did_method::error::DidMethodError;
+use crate::provider::key_algorithm::error::KeyAlgorithmError;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 
 pub type AuthenticationFn = Box<dyn SignatureProvider>;
 pub type VerificationFn = Box<dyn TokenVerifier>;
+
+pub enum PublicKeySource<'a> {
+    Did {
+        did: Cow<'a, DidValue>,
+        key_id: Option<&'a str>,
+    },
+    X5c {
+        x5c: &'a [String],
+    },
+    Jwk {
+        jwk: Cow<'a, PublicJwk>,
+    },
+}
+
+impl<'a> From<&'a PublicJwk> for PublicKeySource<'a> {
+    fn from(value: &'a PublicJwk) -> Self {
+        Self::Jwk {
+            jwk: Cow::Borrowed(value),
+        }
+    }
+}
 
 /// Method for verifying credential.
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -31,12 +60,11 @@ pub type VerificationFn = Box<dyn TokenVerifier>;
 pub trait TokenVerifier: Send + Sync {
     async fn verify<'a>(
         &self,
-        issuer_did_value: Option<DidValue>,
-        issuer_key_id: Option<&'a str>,
+        public_key_source: PublicKeySource<'a>,
         algorithm: KeyAlgorithmType,
         token: &'a [u8],
         signature: &'a [u8],
-    ) -> Result<(), SignerError>;
+    ) -> Result<(), TokenError>;
 
     fn key_algorithm_provider(&self) -> &dyn KeyAlgorithmProvider;
 }
@@ -45,32 +73,160 @@ pub trait TokenVerifier: Send + Sync {
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait]
 pub trait SignatureProvider: Send + Sync {
-    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignerError>;
+    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, KeyAlgorithmError>;
     fn get_key_id(&self) -> Option<String>;
     fn get_key_algorithm(&self) -> Result<KeyAlgorithmType, String>;
     fn jose_alg(&self) -> Option<String>;
     fn get_public_key(&self) -> Vec<u8>;
 }
 
+pub trait SettableClaims {
+    fn set_claims(&mut self, claims: CredentialClaim) -> Result<(), FormatterError>;
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CertificateDetails {
+    pub chain: String,
+    pub fingerprint: String,
+    pub expiry: OffsetDateTime,
+    pub subject_common_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub enum IdentifierDetails {
+    Did(DidValue),
+    Certificate(CertificateDetails),
+    Key(PublicJwk),
+}
+
+impl IdentifierDetails {
+    #[allow(dead_code)]
+    pub(crate) fn did_value(&self) -> Option<&DidValue> {
+        match &self {
+            IdentifierDetails::Did(did_value) => Some(did_value),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn certificate_details(&self) -> Option<&CertificateDetails> {
+        match &self {
+            IdentifierDetails::Certificate(certificate) => Some(certificate),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn public_key_jwk(&self) -> Option<&PublicJwk> {
+        match &self {
+            IdentifierDetails::Key(key) => Some(key),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DetailCredential {
     pub id: Option<String>,
+    pub issuance_date: Option<OffsetDateTime>,
     pub valid_from: Option<OffsetDateTime>,
     pub valid_until: Option<OffsetDateTime>,
     pub update_at: Option<OffsetDateTime>,
     pub invalid_before: Option<OffsetDateTime>,
-    pub issuer_did: Option<DidValue>,
-    pub subject: Option<DidValue>,
+    pub issuer: IdentifierDetails,
+    pub subject: Option<IdentifierDetails>,
     pub claims: CredentialSubject,
     pub status: Vec<CredentialStatus>,
     pub credential_schema: Option<CredentialSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CredentialClaim {
+    pub selectively_disclosable: bool,
+    pub metadata: bool,
+    pub value: CredentialClaimValue,
+}
+
+impl CredentialClaim {
+    /// Recursively sets the metadata flag.
+    pub(crate) fn set_metadata(&mut self, metadata: bool) {
+        self.metadata = metadata;
+        self.value.set_metadata(metadata);
+    }
+}
+
+impl Serialize for CredentialClaim {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_json::Value::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialClaim {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        CredentialClaim::try_from(serde_json::Value::deserialize(deserializer)?)
+            .map_err(Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CredentialClaimValue {
+    Bool(bool),
+    Number(serde_json::Number),
+    String(String),
+    Array(Vec<CredentialClaim>),
+    Object(HashMap<String, CredentialClaim>),
+}
+
+impl CredentialClaimValue {
+    /// Recursively sets the metadata flag.
+    pub(crate) fn set_metadata(&mut self, metadata: bool) {
+        match self {
+            CredentialClaimValue::Bool(_)
+            | CredentialClaimValue::Number(_)
+            | CredentialClaimValue::String(_) => {
+                // nothing to do
+            }
+            CredentialClaimValue::Array(arr) => {
+                arr.iter_mut().for_each(|elem| elem.set_metadata(metadata))
+            }
+            CredentialClaimValue::Object(obj) => {
+                obj.iter_mut().for_each(|(_, v)| v.set_metadata(metadata))
+            }
+        }
+    }
+}
+
+impl Serialize for CredentialClaimValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_json::Value::from(self.clone()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialClaimValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        CredentialClaimValue::try_from(serde_json::Value::deserialize(deserializer)?)
+            .map_err(Error::custom)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct CredentialSubject {
     // relevant only for VCDM
     pub id: Option<Url>,
-    pub claims: HashMap<String, serde_json::Value>,
+    pub claims: HashMap<String, CredentialClaim>,
 }
 
 #[skip_serializing_none]
@@ -135,10 +291,10 @@ impl TryFrom<PublishedClaimValue> for serde_json::Value {
 impl Display for PublishedClaimValue {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Bool(value) => write!(f, "{}", value),
-            Self::Float(value) => write!(f, "{}", value),
-            Self::Integer(value) => write!(f, "{}", value),
-            Self::String(value) => write!(f, "{}", value),
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::Float(value) => write!(f, "{value}"),
+            Self::Integer(value) => write!(f, "{value}"),
+            Self::String(value) => write!(f, "{value}"),
         }
     }
 }
@@ -163,8 +319,9 @@ impl PartialEq<str> for PublishedClaimValue {
 pub struct CredentialData {
     pub vcdm: VcdmCredential,
     pub claims: Vec<PublishedClaim>,
-    pub holder_did: Option<DidValue>,
+    pub holder_identifier: Option<Identifier>,
     pub holder_key_id: Option<String>,
+    pub issuer_certificate: Option<Certificate>,
 }
 
 #[derive(Debug)]
@@ -191,37 +348,6 @@ pub struct CredentialStatus {
 pub struct HolderBindingCtx {
     pub nonce: String,
     pub audience: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Default)]
-pub struct FormatPresentationCtx {
-    pub nonce: Option<String>,
-    pub token_formats: Option<Vec<String>>,
-    pub mdoc_session_transcript: Option<Vec<u8>>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Default, Clone)]
-pub struct ExtractPresentationCtx {
-    pub nonce: Option<String>,
-    pub format_nonce: Option<String>,
-    pub issuance_date: Option<OffsetDateTime>,
-    pub expiration_date: Option<OffsetDateTime>,
-    pub mdoc_session_transcript: Option<Vec<u8>>,
-    pub client_id: Option<String>,
-    pub response_uri: Option<String>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Presentation {
-    pub id: Option<String>,
-    pub issued_at: Option<OffsetDateTime>,
-    pub expires_at: Option<OffsetDateTime>,
-    pub issuer_did: Option<DidValue>,
-    pub nonce: Option<String>,
-    pub credentials: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -260,13 +386,13 @@ pub struct FormatterCapabilities {
     pub verification_key_algorithms: Vec<KeyAlgorithmType>,
     pub verification_key_storages: Vec<KeyStorageType>,
     pub datatypes: Vec<String>,
-    pub allowed_schema_ids: Vec<String>,
     pub forbidden_claim_names: Vec<String>,
     pub issuance_identifier_types: Vec<IdentifierType>,
     pub verification_identifier_types: Vec<IdentifierType>,
     pub holder_identifier_types: Vec<IdentifierType>,
     pub holder_key_algorithms: Vec<KeyAlgorithmType>,
     pub holder_did_methods: Vec<DidType>,
+    pub ecosystem_schema_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq)]
@@ -274,8 +400,11 @@ pub struct FormatterCapabilities {
 pub enum Features {
     SelectiveDisclosure,
     SupportsCredentialDesign,
-    RequiresSchemaId,
+    /// custom schemaId can be specified by the user during creation
+    SupportsSchemaId,
     RequiresPresentationEncryption,
+    SupportsCombinedPresentation,
+    SupportsTxCode,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -306,6 +435,7 @@ pub enum Context {
 
 impl Context {
     pub fn to_url(&self) -> Url {
+        #[allow(clippy::expect_used)]
         Url::parse(self.into()).expect("Context is always a URL")
     }
 }
@@ -326,15 +456,14 @@ pub enum Issuer {
 
 impl Issuer {
     pub fn to_did_value(&self) -> Result<DidValue, FormatterError> {
-        match self {
-            Self::Object { id, .. } => Ok(id.to_string().parse().map_err(|_| {
-                FormatterError::Failed("Parsing did from object failed".to_string())
-            })?),
-            Self::Url(url) => Ok(url
-                .as_str()
-                .parse()
-                .map_err(|_| FormatterError::Failed("Parsing did from url failed".to_string()))?),
+        Ok(match self {
+            Self::Object { id, .. } => id,
+            Self::Url(url) => url,
         }
+        .as_str()
+        .parse()
+        .map_err(DidMethodError::DidValueError)
+        .error_while("parsing issuer DID")?)
     }
 
     pub fn as_url(&self) -> &Url {

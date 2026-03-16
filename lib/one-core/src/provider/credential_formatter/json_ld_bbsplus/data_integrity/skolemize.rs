@@ -11,7 +11,7 @@ use sophia_api::quad::Spog;
 use uuid::Uuid;
 
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::json_ld::canonization::TermAdapter;
+use crate::util::rdf_canonization::TermAdapter;
 
 const URN_CUSTOM_SCHEME_PREFIX: &str = "urn:bnid:";
 
@@ -29,12 +29,7 @@ pub async fn skolemize_compact_json_ld(
     // expand document
     let mut expanded = document
         .expand_with_using(&mut (), &loader, json_ld_processor_options)
-        .await
-        .map_err(|e| {
-            FormatterError::Failed(format!(
-                "Failed to expand document during skolemization step: {e}"
-            ))
-        })?;
+        .await?;
 
     // skolemize expanded document
     let mut labeler = CustomUrnSchemaBlankNodeLabeler::default();
@@ -46,7 +41,9 @@ pub async fn skolemize_compact_json_ld(
             let processed_context = context
                 .process(&mut (), &loader, None)
                 .await
-                .map_err(|e| FormatterError::Failed(format!("Failed to process context: {e}")))?
+                .map_err(|e| {
+                    FormatterError::CouldNotVerify(format!("Failed to process context: {e}"))
+                })?
                 .into_processed();
 
             ProcessedOwned::new(context, processed_context)
@@ -57,7 +54,7 @@ pub async fn skolemize_compact_json_ld(
     let compact = expanded
         .compact(processed_context.as_ref(), loader)
         .await
-        .map_err(|e| FormatterError::Failed(format!("Failed to compact document: {e}")))?;
+        .map_err(|e| FormatterError::CouldNotVerify(format!("Failed to compact document: {e}")))?;
 
     Ok(SkolemizedDocument { expanded, compact })
 }
@@ -85,7 +82,9 @@ fn deskolemize_quad((triple, graph): Spog<TermAdapter>) -> Spog<TermAdapter> {
             if iri.starts_with(URN_CUSTOM_SCHEME_PREFIX) =>
         {
             let suffix = &iri[URN_CUSTOM_SCHEME_PREFIX.len()..];
-            let bid = BlankIdBuf::new(format!("_:{suffix}")).unwrap();
+            #[allow(clippy::expect_used)]
+            let bid = BlankIdBuf::new(format!("_:{suffix}"))
+                .expect("should always be a valid BlankIdBuf");
             TermAdapter(rdf_types::Term::Id(rdf_types::Id::Blank(bid)))
         }
         _ => TermAdapter(term),
@@ -105,8 +104,9 @@ struct CustomUrnSchemaBlankNodeLabeler {
 impl Generator for CustomUrnSchemaBlankNodeLabeler {
     fn next(&mut self, _: &mut ()) -> rdf_types::Id {
         let random = Uuid::new_v4();
-        let bid =
-            IriBuf::new(format!("{URN_CUSTOM_SCHEME_PREFIX}{random}_{}", self.count)).unwrap();
+        #[allow(clippy::expect_used)]
+        let bid = IriBuf::new(format!("{URN_CUSTOM_SCHEME_PREFIX}{random}_{}", self.count))
+            .expect("should always be a valid Iri");
         self.count += 1;
         rdf_types::Id::Iri(bid)
     }
@@ -119,13 +119,14 @@ mod test {
 
     use itertools::Itertools;
     use json_ld::IriBuf;
+    use similar_asserts::assert_eq;
 
     use super::*;
-    use crate::provider::credential_formatter::json_ld::json_ld_processor_options;
     use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::NQuadLines;
     use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::test_data::{
         context_examples_vocabulary, context_vc2_0,
     };
+    use crate::util::rdf_canonization::json_ld_processor_options;
 
     #[tokio::test]
     async fn test_skolemize_jsonld() {

@@ -2,22 +2,21 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use shared_types::DidId;
+use similar_asserts::assert_eq;
+use standardized_types::jwk::{PublicJwk, PublicJwkEc, PublicJwkRsa};
 use uuid::Uuid;
 use wiremock::http::Method;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use crate::proto::http_client::reqwest_client::ReqwestClient;
+use crate::proto::http_client::{HttpClient, MockHttpClient};
 use crate::provider::did_method::DidMethod;
 use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::keys::{Keys, MinMax};
 use crate::provider::did_method::model::AmountOfKeys;
 use crate::provider::did_method::web::{
     Params, WebDidMethod, did_value_to_url, fetch_did_web_document,
-};
-use crate::provider::http_client::reqwest_client::ReqwestClient;
-use crate::provider::http_client::{HttpClient, MockHttpClient};
-use crate::service::key::dto::{
-    PublicKeyJwkDTO, PublicKeyJwkEllipticDataDTO, PublicKeyJwkRsaDataDTO,
 };
 
 static JSON_DATA: &str = r#"
@@ -144,7 +143,10 @@ async fn test_did_web_create_fail_no_base_url() {
 
     let result = did_web_method.create(Some(id), &None, None).await;
 
-    assert!(matches!(result, Err(DidMethodError::CouldNotCreate(_))))
+    assert!(matches!(
+        result,
+        Err(DidMethodError::InitializationError(_))
+    ))
 }
 
 #[tokio::test]
@@ -260,7 +262,8 @@ async fn test_did_web_fetch() {
 
     assert_eq!(
         methods[0].public_key_jwk,
-        PublicKeyJwkDTO::Okp(PublicKeyJwkEllipticDataDTO {
+        PublicJwk::Okp(PublicJwkEc {
+            alg: None,
             r#use: None,
             kid: None,
             crv: "Ed25519".to_string(),
@@ -270,7 +273,8 @@ async fn test_did_web_fetch() {
     );
     assert_eq!(
         methods[1].public_key_jwk,
-        PublicKeyJwkDTO::Okp(PublicKeyJwkEllipticDataDTO {
+        PublicJwk::Okp(PublicJwkEc {
+            alg: None,
             r#use: None,
             kid: None,
             crv: "X25519".to_string(),
@@ -280,7 +284,8 @@ async fn test_did_web_fetch() {
     );
     assert_eq!(
         methods[2].public_key_jwk,
-        PublicKeyJwkDTO::Ec(PublicKeyJwkEllipticDataDTO {
+        PublicJwk::Ec(PublicJwkEc {
+            alg: None,
             r#use: None,
             kid: None,
             crv: "P-256".to_string(),
@@ -290,7 +295,8 @@ async fn test_did_web_fetch() {
     );
     assert_eq!(
         methods[3].public_key_jwk,
-        PublicKeyJwkDTO::Rsa(PublicKeyJwkRsaDataDTO {
+        PublicJwk::Rsa(PublicJwkRsa {
+            alg: None,
             r#use: None,
             kid: None,
             e: "AQAB".to_string(),

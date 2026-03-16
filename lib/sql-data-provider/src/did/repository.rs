@@ -1,20 +1,21 @@
 use std::collections::HashMap;
 
 use autometrics::autometrics;
+use futures::FutureExt;
 use one_core::model::did::{
     Did, DidListQuery, DidRelations, GetDidList, RelatedKey, UpdateDidRequest,
 };
 use one_core::model::key::Key;
+use one_core::proto::transaction_manager::IsolationLevel;
 use one_core::repository::did_repository::DidRepository;
 use one_core::repository::error::DataLayerError;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, Unchanged,
+    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, Unchanged,
 };
 use shared_types::{DidId, DidValue, KeyId, OrganisationId};
 
 use super::DidProvider;
-use super::mapper::create_list_response;
+use crate::common::list_query_with_base_model;
 use crate::entity::{did, key_did};
 use crate::list_query_generic::{SelectWithFilterJoin, SelectWithListQuery};
 use crate::mapper::{to_data_layer_error, to_update_data_layer_error};
@@ -27,18 +28,18 @@ impl DidProvider {
     ) -> Result<Did, DataLayerError> {
         let mut result: Did = model.clone().into();
 
-        if let Some(organisation_relations) = &relations.organisation {
-            if let Some(organisation_id) = &model.organisation_id {
-                result.organisation = Some(
-                    self.organisation_repository
-                        .get_organisation(organisation_id, organisation_relations)
-                        .await?
-                        .ok_or(DataLayerError::MissingRequiredRelation {
-                            relation: "did-organisation",
-                            id: organisation_id.to_string(),
-                        })?,
-                );
-            }
+        if let Some(organisation_relations) = &relations.organisation
+            && let Some(organisation_id) = &model.organisation_id
+        {
+            result.organisation = Some(
+                self.organisation_repository
+                    .get_organisation(organisation_id, organisation_relations)
+                    .await?
+                    .ok_or(DataLayerError::MissingRequiredRelation {
+                        relation: "did-organisation",
+                        id: organisation_id.to_string(),
+                    })?,
+            );
         }
 
         if let Some(key_relations) = &relations.keys {
@@ -71,6 +72,7 @@ impl DidProvider {
                 related_keys.push(RelatedKey {
                     role: key_did_model.role.into(),
                     key,
+                    reference: key_did_model.reference,
                 })
             }
             result.keys = Some(related_keys);
@@ -132,57 +134,59 @@ impl DidRepository for DidProvider {
 
     async fn get_did_list(&self, query_params: DidListQuery) -> Result<GetDidList, DataLayerError> {
         let query = did::Entity::find()
-            .distinct()
             .filter(did::Column::DeletedAt.is_null())
             .with_filter_join(&query_params)
             .with_list_query(&query_params)
             .order_by_desc(did::Column::CreatedDate)
             .order_by_desc(did::Column::Id);
 
-        let limit = query_params
-            .pagination
-            .map(|pagination| pagination.page_size as u64);
-
-        let items_count = query
-            .to_owned()
-            .count(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        let dids: Vec<did::Model> = query
-            .all(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        Ok(create_list_response(dids, limit, items_count))
+        list_query_with_base_model(query, query_params, &self.db).await
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err(level = "warn"))]
     async fn create_did(&self, request: Did) -> Result<DidId, DataLayerError> {
         let keys = request.keys.to_owned();
 
-        let did = did::ActiveModel::try_from(request)?
-            .insert(&self.db)
-            .await
-            .map_err(to_data_layer_error)?;
+        let did = self
+            .db
+            .tx_with_config(
+                async {
+                    let did = did::ActiveModel::try_from(request)?
+                        .insert(&self.db)
+                        .await
+                        .map_err(to_data_layer_error)?;
 
-        if let Some(keys) = keys {
-            key_did::Entity::insert_many(
-                keys.into_iter()
-                    .map(|key| key_did::ActiveModel {
-                        did_id: Set(did.id),
-                        key_id: Set(key.key.id),
-                        role: Set(key.role.into()),
-                    })
-                    .collect::<Vec<_>>(),
+                    if let Some(keys) = keys {
+                        key_did::Entity::insert_many(
+                            keys.into_iter()
+                                .map(|key| key_did::ActiveModel {
+                                    did_id: Set(did.id),
+                                    key_id: Set(key.key.id),
+                                    role: Set(key.role.into()),
+                                    reference: Set(key.reference),
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                        .exec(&self.db)
+                        .await
+                        .map_err(to_data_layer_error)?;
+                    }
+
+                    Ok::<_, DataLayerError>(did)
+                }
+                .boxed(),
+                // In isolation mode "read committed" InnoDB will _not_ create gap locks. Given there
+                // are multiple unique indexes, this is necessary to avoid deadlocks during parallel
+                // inserts.
+                Some(IsolationLevel::ReadCommitted),
+                None,
             )
-            .exec(&self.db)
-            .await
-            .map_err(to_data_layer_error)?;
-        }
+            .await??;
 
         Ok(did.id)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err(level = "warn"))]
     async fn update_did(&self, request: UpdateDidRequest) -> Result<(), DataLayerError> {
         let UpdateDidRequest {
             id,

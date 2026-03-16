@@ -2,8 +2,12 @@ use std::collections::HashMap;
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use standardized_types::jwk::PrivateJwk;
 
-use crate::common_mapper::secret_string;
+use crate::mapper::secret_string;
+use crate::model::key::PrivateJwkExt;
+use crate::provider::key_storage::error::KeyStorageError;
+
 #[derive(Serialize)]
 pub(super) struct AzureHsmGenerateKeyRequest {
     #[serde(rename = "kty")]
@@ -14,15 +18,57 @@ pub(super) struct AzureHsmGenerateKeyRequest {
     pub key_operations: Vec<String>,
 }
 
-#[allow(dead_code)]
+#[derive(Serialize)]
+pub(super) struct AzureHsmImportKeyRequest {
+    #[serde(rename = "key")]
+    pub key: AzureHsmJWKRequest,
+    #[serde(rename = "Hsm")]
+    pub is_hsm: bool,
+}
+
+#[derive(Serialize)]
+pub(super) struct AzureHsmJWKRequest {
+    #[serde(rename = "kty")]
+    pub key_type: String,
+    #[serde(rename = "crv")]
+    pub curve_name: String,
+    #[serde(rename = "x")]
+    pub x_component: String,
+    #[serde(rename = "y")]
+    pub y_component: Option<String>,
+    #[serde(rename = "d")]
+    #[serde(with = "secret_string")]
+    pub d_component: SecretString,
+}
+
+impl TryFrom<PrivateJwk> for AzureHsmJWKRequest {
+    type Error = KeyStorageError;
+
+    fn try_from(value: PrivateJwk) -> Result<Self, Self::Error> {
+        match value {
+            PrivateJwk::Ec(jwk) => Ok(Self {
+                key_type: "EC-HSM".to_string(),
+                curve_name: jwk.crv,
+                x_component: jwk.x,
+                y_component: jwk.y,
+                d_component: jwk.d,
+            }),
+            PrivateJwk::Okp(_) | PrivateJwk::Akp(_) => Err(KeyStorageError::UnsupportedKeyType {
+                key_type: value.supported_key_type().to_string(),
+            }),
+        }
+    }
+}
+
+#[expect(dead_code)]
 #[derive(Deserialize)]
-pub(super) struct AzureHsmGenerateKeyResponse {
+pub(super) struct AzureHsmKeyResponse {
     pub key: AzureHsmGenerateKeyResponseKey,
     pub attributes: AzureHsmGenerateKeyResponseAttributes,
     pub tags: Option<HashMap<String, String>>,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Deserialize)]
 pub(super) struct AzureHsmGenerateKeyResponseKey {
     #[serde(rename = "kid")]
@@ -40,7 +86,7 @@ pub(super) struct AzureHsmGenerateKeyResponseKey {
     pub extra: HashMap<String, serde_json::Value>,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct AzureHsmGenerateKeyResponseAttributes {
@@ -73,7 +119,7 @@ pub(super) struct AzureHsmSignRequest {
     pub value: String,
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Deserialize)]
 pub(super) struct AzureHsmSignResponse {
     #[serde(rename = "kid")]

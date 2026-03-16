@@ -6,6 +6,7 @@ license           = "Apache-2.0"
 name              = "core-server"
 publish           = false
 version           = "0.1.0"
+rust-version = "1.92"
 
 # disable doctests
 [lib]
@@ -17,20 +18,28 @@ strict = []
 
 [dependencies]
 axum.workspace = true
-axum-extra = { version = "0.10", features = ["typed-header"] }
-clap = { version = "4.5", features = ["derive"] }
+axum-extra = { version = "0.12", features = ["typed-header", "with-rejection"] }
+clap.workspace = true
 ct-codecs.workspace = true
 futures.workspace = true
 headers = { version = "0.4" }
+http-body-util = "0.1.2"
 indexmap.workspace = true
-indoc = { version = "2.0" }
+indoc.workspace = true
 one-core = { version = "0.1.0", path = "../../lib/one-core", features = ["config_json", "config_yaml", "config_env"] }
 one-crypto = { version = "0.1.0", path = "../../lib/one-crypto" }
 one-dto-mapper.workspace = true
-prometheus = { version = "0.13", default-features = false, features = ["process"] }
+proc-macros = { version = "0.1.0", path = "../../lib/proc-macros" }
+prometheus = { version = "0.14", default-features = false, features = ["process"] }
 reqwest.workspace = true
 secrecy.workspace = true
-sentry = { version = "0.34", default-features = false, features = ["backtrace", "panic", "reqwest", "tracing"] }
+sentry = { version = "0.46", default-features = false, features = [
+    "backtrace",
+    "panic",
+    "reqwest",
+    "tracing",
+    "rustls",
+] }
 serde.workspace = true
 serde_json.workspace = true
 serde_qs.workspace = true
@@ -38,10 +47,11 @@ serde_with.workspace = true
 shadow-rs.workspace = true
 shared-types = { version = "0.1.0", path = "../../lib/shared-types", features = ["utoipa"] }
 sql-data-provider = { version = "0.1.0", path = "../../lib/sql-data-provider", features = ["mysql"] }
+standardized-types = { version = "0.1.0", path = "../../lib/standardized-types", features = ["utoipa"] }
 strum.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tower-http = { version = "0.6", features = ["trace", "catch-panic"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -66,18 +76,31 @@ serde_json.workspace = true
 shadow-rs.workspace  = true
 
 [dev-dependencies]
-async-trait.workspace     = true
-bs58.workspace            = true
-hex-literal               = { version = "0.4" }
-indoc                     = { version = "2.0" }
-rand.workspace            = true
-reqwest                   = { version = "0.12", features = ["json"] }
-sea-orm.workspace         = true
-secrecy.workspace         = true
+asn1-rs.workspace = true
+assert2 = { version = "0.3" }
+async-trait.workspace = true
+dcql = { version = "0.1.0", path = "../../lib/dcql" }
+hex.workspace = true
+hex-literal.workspace = true
+maplit.workspace = true
+one-core = { version = "0.1.0", path = "../../lib/one-core", features = [
+    "config_json",
+    "config_yaml",
+    "config_env",
+    "mock",
+] }
+rand.workspace = true
+rcgen.workspace = true
+reqwest = { workspace = true, features = ["json", "form"] }
+sea-orm.workspace = true
+secrecy.workspace = true
 serde_json_path.workspace = true
-sql-data-provider         = { version = "0.1.0", path = "../../lib/sql-data-provider", features = ["test_utils"] }
-ulid                      = { version = "1.2.0" }
-wiremock.workspace        = true
+serde_urlencoded.workspace = true
+similar-asserts.workspace = true
+sql-data-provider = { version = "0.1.0", path = "../../lib/sql-data-provider", features = ["test_utils"] }
+ulid.workspace = true
+wiremock.workspace = true
+x509-parser.workspace = true
 
 [lints]
 workspace = true

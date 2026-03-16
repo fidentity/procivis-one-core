@@ -4,21 +4,17 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use one_core::provider::credential_formatter::error::FormatterError;
-use one_core::provider::did_method::error::DidMethodProviderError;
-use one_core::provider::issuance_protocol::error::IssuanceProtocolError;
-use one_core::service::error::{
-    BusinessLogicError, MissingProviderError, ServiceError, ValidationError,
-};
+use one_core::error::{ErrorCode, ErrorCodeMixin};
 use one_dto_mapper::convert_inner;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use super::error::{Cause, ErrorCode, ErrorResponseRestDTO};
+use super::error::{Cause, ErrorResponseRestDTO};
+use crate::dto::error::status_code::error_code_to_http_status;
 use crate::router::AppState;
 
 #[derive(utoipa::IntoResponses)]
-pub enum ErrorResponse {
+pub(crate) enum ErrorResponse {
     #[response(status = 401, description = "Unauthorized")]
     Unauthorized,
     #[response(status = 400, description = "Bad Request")]
@@ -32,54 +28,43 @@ pub enum ErrorResponse {
 }
 
 impl ErrorResponse {
-    pub fn for_panic(panic_msg: String) -> Self {
-        Self::ServerError(ErrorResponseRestDTO {
-            code: ErrorCode::BR_0000,
-            message: panic_msg,
-            cause: Some(Cause {
+    pub fn for_panic(panic_cause: String, hide_cause: bool) -> Self {
+        Self::ServerError(
+            ErrorResponseRestDTO {
+                code: ErrorCode::BR_0000.into(),
                 message: "Panic".to_string(),
-            }),
-        })
+                cause: Some(Cause {
+                    message: panic_cause,
+                }),
+            }
+            .hide_cause(hide_cause),
+        )
     }
 
-    fn from_service_error(error: ServiceError, hide_cause: bool) -> Self {
-        let response = ErrorResponseRestDTO::from(&error).hide_cause(hide_cause);
-        match error {
-            ServiceError::IssuanceProtocolError(IssuanceProtocolError::OperationNotSupported) => {
-                Self::BadRequest(response)
+    fn from_error(error: &impl ErrorCodeMixin, hide_cause: bool) -> Self {
+        let response = ErrorResponseRestDTO::from(error).hide_cause(hide_cause);
+        match error_code_to_http_status(error.error_code()) {
+            StatusCode::FORBIDDEN => Self::Forbidden,
+            StatusCode::UNAUTHORIZED => Self::Unauthorized,
+            StatusCode::BAD_REQUEST => Self::BadRequest(response),
+            StatusCode::NOT_FOUND => Self::NotFound(response),
+            StatusCode::INTERNAL_SERVER_ERROR => Self::ServerError(response),
+            status_code => {
+                tracing::error!("unmapped http status code: {}", status_code);
+                Self::ServerError(response)
             }
-            ServiceError::EntityNotFound(_) => Self::NotFound(response),
-            ServiceError::MissingProvider(MissingProviderError::DidMethod(_))
-            | ServiceError::DidMethodProviderError(DidMethodProviderError::MissingProvider(_))
-            | ServiceError::Validation(ValidationError::MissingLayoutAttribute(_))
-            | ServiceError::BusinessLogic(BusinessLogicError::MissingTrustEntity(_)) => {
-                Self::NotFound(response)
-            }
-            ServiceError::Validation(ValidationError::Unauthorized) => Self::Forbidden,
-            ServiceError::Validation(_)
-            | ServiceError::BusinessLogic(_)
-            | ServiceError::FormatterError(FormatterError::BBSOnly)
-            | ServiceError::ConfigValidationError(_)
-            | ServiceError::IssuanceProtocolError(IssuanceProtocolError::TxCode(_))
-            | ServiceError::IssuanceProtocolError(
-                IssuanceProtocolError::CredentialVerificationFailed(_),
-            )
-            | ServiceError::IssuanceProtocolError(IssuanceProtocolError::DidMismatch)
-            | ServiceError::DidMdlValidationError(_)
-            | ServiceError::TrustManagementError(_) => Self::BadRequest(response),
-            _ => Self::ServerError(response),
         }
     }
 
     #[track_caller]
-    fn from_service_error_with_trace(
-        error: ServiceError,
+    fn from_error_with_trace(
+        error: &impl ErrorCodeMixin,
         state: State<AppState>,
         action_description: &str,
     ) -> Self {
         let location = std::panic::Location::caller();
         tracing::error!(%error, %location, "Error while {action_description}");
-        Self::from_service_error(error, state.config.hide_error_response_cause)
+        Self::from_error(error, state.config.hide_error_response_cause)
     }
 }
 
@@ -106,7 +91,7 @@ fn with_error_responses<SuccessResponse: utoipa::IntoResponses>()
 }
 
 /// Wrapper for Swagger declaration of a vector response
-pub struct VecResponse<T>(Vec<T>);
+pub(crate) struct VecResponse<T>(Vec<T>);
 
 impl<T, F: Into<T>> From<Vec<F>> for VecResponse<T> {
     fn from(value: Vec<F>) -> Self {
@@ -114,7 +99,7 @@ impl<T, F: Into<T>> From<Vec<F>> for VecResponse<T> {
     }
 }
 
-pub enum OkOrErrorResponse<T> {
+pub(crate) enum OkOrErrorResponse<T> {
     Ok(T),
     Error(ErrorResponse),
 }
@@ -124,20 +109,42 @@ impl<T> OkOrErrorResponse<T> {
         Self::Ok(value.into())
     }
 
-    pub fn from_service_error(error: ServiceError, hide_cause: bool) -> Self {
-        Self::Error(ErrorResponse::from_service_error(error, hide_cause))
+    pub fn from_error<E: ErrorCodeMixin>(error: &E, hide_cause: bool) -> Self {
+        Self::Error(ErrorResponse::from_error(error, hide_cause))
     }
 
     #[track_caller]
     pub(crate) fn from_result(
-        result: Result<impl Into<T>, ServiceError>,
+        result: Result<impl Into<T>, impl ErrorCodeMixin>,
         state: State<AppState>,
         action_description: &str,
     ) -> Self {
         match result {
             Ok(value) => Self::ok(value),
-            Err(error) => Self::Error(ErrorResponse::from_service_error_with_trace(
-                error,
+            Err(error) => Self::Error(ErrorResponse::from_error_with_trace(
+                &error,
+                state,
+                action_description,
+            )),
+        }
+    }
+
+    #[track_caller]
+    pub(crate) fn from_result_fallible<IN, OUT>(
+        result: Result<impl TryInto<T, Error = IN>, OUT>,
+        state: State<AppState>,
+        action_description: &str,
+    ) -> Self
+    where
+        IN: ErrorCodeMixin + Into<OUT>,
+        OUT: ErrorCodeMixin,
+    {
+        let result = result.and_then(|r| r.try_into().map_err(Into::into));
+
+        match result {
+            Ok(value) => Self::ok(value),
+            Err(error) => Self::Error(ErrorResponse::from_error_with_trace(
+                &error,
                 state,
                 action_description,
             )),
@@ -179,7 +186,7 @@ impl<T: ToSchema> utoipa::IntoResponses for OkOrErrorResponse<VecResponse<T>> {
         #[response(status = 200, description = "OK")]
         struct SuccessResponse<T: ToSchema>(
             #[to_schema]
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             Vec<T>,
         );
 
@@ -187,7 +194,13 @@ impl<T: ToSchema> utoipa::IntoResponses for OkOrErrorResponse<VecResponse<T>> {
     }
 }
 
-pub enum CreatedOrErrorResponse<T> {
+impl<T> From<ErrorResponse> for OkOrErrorResponse<T> {
+    fn from(value: ErrorResponse) -> Self {
+        Self::Error(value)
+    }
+}
+
+pub(crate) enum CreatedOrErrorResponse<T> {
     Created(T),
     Error(ErrorResponse),
 }
@@ -197,20 +210,20 @@ impl<T> CreatedOrErrorResponse<T> {
         Self::Created(value.into())
     }
 
-    pub fn from_service_error(error: ServiceError, hide_cause: bool) -> Self {
-        Self::Error(ErrorResponse::from_service_error(error, hide_cause))
+    pub fn from_error<E: ErrorCodeMixin>(error: &E, hide_cause: bool) -> Self {
+        Self::Error(ErrorResponse::from_error(error, hide_cause))
     }
 
     #[track_caller]
     pub(crate) fn from_result(
-        result: Result<impl Into<T>, ServiceError>,
+        result: Result<impl Into<T>, impl ErrorCodeMixin>,
         state: State<AppState>,
         action_description: &str,
     ) -> Self {
         match result {
             Ok(value) => Self::created(value),
-            Err(error) => Self::Error(ErrorResponse::from_service_error_with_trace(
-                error,
+            Err(error) => Self::Error(ErrorResponse::from_error_with_trace(
+                &error,
                 state,
                 action_description,
             )),
@@ -237,26 +250,32 @@ impl<T: ToSchema> utoipa::IntoResponses for CreatedOrErrorResponse<T> {
     }
 }
 
-pub enum EmptyOrErrorResponse {
+impl<T> From<ErrorResponse> for CreatedOrErrorResponse<T> {
+    fn from(value: ErrorResponse) -> Self {
+        Self::Error(value)
+    }
+}
+
+pub(crate) enum EmptyOrErrorResponse {
     NoContent,
     Error(ErrorResponse),
 }
 
 impl EmptyOrErrorResponse {
-    pub fn from_service_error(error: ServiceError, hide_cause: bool) -> Self {
-        Self::Error(ErrorResponse::from_service_error(error, hide_cause))
+    pub fn from_error<E: ErrorCodeMixin>(error: &E, hide_cause: bool) -> Self {
+        Self::Error(ErrorResponse::from_error(error, hide_cause))
     }
 
     #[track_caller]
     pub(crate) fn from_result(
-        result: Result<(), ServiceError>,
+        result: Result<(), impl ErrorCodeMixin>,
         state: State<AppState>,
         action_description: &str,
     ) -> Self {
         match result {
             Ok(_) => Self::NoContent,
-            Err(error) => Self::Error(ErrorResponse::from_service_error_with_trace(
-                error,
+            Err(error) => Self::Error(ErrorResponse::from_error_with_trace(
+                &error,
                 state,
                 action_description,
             )),
@@ -280,5 +299,11 @@ impl utoipa::IntoResponses for EmptyOrErrorResponse {
         struct SuccessResponse;
 
         with_error_responses::<SuccessResponse>()
+    }
+}
+
+impl From<ErrorResponse> for EmptyOrErrorResponse {
+    fn from(value: ErrorResponse) -> Self {
+        Self::Error(value)
     }
 }

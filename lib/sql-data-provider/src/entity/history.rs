@@ -1,8 +1,11 @@
 use one_core::model::history::{
     HistoryAction as ModelHistoryAction, HistoryEntityType as ModelHistoryEntityType,
+    HistorySource as ModelHistorySource,
 };
 use one_dto_mapper::{From, Into};
+use sea_orm::IntoSimpleExpr;
 use sea_orm::entity::prelude::*;
+use sea_orm::sea_query::SimpleExpr;
 use shared_types::{EntityId, HistoryId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -18,9 +21,11 @@ pub struct Model {
     pub entity_type: HistoryEntityType,
     pub metadata: Option<String>,
     pub name: String,
+    pub source: HistorySource,
     pub target: Option<String>,
+    pub user: Option<String>,
 
-    pub organisation_id: OrganisationId,
+    pub organisation_id: Option<OrganisationId>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -110,6 +115,20 @@ pub enum HistoryAction {
     Reactivated,
     #[sea_orm(string_value = "EXPIRED")]
     Expired,
+    #[sea_orm(string_value = "INTERACTION_CREATED")]
+    InteractionCreated,
+    #[sea_orm(string_value = "INTERACTION_ERRORED")]
+    InteractionErrored,
+    #[sea_orm(string_value = "INTERACTION_EXPIRED")]
+    InteractionExpired,
+    #[sea_orm(string_value = "DELIVERED")]
+    Delivered,
+}
+
+impl From<&HistoryAction> for SimpleExpr {
+    fn from(val: &HistoryAction) -> Self {
+        SimpleExpr::Constant(val.to_value().into())
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into)]
@@ -141,4 +160,45 @@ pub enum HistoryEntityType {
     TrustAnchor,
     #[sea_orm(string_value = "TRUST_ENTITY")]
     TrustEntity,
+    #[sea_orm(string_value = "WALLET_UNIT")]
+    WalletUnit,
+    #[sea_orm(string_value = "USER")]
+    User,
+    #[sea_orm(string_value = "PROVIDER")]
+    Provider,
+    #[sea_orm(string_value = "WALLET_RELYING_PARTY")]
+    WalletRelyingParty,
+    #[sea_orm(string_value = "STS_ROLE")]
+    StsRole,
+    #[sea_orm(string_value = "STS_ORGANISATION")]
+    StsOrganisation,
+    #[sea_orm(string_value = "STS_IAM_ROLE")]
+    StsIamRole,
+    #[sea_orm(string_value = "STS_SESSION")]
+    StsSession,
+    #[sea_orm(string_value = "STS_TOKEN")]
+    StsToken,
+    #[sea_orm(string_value = "SIGNATURE")]
+    Signature,
+    #[sea_orm(string_value = "NOTIFICATION")]
+    Notification,
+    #[sea_orm(string_value = "SUPERVISORY_AUTHORITY")]
+    SupervisoryAuthority,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into)]
+#[from(ModelHistorySource)]
+#[into(ModelHistorySource)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+pub enum HistorySource {
+    #[sea_orm(string_value = "CORE")]
+    Core,
+    #[sea_orm(string_value = "BRIDGE")]
+    Bridge,
+    #[sea_orm(string_value = "BFF")]
+    Bff,
+    #[sea_orm(string_value = "WRPR")]
+    Wrpr,
+    #[sea_orm(string_value = "STS")]
+    Sts,
 }

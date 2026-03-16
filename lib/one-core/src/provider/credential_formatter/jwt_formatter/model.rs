@@ -1,16 +1,12 @@
+use std::collections::HashMap;
+
+use maplit::hashmap;
 use serde::{Deserialize, Serialize};
 
-use crate::provider::credential_formatter::vcdm::{ContextType, JwtVcdmCredential};
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VPContent {
-    #[serde(rename = "@context")]
-    pub context: Vec<ContextType>,
-    #[serde(rename = "type")]
-    pub r#type: Vec<String>,
-    pub verifiable_credential: Vec<VerifiableCredential>,
-}
+use crate::proto::jwt::WithMetadata;
+use crate::provider::credential_formatter::error::FormatterError;
+use crate::provider::credential_formatter::model::{CredentialClaim, CredentialClaimValue};
+use crate::provider::credential_formatter::vcdm::JwtVcdmCredential;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,27 +14,38 @@ pub struct VcClaim {
     pub vc: JwtVcdmCredential,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VP {
-    pub vp: VPContent,
-    pub nonce: Option<String>,
-}
+impl WithMetadata for VcClaim {
+    fn get_metadata_claims(&self) -> Result<HashMap<String, CredentialClaim>, FormatterError> {
+        let value = serde_json::to_value(self)?;
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum VerifiableCredential {
-    Enveloped(EnvelopedContent),
-    Token(String),
-}
+        let Some(obj) = value.as_object() else {
+            return Err(FormatterError::JsonMapping(
+                "Expected serialized value to be an object".to_string(),
+            ));
+        };
 
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct EnvelopedContent {
-    #[serde(rename = "@context")]
-    pub context: Vec<ContextType>,
-    pub id: String,
-    #[serde(rename = "type")]
-    pub r#type: Vec<String>,
+        let Some(vc) = obj.get("vc").and_then(|vc| vc.as_object()) else {
+            return Ok(HashMap::new());
+        };
+
+        let mut result = HashMap::new();
+        for key in ["type", "id"] {
+            let Some(claim) = vc.get(key) else { continue };
+            let mut claim = CredentialClaim::try_from(claim.clone())?;
+            claim.set_metadata(true);
+            result.insert(key.to_string(), claim);
+        }
+
+        let vc_claim = CredentialClaim {
+            selectively_disclosable: false,
+            metadata: true,
+            value: CredentialClaimValue::Object(result),
+        };
+
+        Ok(hashmap! {
+            "vc".to_string() => vc_claim,
+        })
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]

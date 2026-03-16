@@ -1,27 +1,35 @@
+use one_core::error::ErrorCodeMixin;
 use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::list_query::{ListPagination, ListQuery, ListSorting};
-use one_core::service::error::{ErrorCodeMixin, ServiceError};
+use one_core::proto::session_provider::SessionProvider;
+use one_core::service::error::{BusinessLogicError, ServiceError};
 use one_dto_mapper::convert_inner;
-use serde::Deserialize;
+use shared_types::OrganisationId;
+use strum::EnumMessage;
 use utoipa::openapi::path::ParameterIn;
 use utoipa::openapi::schema::ArrayItems;
 use utoipa::openapi::{RefOr, Schema};
 use utoipa::{IntoParams, ToSchema};
 
 use super::common::SortDirection;
-use super::error::{Cause, ErrorCode, ErrorResponseRestDTO};
+use super::error::{Cause, ErrorResponseRestDTO};
 use crate::dto::common::ListQueryParamsRest;
+use crate::session::CoreServerSessionProvider;
 
 impl<FilterRest, SortableColumnRest, SortableColumn, Filter, IncludeRest, Include>
-    From<ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>>
+    TryFrom<ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>>
     for ListQuery<SortableColumn, Filter, Include>
 where
-    FilterRest: Into<ListFilterCondition<Filter>>,
+    FilterRest: TryInto<ListFilterCondition<Filter>>,
     SortableColumnRest: Into<SortableColumn>,
     IncludeRest: Into<Include>,
 {
-    fn from(value: ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>) -> Self {
-        Self {
+    type Error = FilterRest::Error;
+
+    fn try_from(
+        value: ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
             pagination: Some(ListPagination {
                 page: value.page,
                 page_size: value.page_size.inner(),
@@ -30,9 +38,9 @@ where
                 column: column.into(),
                 direction: convert_inner(value.sort_direction),
             }),
-            filtering: Some(value.filter.into()),
+            filtering: Some(value.filter.try_into()?),
             include: value.include.map(convert_inner),
-        }
+        })
     }
 }
 
@@ -51,12 +59,11 @@ where
 
         // remove empty include[] params
         params.retain(|param| {
-            if let Some(RefOr::T(Schema::Array(array))) = &param.schema {
-                if let ArrayItems::RefOrSchema(ref_or) = &array.items {
-                    if let RefOr::T(Schema::Object(obj)) = ref_or.as_ref() {
-                        return obj.enum_values.is_some();
-                    }
-                }
+            if let Some(RefOr::T(Schema::Array(array))) = &param.schema
+                && let ArrayItems::RefOrSchema(ref_or) = &array.items
+                && let RefOr::T(Schema::Object(obj)) = ref_or.as_ref()
+            {
+                return obj.enum_values.is_some();
             }
             true
         });
@@ -67,11 +74,12 @@ where
 }
 
 // only used for generation of swagger-ui params for pagination, sorting and data inclusion
-#[derive(Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
+#[derive(IntoParams)]
+#[into_params(rename_all = "camelCase")]
+#[expect(dead_code)]
 struct PartialQueryParamsRest<SortColumn: ToSchema, Include: ToSchema> {
     /// The page number to retrieve (0-based indexing).
+    #[param(example = 0, minimum = 0)]
     pub page: u32,
     /// Number of items to return per page. If omitted, defaults to 30.
     #[param(default = 30, minimum = 1, maximum = 1000)]
@@ -90,15 +98,35 @@ struct PartialQueryParamsRest<SortColumn: ToSchema, Include: ToSchema> {
     pub include: Option<Vec<Include>>,
 }
 
-impl From<&ServiceError> for ErrorResponseRestDTO {
-    fn from(error: &ServiceError) -> Self {
+impl<E: ErrorCodeMixin> From<&E> for ErrorResponseRestDTO {
+    fn from(error: &E) -> Self {
         let code = error.error_code();
         let cause = Cause::with_message_from_error(error);
 
         ErrorResponseRestDTO {
-            code: ErrorCode::from(code),
-            message: code.to_string(),
+            code: code.into(),
+            message: code.get_message().unwrap_or_default().to_string(),
             cause: Some(cause),
         }
     }
+}
+
+/// Picks either organisation ID passed via JSON body or query parameter of the request (preferred)
+/// or organisation ID passed via STS token.
+///
+/// It fails if no organisation ID is specified.
+pub(crate) fn fallback_organisation_id_from_session(
+    call_argument: Option<OrganisationId>,
+) -> Result<OrganisationId, ServiceError> {
+    if let Some(organisation_id) = call_argument {
+        return Ok(organisation_id);
+    }
+
+    let Some(session) = CoreServerSessionProvider.session() else {
+        return Err(BusinessLogicError::OrganisationNotSpecified.into());
+    };
+
+    session
+        .organisation_id
+        .ok_or(BusinessLogicError::OrganisationNotSpecified.into())
 }

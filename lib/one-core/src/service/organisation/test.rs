@@ -2,11 +2,16 @@ use std::sync::Arc;
 
 use mockall::Sequence;
 use mockall::predicate::eq;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::OrganisationService;
-use crate::model::organisation::OrganisationRelations;
+use crate::error::{ErrorCode, ErrorCodeMixin};
+use crate::model::organisation::{
+    GetOrganisationList, OrganisationListQuery, OrganisationRelations,
+};
 use crate::repository::error::DataLayerError;
+use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::service::error::{BusinessLogicError, EntityNotFoundError, ServiceError};
 use crate::service::organisation::dto::CreateOrganisationRequestDTO;
@@ -15,6 +20,8 @@ use crate::service::test_utilities::dummy_organisation;
 fn setup_service(organisation_repository: MockOrganisationRepository) -> OrganisationService {
     OrganisationService {
         organisation_repository: Arc::new(organisation_repository),
+        identifier_repository: Arc::new(MockIdentifierRepository::new()),
+        core_config: Arc::new(Default::default()),
     }
 }
 
@@ -130,14 +137,24 @@ async fn test_get_organisation_list_success() {
     organisation_repository
         .expect_get_organisation_list()
         .times(1)
-        .returning(|| Ok(vec![dummy_organisation(None)]));
+        .returning(|_: OrganisationListQuery| {
+            Ok(GetOrganisationList {
+                values: vec![dummy_organisation(None)],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
 
     let service = setup_service(organisation_repository);
-    let result = service.get_organisation_list().await;
+    let result = service
+        .get_organisation_list(OrganisationListQuery::default())
+        .await;
 
     assert!(result.is_ok());
     let result = result.unwrap();
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.values.len(), 1);
+    assert_eq!(result.total_pages, 1);
+    assert_eq!(result.total_items, 1);
 }
 
 #[tokio::test]
@@ -146,13 +163,12 @@ async fn test_get_organisation_list_failure() {
     organisation_repository
         .expect_get_organisation_list()
         .times(1)
-        .returning(|| Err(anyhow::anyhow!("TEST").into()));
+        .returning(|_: OrganisationListQuery| Err(anyhow::anyhow!("TEST").into()));
 
     let service = setup_service(organisation_repository);
-    let result = service.get_organisation_list().await;
+    let result = service
+        .get_organisation_list(OrganisationListQuery::default())
+        .await;
 
-    assert!(matches!(
-        result,
-        Err(ServiceError::Repository(DataLayerError::Db(_)))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0054);
 }

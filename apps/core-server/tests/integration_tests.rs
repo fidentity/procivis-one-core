@@ -1,3 +1,7 @@
+#![allow(clippy::expect_used)]
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::indexing_slicing)]
+
 #[cfg(test)]
 mod fixtures;
 #[cfg(test)]
@@ -63,5 +67,23 @@ mod trust_entity;
 #[path = "api/jsonld/mod.rs"]
 mod jsonld;
 
+#[path = "api/wallet_provider/mod.rs"]
+mod api_ssi_wallet_provider_tests;
+
 #[path = "api/generic_api_tests.rs"]
 mod generic_api_tests;
+
+#[path = "api/wallet_unit/mod.rs"]
+mod api_wallet_unit_tests;
+
+#[path = "api/signature/mod.rs"]
+mod api_signature_tests;
+
+#[path = "api/statistics/mod.rs"]
+mod api_statistics_tests;
+
+#[path = "api/authentication.rs"]
+mod authentication;
+
+#[path = "api/authorization.rs"]
+mod authorization;

@@ -5,9 +5,9 @@ use crate::m20240110_000001_initial::{Credential, CredentialSchema, Did, Key, Pr
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-const CREDENTIAL_CREATED_DATE_INDEX: &str = "index-Credential-CreatedDate";
+pub const CREDENTIAL_CREATED_DATE_INDEX: &str = "index-Credential-CreatedDate";
 const CREDENTIAL_SCHEMA_CREATED_DATE_INDEX: &str = "index-CredentialSchema-CreatedDate";
-const PROOF_CREATED_DATE_INDEX: &str = "index-Proof-CreatedDate";
+pub const PROOF_CREATED_DATE_INDEX: &str = "index-Proof-CreatedDate";
 const PROOF_SCHEMA_CREATED_DATE_INDEX: &str = "index-ProofSchema-CreatedDate";
 const DID_CREATED_DATE_INDEX: &str = "index-Did-CreatedDate";
 const KEY_CREATED_DATE_INDEX: &str = "index-Key-CreatedDate";
@@ -15,6 +15,11 @@ const KEY_CREATED_DATE_INDEX: &str = "index-Key-CreatedDate";
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if manager.get_database_backend() == sea_orm::DatabaseBackend::Postgres {
+            // Skip because it is not supported. If support for Postgres is added in the future
+            // the schema can be setup in its entirety in a new, later migration.
+            return Ok(());
+        }
         manager
             .create_index(
                 Index::create()

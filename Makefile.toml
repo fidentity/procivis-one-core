@@ -17,7 +17,11 @@ args    = ["build", "-p", "core-server"]
 command = "cargo"
 
 [tasks.clippy]
-args    = ["clippy", "--all-targets"]
+args    = ["clippy", "--all-targets", "--", "${@}"]
+command = "cargo"
+
+[tasks.clippy_warn]
+args    = ["clippy", "--all-targets", "--", "-D", "warnings"]
 command = "cargo"
 
 [tasks.format]
@@ -63,6 +67,9 @@ command = "cargo"
 args    = ["test"]
 command = "cargo"
 
+[tasks.check]
+dependencies = ["format", "clippy_warn", "test"]
+
 [tasks.unit-tests]
 args    = ["test", "--lib"]
 command = "cargo"
@@ -81,9 +88,9 @@ command = "docker"
 
 [tasks.dbdrop]
 script = [
-  "docker rm --force docker-mariadb-1",
-  "docker rm --force docker-walletdb-1",
-  "docker volume rm docker_mariadb_data",
+  "docker rm --force core-mariadb-1",
+  "docker rm --force core-walletdb-1",
+  "docker volume rm core_mariadb_data",
 ]
 
 [tasks.seaormcli]
@@ -109,20 +116,29 @@ command = "sea-orm-cli"
 dependencies = ["seaormcli"]
 
 ############################################################### UNIFFI
+[tasks.uniffi_library_build]
+script = "cargo build --package one-core-uniffi --lib --release"
+
+[tasks.uniffi_library_path]
+env           = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.so" }
+script        = "set_env UNIFFI_LIB ${LIB}"
+script_runner = "@duckscript"
+
+[tasks.uniffi_library_path.mac]
+env = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.dylib" }
+
+[tasks.uniffi_library]
+run_task = { name = ["uniffi_library_build", "uniffi_library_path"] }
+
 # generates binding interfaces for documentation purposes
 [tasks.generate_uniffi_interfaces]
-env = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.so" }
+dependencies = ["uniffi_library"]
 script = '''
-cargo build --package one-core-uniffi --lib --release
-
 for language in "swift" "kotlin"
 do
-  cargo run --features=uniffi/cli -p uniffi-bindgen --bin uniffi-bindgen generate --library $LIB -l $language -o ${CARGO_TARGET_DIR}/uniffi-interface
+  cargo run --features=uniffi/cli -p uniffi-bindgen --bin uniffi-bindgen generate --library $UNIFFI_LIB -l $language --no-format -o ${CARGO_TARGET_DIR}/uniffi-interface
 done
 '''
-
-[tasks.generate_uniffi_interfaces.mac]
-env = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.dylib" }
 
 #### Android
 [tasks.add_android_targets]
@@ -141,19 +157,14 @@ args    = ["install", "cross", "--git", "https://github.com/cross-rs/cross", "--
 command = "cargo"
 
 [tasks.generate_kotlin]
-env = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.so" }
-script = '''
 # since the native libraries are built inside cross, we need to build another library in the native environment
-cargo build --package one-core-uniffi --lib --release
-
-cargo run --features=uniffi/cli -p uniffi-bindgen --bin uniffi-bindgen generate --library $LIB -l kotlin -o ${CARGO_TARGET_DIR}/android_tmp
+dependencies = ["uniffi_library"]
+script = '''
+cargo run --features=uniffi/cli -p uniffi-bindgen --bin uniffi-bindgen generate --library $UNIFFI_LIB -l kotlin --no-format -o ${CARGO_TARGET_DIR}/android_tmp
 mkdir -p ${CARGO_TARGET_DIR}/uniffi/android/java/ch/procivis/one/core
 mv ${CARGO_TARGET_DIR}/android_tmp/ch/procivis/one/core/one_core_uniffi.kt ${CARGO_TARGET_DIR}/uniffi/android/java/ch/procivis/one/core/one_core.kt
 rm -rf ${CARGO_TARGET_DIR}/android_tmp
 '''
-
-[tasks.generate_kotlin.mac]
-env = { "LIB" = "${CARGO_TARGET_DIR}/release/libone_core_uniffi.dylib" }
 
 [tasks.build_android_targets]
 script = '''
@@ -180,8 +191,10 @@ do
       stripCmd=aarch64-linux-android-strip
       ;;
   esac
-
-  cross build -p one-core-uniffi --target $target --profile mobile-release
+  
+  # Android 15 alignment: https://developer.android.com/guide/practices/page-sizes#compile-r26-lower
+  RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
+    cross build -p one-core-uniffi --target $target --profile mobile-release
 
   targetDir="${CARGO_TARGET_DIR}/uniffi/android/jniLibs/$arch"
   mkdir -p $targetDir
@@ -205,7 +218,7 @@ cp -r ${CARGO_TARGET_DIR}/uniffi/android/* ${CARGO_TARGET_DIR}/platforms/android
 dependencies = ["prepare_gradle_build_directory"]
 script = '''
 cd ${CARGO_TARGET_DIR}/platforms/android
-./gradlew assemble
+./gradlew assemble dokkaHtml
 '''
 
 [tasks.build_android]
@@ -213,6 +226,7 @@ dependencies = ["build_android_gradle"]
 script = '''
 mkdir -p ${CARGO_TARGET_DIR}/bindings/android/
 cp -r ${CARGO_TARGET_DIR}/platforms/android/onecore/build/outputs/aar/* ${CARGO_TARGET_DIR}/bindings/android/
+cp -r ${CARGO_TARGET_DIR}/platforms/android/onecore/build/dokka/* ${CARGO_TARGET_DIR}/bindings/android/
 '''
 
 #### iOS
@@ -289,6 +303,15 @@ xcodebuild -create-xcframework \
 cp -r ../../ProcivisOneCoreFFI.xcframework ../../bindings/ios
 '''
 
+[tasks.generate_ios_docs]
+script = '''
+export TARGET_DIR=`pwd`/${CARGO_TARGET_DIR}
+pushd platforms/ios >/dev/null
+xcodebuild docbuild -project ProcivisOneCore.xcodeproj -scheme ProcivisOneCore -derivedDataPath ${TARGET_DIR}/platforms/ios/docs CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+cp -R ${TARGET_DIR}/platforms/ios/docs/Build/Products/Debug-iphoneos/ProcivisOneCore.doccarchive ${TARGET_DIR}/bindings/ios
+$(xcrun --find docc) process-archive transform-for-static-hosting ${TARGET_DIR}/bindings/ios/ProcivisOneCore.doccarchive/ --output-path ${TARGET_DIR}/bindings/ios/htmldoc --hosting-base-path ios
+'''
+
 [tasks.build_ios]
 dependencies = [
   "add_ios_targets",
@@ -297,8 +320,16 @@ dependencies = [
   "collect_ios_libs",
   "create_ffi_xc_framework",
   "build_ios_framework",
+  "generate_ios_docs",
 ]
 script = 'echo "--- output available in ${CARGO_TARGET_DIR}/bindings/ios ---"'
+
+#### Typescript
+[tasks.generate_ts]
+dependencies = ["uniffi_library"]
+script = '''
+cargo run -p uniffi-bindgen-ts-interface --bin uniffi-bindgen-ts-interface -- --library $UNIFFI_LIB --out-dir ${CARGO_TARGET_DIR}/uniffi/ts 
+'''
 
 ############################################################### API tests
 [tasks.install_api_tests]

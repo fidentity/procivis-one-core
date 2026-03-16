@@ -1,6 +1,6 @@
 //! Utilities for Token Status List.
 
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 
 use bit_vec::BitVec;
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
@@ -9,11 +9,13 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use thiserror::Error;
 
+use crate::error::{ErrorCode, ErrorCodeMixin};
+use crate::model::revocation_list::RevocationListEntryStatus;
 use crate::provider::credential_formatter::jwt_formatter::model::TokenStatusListSubject;
-use crate::provider::revocation::model::CredentialRevocationState;
+use crate::provider::revocation::model::RevocationState;
 
 #[derive(Debug, Error)]
-pub enum TokenError {
+pub(super) enum TokenError {
     #[error("Token encoding error: `{0}`")]
     Base64Encoding(ct_codecs::Error),
     #[error("Token decoding error: `{0}`")]
@@ -28,19 +30,25 @@ pub enum TokenError {
     SuspensionRequiresAtLeastTwoBits,
 }
 
+impl ErrorCodeMixin for TokenError {
+    fn error_code(&self) -> ErrorCode {
+        ErrorCode::BR_0101
+    }
+}
+
 pub(crate) const PREFERRED_ENTRY_SIZE: usize = 2;
 
-pub(crate) fn extract_state_from_token(
+pub(super) fn extract_state_from_token(
     status_list: &TokenStatusListSubject,
     index: usize,
-) -> Result<CredentialRevocationState, TokenError> {
+) -> Result<RevocationState, TokenError> {
     let entry_size = status_list.bits;
 
     let compressed = Base64UrlSafeNoPadding::decode_to_vec(&status_list.value, Some(&[b'='; 4]))
         .map_err(TokenError::Base64Decoding)?;
 
     let decoder = ZlibDecoder::new(&compressed[..]);
-    let bytes: Vec<u8> = decoder
+    let bytes: Vec<u8> = BufReader::new(decoder)
         .bytes()
         .collect::<Result<_, std::io::Error>>()
         .map_err(|err| {
@@ -68,43 +76,38 @@ pub(crate) fn extract_state_from_token(
         .ok_or(TokenError::IndexOutOfBounds { index })?;
 
     match (revoked, suspended) {
-        (true, _) => Ok(CredentialRevocationState::Revoked),
-        (false, true) => Ok(CredentialRevocationState::Suspended {
+        (true, _) => Ok(RevocationState::Revoked),
+        (false, true) => Ok(RevocationState::Suspended {
             suspend_end_date: None,
         }),
-        (_, _) => Ok(CredentialRevocationState::Valid),
+        (_, _) => Ok(RevocationState::Valid),
     }
 }
 
 pub(super) fn generate_token(
-    input: Vec<CredentialRevocationState>,
+    input: Vec<(usize, RevocationListEntryStatus)>,
     bits: usize,
     preferred_token_size: usize,
 ) -> Result<String, TokenError> {
     let mut bitvec = BitVec::from_elem(preferred_token_size, false);
-    input
-        .into_iter()
-        .enumerate()
-        .try_for_each(|(index, state)| {
-            let most_significant_bit_index = get_most_significant_bit_index(index, bits);
-            match state {
-                CredentialRevocationState::Valid => {}
-                CredentialRevocationState::Revoked => {
-                    let revocation_bit_index = most_significant_bit_index + bits - 1;
-                    bitvec.set(revocation_bit_index, true)
-                }
-                CredentialRevocationState::Suspended { .. } => {
-                    if bits < PREFERRED_ENTRY_SIZE {
-                        return Err(TokenError::SuspensionRequiresAtLeastTwoBits);
-                    }
-
-                    let suspension_bit_index = most_significant_bit_index + bits - 2;
-                    bitvec.set(suspension_bit_index, true)
-                }
+    input.into_iter().try_for_each(|(index, state)| {
+        let most_significant_bit_index = get_most_significant_bit_index(index, bits);
+        match state {
+            RevocationListEntryStatus::Active => {}
+            RevocationListEntryStatus::Revoked => {
+                let revocation_bit_index = most_significant_bit_index + bits - 1;
+                bitvec.set(revocation_bit_index, true)
             }
-
-            Ok(())
-        })?;
+            RevocationListEntryStatus::Suspended => {
+                if bits < PREFERRED_ENTRY_SIZE {
+                    return Err(TokenError::SuspensionRequiresAtLeastTwoBits);
+                }
+                let suspension_bit_index = most_significant_bit_index + bits - 2;
+                bitvec.set(suspension_bit_index, true)
+            }
+        }
+        Ok(())
+    })?;
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
     encoder

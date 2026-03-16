@@ -1,7 +1,6 @@
 app:
   databaseUrl: "mysql://core:886eOqVMmlHsayu6Vyxw@localhost/core"
-  authToken: "test"
-  coreBaseUrl: "http://0.0.0.0:3000"
+  coreBaseUrl: "http://localhost:3000"
   serverIp: "0.0.0.0"
   serverPort: 3000
   traceJson: false
@@ -14,6 +13,56 @@ app:
   enableOpenApi: true
   enableExternalEndpoints: true
   enableManagementEndpoints: true
+  enableHistoryCreateEndpoint: true
+  enableSignatureEndpoints: true
+  enableWalletProvider: true
+  auth:
+    mode: UNSAFE_STATIC
+    staticToken: "test"
+walletProvider:
+  PROCIVIS_ONE:
+    type: PROCIVIS_ONE
+    display: walletProvider.procivisOne
+    params:
+      private:
+      public:
+        walletName: "Procivis One Dev Wallet"
+        walletLink: "https://procivis.ch"
+        walletClientId: "eudiw-abca"
+        walletRegistration: OPTIONAL
+        walletInstanceAttestation:
+          expirationTime: 86400 # 24*60*60 seconds
+          integrityCheck:
+            android:
+              bundleId: ch.procivis.one.wallet.dev
+              signingCertificateFingerprints: [
+                  "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C", # local
+                  "3C:54:08:A0:AB:59:9A:5B:51:72:3F:DA:58:8E:81:DB:4F:A0:65:41:0E:7D:C2:65:4D:F1:A5:67:5B:47:13:52", # bitrise
+                  "FF:F9:BC:4E:E9:D7:10:AF:4F:B4:C2:7C:63:85:01:A6:A2:99:09:3C:F1:56:9E:E3:60:00:31:15:91:70:EA:E9", # google-play
+                ]
+              trustedAttestationCAs:
+                [
+                  "-----BEGIN CERTIFICATE-----\nMIIFHDCCAwSgAwIBAgIJAPHBcqaZ6vUdMA0GCSqGSIb3DQEBCwUAMBsxGTAXBgNV\nBAUTEGY5MjAwOWU4NTNiNmIwNDUwHhcNMjIwMzIwMTgwNzQ4WhcNNDIwMzE1MTgw\nNzQ4WjAbMRkwFwYDVQQFExBmOTIwMDllODUzYjZiMDQ1MIICIjANBgkqhkiG9w0B\nAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xUFmOr75gvMsd/dTEDDJdS\nSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5jlRfdnJLmN0pTy/4lj4/7\ntv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y//0rb+T+W8a9nsNL/ggj\nnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73XpXyTqRxB/M0n1n/W9nGq\nC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYImQQcHtGl/m00QLVWutHQ\noVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB+TxywElgS70vE0XmLD+O\nJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7quvmag8jfPioyKvxnK/Eg\nsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgpZrt3i5MIlCaY504LzSRi\nigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7gLiMm0jhO2B6tUXHI/+M\nRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82ixPvZtXQpUpuL12ab+9E\naDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+NpUFgNPN9PvQi8WEg5Um\nAGMCAwEAAaNjMGEwHQYDVR0OBBYEFDZh4QB8iAUJUYtEbEf/GkzJ6k8SMB8GA1Ud\nIwQYMBaAFDZh4QB8iAUJUYtEbEf/GkzJ6k8SMA8GA1UdEwEB/wQFMAMBAf8wDgYD\nVR0PAQH/BAQDAgIEMA0GCSqGSIb3DQEBCwUAA4ICAQB8cMqTllHc8U+qCrOlg3H7\n174lmaCsbo/bJ0C17JEgMLb4kvrqsXZs01U3mB/qABg/1t5Pd5AORHARs1hhqGIC\nW/nKMav574f9rZN4PC2ZlufGXb7sIdJpGiO9ctRhiLuYuly10JccUZGEHpHSYM2G\ntkgYbZba6lsCPYAAP83cyDV+1aOkTf1RCp/lM0PKvmxYN10RYsK631jrleGdcdkx\noSK//mSQbgcWnmAEZrzHoF1/0gso1HZgIn0YLzVhLSA/iXCX4QT2h3J5z3znluKG\n1nv8NQdxei2DIIhASWfu804CA96cQKTTlaae2fweqXjdN1/v2nqOhngNyz1361mF\nmr4XmaKH/ItTwOe72NI9ZcwS1lVaCvsIkTDCEXdm9rCNPAY10iTunIHFXRh+7KPz\nlHGewCq/8TOohBRn0/NNfh7uRslOSZ/xKbN9tMBtw37Z8d2vvnXq/YWdsm1+JLVw\nn6yYD/yacNJBlwpddla8eaVMjsF6nBnIgQOf9zKSe06nSTqvgwUHosgOECZJZ1Eu\nzbH4yswbt02tKtKEFhx+v+OTge/06V+jGsqTWLsfrOCNLuA8H++z+pUENmpqnnHo\nvaI47gC+TNpkgYGkkBT6B/m/U01BuOBBTzhIlMEZq9qkDWuM2cA5kW5V3FJUcfHn\nw1IdYIg2Wxg7yHcQZemFQg==\n-----END CERTIFICATE-----",
+                  "-----BEGIN CERTIFICATE-----\nMIICIjCCAaigAwIBAgIRAISp0Cl7DrWK5/8OgN52BgUwCgYIKoZIzj0EAwMwUjEc\nMBoGA1UEAwwTS2V5IEF0dGVzdGF0aW9uIENBMTEQMA4GA1UECwwHQW5kcm9pZDET\nMBEGA1UECgwKR29vZ2xlIExMQzELMAkGA1UEBhMCVVMwHhcNMjUwNzE3MjIzMjE4\nWhcNMzUwNzE1MjIzMjE4WjBSMRwwGgYDVQQDDBNLZXkgQXR0ZXN0YXRpb24gQ0Ex\nMRAwDgYDVQQLDAdBbmRyb2lkMRMwEQYDVQQKDApHb29nbGUgTExDMQswCQYDVQQG\nEwJVUzB2MBAGByqGSM49AgEGBSuBBAAiA2IABCPaI3FO3z5bBQo8cuiEas4HjqCt\nG/mLFfRT0MsIssPBEEU5Cfbt6sH5yOAxqEi5QagpU1yX4HwnGb7OtBYpDTB57uH5\nEczm34A5FNijV3s0/f0UPl7zbJcTx6xwqMIRq6NCMEAwDwYDVR0TAQH/BAUwAwEB\n/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYEFFIyuyz7RkOb3NaBqQ5lZuA0QepA\nMAoGCCqGSM49BAMDA2gAMGUCMETfjPO/HwqReR2CS7p0ZWoD/LHs6hDi422opifH\nEUaYLxwGlT9SLdjkVpz0UUOR5wIxAIoGyxGKRHVTpqpGRFiJtQEOOTp/+s1GcxeY\nuR2zh/80lQyu9vAFCj6E4AXc+osmRg==\n-----END CERTIFICATE-----",
+                ]
+            ios:
+              bundleId: AGG3V6QN4G.ch.procivis.one.wallet.dev
+              trustedAttestationCAs:
+                [
+                  "-----BEGIN CERTIFICATE-----\nMIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw\nJAYDVQQDDB1BcHBsZSBBcHAgQXR0ZXN0YXRpb24gUm9vdCBDQTETMBEGA1UECgwK\nQXBwbGUgSW5jLjETMBEGA1UECAwKQ2FsaWZvcm5pYTAeFw0yMDAzMTgxODMyNTNa\nFw00NTAzMTUwMDAwMDBaMFIxJjAkBgNVBAMMHUFwcGxlIEFwcCBBdHRlc3RhdGlv\nbiBSb290IENBMRMwEQYDVQQKDApBcHBsZSBJbmMuMRMwEQYDVQQIDApDYWxpZm9y\nbmlhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAERTHhmLW07ATaFQIEVwTtT4dyctdh\nNbJhFs/Ii2FdCgAHGbpphY3+d8qjuDngIN3WVhQUBHAoMeQ/cLiP1sOUtgjqK9au\nYen1mMEvRq9Sk3Jm5X8U62H+xTD3FE9TgS41o0IwQDAPBgNVHRMBAf8EBTADAQH/\nMB0GA1UdDgQWBBSskRBTM72+aEH/pwyp5frq5eWKoTAOBgNVHQ8BAf8EBAMCAQYw\nCgYIKoZIzj0EAwMDaAAwZQIwQgFGnByvsiVbpTKwSga0kP0e8EeDS4+sQmTvb7vn\n53O5+FRXgeLhpJ06ysC5PrOyAjEAp5U4xDgEgllF7En3VcE3iexZZtKeYnpqtijV\noyFraWVIyd/dganmrduC1bmTBGwD\n-----END CERTIFICATE-----",
+                ]
+              enforceProductionBuild: false
+        walletUnitAttestation:
+          expirationTime: 2678400 # 31 days
+          revocationMethod: TOKENSTATUSLIST
+        deviceAuthLeeway: 60
+        appVersion:
+          minimum: "v1.50.0"
+        eudiWalletInfo:
+          providerName: "Procivis One Dev"
+          solutionId: "PROCIVIS_ONE"
+          solutionVersion: "1"
+          wscdType: HYBRID
 format:
   MDOC_SHORT_EXPIRY:
     type: "MDOC"
@@ -27,7 +76,6 @@ format:
         msoExpectedUpdateIn: 60
         msoMinimumRefreshTime: 10
         leeway: 10
-        embedLayoutProperties: true
 issuanceProtocol:
   OPENID4VCI_DRAFT13:
     params:
@@ -40,10 +88,32 @@ issuanceProtocol:
   OPENID4VCI_DRAFT13_SWIYU:
     params:
       public:
+        allowedSchemes: ["http", "https"]
+      private:
+        # this is the SHA-256 of "my encryption key"
+        encryption: "93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e"
+  OPENID4VCI_FINAL1:
+    params:
+      public:
+        redirectUri:
           allowedSchemes: ["http", "https"]
       private:
         # this is the SHA-256 of "my encryption key"
         encryption: "93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e"
+        nonce:
+          signingKey: "93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e"
+          expiration: 300
+          leeway: 0
+  OPENID4VCI_FINAL1_HAIP:
+    params:
+      public:
+        redirectUri:
+          allowedSchemes: ["http", "https"]
+      private:
+        # this is the SHA-256 of "my encryption key"
+        encryption: "93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e"
+        nonce:
+          signingKey: "93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e"
 verificationProtocol:
   OPENID4VP_DRAFT20:
     params:
@@ -54,11 +124,13 @@ verificationProtocol:
   OPENID4VP_DRAFT20_SWIYU:
     params:
       public:
+        allowInsecureHttpTransport: true
         redirectUri:
           allowedSchemes: ["http", "https"]
   MDOC_OPENID4VP:
     params:
       public:
+        allowInsecureHttpTransport: true
         redirectUri:
           allowedSchemes: ["http", "https"]
   OPENID4VP_DRAFT25:
@@ -67,30 +139,28 @@ verificationProtocol:
         allowInsecureHttpTransport: true
         redirectUri:
           allowedSchemes: ["http", "https"]
+        verifier:
+          useDcql: true
   OPENID4VP_DRAFT25_EUDI:
-    display:
-      en: "OpenID4VP draft 25 (EUDI)"
-      de: "OpenID4VP draft 25 (EUDI)"
-    order: 8
-    type: "OPENID4VP_DRAFT25"
     params:
       public:
-        useRequestUri: true
-        urlScheme: eudi-openid4vp
-        x509CaCertificate: MIIC3TCCAoOgAwIBAgIUEwybFc9Jw-az3r188OiHDaxCfHEwCgYIKoZIzj0EAwMwXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4XDTI1MDMyNDIwMjYxNFoXDTM0MDYyMDIwMjYxM1owXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEesDKj9rCIcrGj0wbSXYvCV953bOPSYLZH5TNmhTz2xa7VdlvQgQeGZRg1PrF5AFwt070wvL9qr1DUDdvLp6a1qOCASEwggEdMBIGA1UdEwEB_wQIMAYBAf8CAQAwHwYDVR0jBBgwFoAUYseURyi9D6IWIKeawkmURPEB08cwEwYDVR0lBAwwCgYIK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5ldWRpdy5kZXYvY3JsL3BpZF9DQV9VVF8wMi5jcmwwHQYDVR0OBBYEFGLHlEcovQ-iFiCnmsJJlETxAdPHMA4GA1UdDwEB_wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczovL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0dXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0gAMEUCIQCe4R9rO4JhFp821kO8Gkb8rXm4qGG_e5_Oi2XmnTQqOQIgfFs-LDbnP2_j1MB4rwZ1FgGdpr4oyrFB9daZyRIcP90
-        verifier:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
-          defaultClientIdScheme: x509_san_dns
-        holder:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
+        allowInsecureHttpTransport: true
         redirectUri:
-          enabled: true
-          allowedSchemes: ["https"]
+          allowedSchemes: ["http", "https"]
+  OPENID4VP_FINAL1:
+    params:
+      public:
+        allowInsecureHttpTransport: true
+        redirectUri:
+          allowedSchemes: ["http", "https"]
   OPENID4VP_PROXIMITY_DRAFT00:
     display: "exchange.openid00_proximity"
     order: 4
     type: "OPENID4VP_PROXIMITY_DRAFT00"
-    params: {}
+    params:
+      public:
+        verifier:
+          interactionExpiresIn: 3600
 keyStorage:
   INTERNAL:
     params:
@@ -124,6 +194,7 @@ trustManagement:
     params:
       public:
         enablePublishing: true
+        proofOfPossessionLeeway: 60
 cacheEntities:
   STATUS_LIST_CREDENTIAL:
     cacheType: DB
@@ -140,3 +211,77 @@ cacheEntities:
     refreshAfter: 86400
     cacheRefreshTimeout: 86400
     cacheSize: 1000
+keySecurityLevel:
+  HIGH:
+    display: keySecurityLevel.high
+    order: 40
+    params:
+      public:
+        holder:
+          priority: 40
+          keyStorages: []
+credentialIssuer:
+  EUDI_PID_FLOW:
+    display:
+      en: EUDI Issuer
+      de: EUDI Issuer
+    order: 1
+    enabled: true
+    params:
+      public:
+        issuer: https://eudiw-issuer.eudi.dev.procivis-one.com
+      private:
+        clientId: procivis-wallet-dev
+  NIC_PID_FLOW:
+    display:
+      en: NIC Issuer
+      de: NIC Issuer
+    order: 1
+    enabled: true
+    params:
+      public:
+        issuer: https://eudiw.regtest.nic.cz
+      private:
+        clientId: procivis-wallet-dev
+signer:
+  REGISTRATION_CERTIFICATE:
+    display:
+      en: Wallet Relying Party Registration Certificate
+      de: Wallet Relying Party Registration Certificate
+    order: 0
+    type: REGISTRATION_CERTIFICATE
+    params:
+      private:
+        payload:
+          issuer: "https://issuer.example"
+          audience: ["bli", "bla"]
+          maxValidityDuration: 2592000 # 30 days
+        revocationMethod: TOKENSTATUSLIST
+  ACCESS_CERTIFICATE:
+    display:
+      en: "Wallet Relying Party Access Certificate"
+      de: "Wallet Relying Party Access Certificate"
+    order: 1
+    type: ACCESS_CERTIFICATE
+    params:
+      private:
+        payload:
+          maxValidityDuration: 157680000 # 5 years
+        revocationMethod: CRL
+  X509_CERTIFICATE:
+    display:
+      en: "X.509 Certificate Issuer"
+      de: "X.509 Certificate Issuer"
+    order: 2
+    type: X509_CERTIFICATE
+    params:
+      private:
+        payload:
+          maxValidityDuration: 157680000 # 5 years
+          allowCaSigning: true
+        revocationMethod: CRL
+task:
+  WEBHOOK_NOTIFY:
+    params:
+      public:
+        allowInsecureHttpTransport: true

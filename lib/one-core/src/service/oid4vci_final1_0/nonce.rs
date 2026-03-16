@@ -1,0 +1,188 @@
+use std::str::FromStr;
+
+use one_crypto::utilities;
+use secrecy::{ExposeSecret, SecretSlice};
+use serde::{Deserialize, Serialize};
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
+
+use crate::config::core_config::KeyAlgorithmType;
+use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::proto::jwt::Jwt;
+use crate::proto::jwt::model::{DecomposedJwt, JWTPayload};
+use crate::provider::credential_formatter::error::FormatterError;
+use crate::provider::credential_formatter::model::SignatureProvider;
+use crate::provider::issuance_protocol::openid4vci_final1_0::model::OpenID4VCNonceParams;
+use crate::provider::key_algorithm::error::KeyAlgorithmError;
+use crate::service::error::ServiceError;
+use crate::validator::{validate_expiration_time, validate_issuance_time};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NonceJwtPayload {
+    context: String,
+}
+
+const CONTEXT: &str = "issuance-openidvci-final-1.0-nonce";
+
+impl Default for NonceJwtPayload {
+    fn default() -> Self {
+        Self {
+            context: CONTEXT.to_string(),
+        }
+    }
+}
+
+pub(super) async fn generate_nonce(
+    params: OpenID4VCNonceParams,
+    base_url: Option<String>,
+) -> Result<String, ServiceError> {
+    let expiration = params.expiration.unwrap_or(300);
+    let now = OffsetDateTime::now_utc();
+
+    let payload = JWTPayload::<NonceJwtPayload> {
+        jwt_id: Some(Uuid::new_v4().to_string()),
+        issued_at: Some(now),
+        expires_at: Some(now + Duration::seconds(expiration as _)),
+        issuer: base_url,
+        ..Default::default()
+    };
+    let jwt = Jwt::new("JWT".to_string(), "HS256".to_string(), None, None, payload);
+
+    Ok(jwt
+        .tokenize(Some(&HS256Signer {
+            signing_key: params.signing_key,
+        }))
+        .await
+        .error_while("creating nonce token")?)
+}
+
+pub(super) fn validate_nonce(
+    params: &OpenID4VCNonceParams,
+    base_url: Option<String>,
+    nonce: &str,
+) -> Result<Uuid, ServiceError> {
+    let DecomposedJwt::<NonceJwtPayload> {
+        header,
+        payload,
+        signature,
+        unverified_jwt,
+    } = Jwt::decompose_token(nonce).error_while("parsing nonce token")?;
+
+    if header.algorithm != "HS256" {
+        return Err(
+            FormatterError::CouldNotVerify("Invalid nonce alg header".to_string())
+                .error_while("validating algorithm")
+                .into(),
+        );
+    };
+
+    let (Some(issued_at), Some(expires_at), Some(issuer)) =
+        (payload.issued_at, payload.expires_at, payload.issuer)
+    else {
+        return Err(
+            FormatterError::CouldNotVerify("Invalid payload".to_string())
+                .error_while("validating payload")
+                .into(),
+        );
+    };
+    validate_issuance_time(&Some(issued_at), params.leeway)?;
+    validate_expiration_time(&Some(expires_at), params.leeway)?;
+    if Some(&issuer) != base_url.as_ref() {
+        return Err(
+            FormatterError::CouldNotVerify(format!("Invalid nonce issuer: {issuer}"))
+                .error_while("validating issuer")
+                .into(),
+        );
+    }
+    if payload.custom.context != CONTEXT {
+        return Err(FormatterError::CouldNotVerify(format!(
+            "Invalid nonce context: {}",
+            payload.custom.context
+        ))
+        .error_while("validating context")
+        .into());
+    }
+
+    let id = payload
+        .jwt_id
+        .ok_or(FormatterError::CouldNotVerify(
+            "Missing nonce_id".to_string(),
+        ))
+        .error_while("validating nonce_id")?;
+    let id = Uuid::from_str(&id)
+        .map_err(|e| FormatterError::CouldNotVerify(format!("Invalid nonce_id: {e}")))
+        .error_while("validating nonce_id")?;
+
+    let expected_signature = utilities::create_hmac(
+        params.signing_key.expose_secret(),
+        unverified_jwt.as_bytes(),
+    )
+    .map_err(|e| FormatterError::CouldNotVerify(e.to_string()))
+    .error_while("validating signature")?;
+    if expected_signature != signature {
+        return Err(
+            FormatterError::CouldNotVerify("Invalid nonce signature".to_string())
+                .error_while("verifying signature")
+                .into(),
+        );
+    }
+
+    Ok(id)
+}
+
+struct HS256Signer {
+    pub signing_key: SecretSlice<u8>,
+}
+
+#[async_trait::async_trait]
+impl SignatureProvider for HS256Signer {
+    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, KeyAlgorithmError> {
+        Ok(utilities::create_hmac(
+            self.signing_key.expose_secret(),
+            message,
+        )?)
+    }
+
+    fn get_key_id(&self) -> Option<String> {
+        None
+    }
+
+    fn get_key_algorithm(&self) -> Result<KeyAlgorithmType, String> {
+        Err("HS256".to_string())
+    }
+
+    fn jose_alg(&self) -> Option<String> {
+        Some("HS256".to_string())
+    }
+
+    fn get_public_key(&self) -> Vec<u8> {
+        Default::default()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_generate_and_validate_nonce() {
+        let base_url = "http://test.com";
+        let nonce = generate_nonce(params(), Some(base_url.to_string()))
+            .await
+            .unwrap();
+
+        validate_nonce(&params(), Some(base_url.to_string()), &nonce).unwrap();
+    }
+
+    fn params() -> OpenID4VCNonceParams {
+        OpenID4VCNonceParams {
+            signing_key: hex::decode(
+                "c213ff6fb1a57a0c7353443527a7cd5775c3c58b8f32476dee8200fb5767904d",
+            )
+            .unwrap()
+            .into(),
+            expiration: Some(300),
+            leeway: 0,
+        }
+    }
+}

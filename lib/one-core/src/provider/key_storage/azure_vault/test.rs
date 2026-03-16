@@ -4,6 +4,8 @@ use std::sync::Arc;
 use one_crypto::{CryptoProvider, CryptoProviderImpl, Hasher, MockHasher};
 use secrecy::SecretString;
 use serde_json::json;
+use similar_asserts::assert_eq;
+use standardized_types::jwk::{PrivateJwk, PrivateJwkEc};
 use time::OffsetDateTime;
 use uuid::Uuid;
 use wiremock::http::Method;
@@ -16,7 +18,7 @@ use super::dto::AzureHsmGetTokenResponse;
 use super::{AzureVaultKeyProvider, Params};
 use crate::config::core_config::KeyAlgorithmType;
 use crate::model::key::Key;
-use crate::provider::http_client::reqwest_client::ReqwestClient;
+use crate::proto::http_client::reqwest_client::ReqwestClient;
 use crate::provider::key_storage::KeyStorage;
 use crate::provider::key_storage::error::KeyStorageError;
 
@@ -93,6 +95,45 @@ async fn generate_key_mock(mock_server: &MockServer, expect: u64) {
     .mount(mock_server).await;
 }
 
+async fn import_key_mock(mock_server: &MockServer, expect: u64) {
+    Mock::given(method(Method::PUT))
+        .and(path_regex(r"/keys/.*"))
+        .and(header("content-type", "application/json"))
+        .and(body_json(json!({
+            "key": {
+                "kty": "EC-HSM",
+                "crv": "P-256",
+                "x": "r1U6-8dqlyj-_CwYft6kxx9MCfInQYCoUwKiP579c3w",
+                "y": "u_EMmvFmfsUjDmDY2kBhZPK0tyycAylkoY-PLAUD1WU",
+                "d": "_M90X3GfBZoFDBZHZsMQszc2a92dCorIJBlytnmkKEM"
+            },
+            "Hsm": true
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(
+        {
+          "key": {
+            "kid": "https://one-dev.vault.azure.net/keys/testing-1/13ae667d-392b-4c00-8896-079909fe85d7",
+            "kty": "EC-HSM",
+            "crv": "P-256",
+            "key_ops": [],
+            "x": "r1U6-8dqlyj-_CwYft6kxx9MCfInQYCoUwKiP579c3w",
+            "y": "u_EMmvFmfsUjDmDY2kBhZPK0tyycAylkoY-PLAUD1WU",
+            "d": "_M90X3GfBZoFDBZHZsMQszc2a92dCorIJBlytnmkKEM"
+          },
+          "attributes": {
+            "enabled": true,
+            "created": 1700655189,
+            "updated": 1700655189,
+            "recoveryLevel": "CustomizedRecoverable+Purgeable",
+            "recoverableDays": 7,
+            "exportable": false
+          }
+        }
+    )))
+        .expect(expect)
+        .mount(mock_server).await;
+}
+
 async fn sign_mock(mock_server: &MockServer, expect: u64) {
     Mock::given(path("/keys/uuid/keyid/sign"))
         .and(header("content-type", "application/json"))
@@ -109,10 +150,7 @@ async fn sign_mock(mock_server: &MockServer, expect: u64) {
 }
 
 fn get_crypto(hashers: Vec<(String, Arc<dyn Hasher>)>) -> Arc<dyn CryptoProvider> {
-    Arc::new(CryptoProviderImpl::new(
-        HashMap::from_iter(hashers),
-        HashMap::new(),
-    ))
+    Arc::new(CryptoProviderImpl::new(HashMap::from_iter(hashers)))
 }
 
 #[tokio::test]
@@ -167,7 +205,7 @@ async fn test_azure_vault_generate_failed_unsupported_key_type() {
         Arc::new(ReqwestClient::default()),
     );
     let result = vault
-        .generate(Uuid::new_v4().into(), KeyAlgorithmType::Dilithium)
+        .generate(Uuid::new_v4().into(), KeyAlgorithmType::MlDsa)
         .await;
     assert!(matches!(
         result,
@@ -201,7 +239,7 @@ async fn test_azure_vault_sign() {
             last_modified: OffsetDateTime::now_utc(),
             public_key: vec![],
             name: "".to_string(),
-            key_reference: key_reference.as_bytes().to_vec(),
+            key_reference: Some(key_reference.as_bytes().to_vec()),
             storage_type: "".to_string(),
             key_type: "".to_string(),
             organisation: None,
@@ -210,4 +248,90 @@ async fn test_azure_vault_sign() {
     let result = key_handle.sign("message_to_sign".as_bytes()).await.unwrap();
 
     assert_eq!("signed_message".as_bytes(), result);
+}
+
+#[tokio::test]
+async fn test_azure_vault_import() {
+    let mock_server = MockServer::start().await;
+
+    get_token_mock(&mock_server, 3600, 1).await;
+    import_key_mock(&mock_server, 1).await;
+
+    let vault = AzureVaultKeyProvider::new(
+        get_params(mock_server.uri()),
+        get_crypto(vec![]),
+        Arc::new(ReqwestClient::default()),
+    );
+
+    vault
+        .import(
+            Uuid::new_v4().into(),
+            KeyAlgorithmType::Ecdsa,
+            PrivateJwk::Ec(PrivateJwkEc {
+                r#use: None,
+                kid: Some("13ae667d-392b-4c00-8896-079909fe85d7".to_string()),
+                crv: "P-256".to_string(),
+                x: "r1U6-8dqlyj-_CwYft6kxx9MCfInQYCoUwKiP579c3w".to_string(),
+                y: Some("u_EMmvFmfsUjDmDY2kBhZPK0tyycAylkoY-PLAUD1WU".to_string()),
+                d: "_M90X3GfBZoFDBZHZsMQszc2a92dCorIJBlytnmkKEM".into(),
+            }),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_azure_vault_import_unsupported_key_type() {
+    let vault = AzureVaultKeyProvider::new(
+        get_params("http://127.0.0.1".to_string()),
+        get_crypto(vec![]),
+        Arc::new(ReqwestClient::default()),
+    );
+
+    let result = vault
+        .import(
+            Uuid::new_v4().into(),
+            KeyAlgorithmType::Eddsa,
+            PrivateJwk::Okp(PrivateJwkEc {
+                r#use: None,
+                kid: Some("13ae667d-392b-4c00-8896-079909fe85d7".to_string()),
+                crv: "P-256".to_string(),
+                x: "r1U6-8dqlyj-_CwYft6kxx9MCfInQYCoUwKiP579c3w".to_string(),
+                y: Some("u_EMmvFmfsUjDmDY2kBhZPK0tyycAylkoY-PLAUD1WU".to_string()),
+                d: "_M90X3GfBZoFDBZHZsMQszc2a92dCorIJBlytnmkKEM".into(),
+            }),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(KeyStorageError::UnsupportedKeyType { .. })
+    ));
+}
+
+#[tokio::test]
+async fn test_azure_vault_import_jwk_invalid_key_type() {
+    let vault = AzureVaultKeyProvider::new(
+        get_params("http://127.0.0.1".to_string()),
+        get_crypto(vec![]),
+        Arc::new(ReqwestClient::default()),
+    );
+
+    let result = vault
+        .import(
+            Uuid::new_v4().into(),
+            KeyAlgorithmType::Ecdsa,
+            PrivateJwk::Okp(PrivateJwkEc {
+                r#use: None,
+                kid: Some("13ae667d-392b-4c00-8896-079909fe85d7".to_string()),
+                crv: "P-256".to_string(),
+                x: "r1U6-8dqlyj-_CwYft6kxx9MCfInQYCoUwKiP579c3w".to_string(),
+                y: Some("u_EMmvFmfsUjDmDY2kBhZPK0tyycAylkoY-PLAUD1WU".to_string()),
+                d: "_M90X3GfBZoFDBZHZsMQszc2a92dCorIJBlytnmkKEM".into(),
+            }),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(KeyStorageError::InvalidKeyAlgorithm(_))
+    ));
 }

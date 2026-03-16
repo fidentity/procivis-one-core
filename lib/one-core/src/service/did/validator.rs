@@ -4,18 +4,18 @@ use std::hash::Hash;
 use super::DidDeactivationError;
 use crate::model::did::Did;
 use crate::provider::did_method::DidMethod;
-use crate::provider::did_method::model::AmountOfKeys;
+use crate::provider::did_method::model::{AmountOfKeys, Operation};
 use crate::service::did::dto::CreateDidRequestKeysDTO;
-use crate::service::error::{BusinessLogicError, ServiceError, ValidationError};
+use crate::service::error::{BusinessLogicError, ValidationError};
 
 fn count_uniq<T: Eq + Hash>(vec: impl IntoIterator<Item = T>) -> usize {
     vec.into_iter().collect::<HashSet<_>>().len()
 }
 
-pub(super) fn validate_request_amount_of_keys(
+pub(crate) fn validate_request_amount_of_keys(
     did_method: &dyn DidMethod,
     keys: CreateDidRequestKeysDTO,
-) -> Result<(), ServiceError> {
+) -> Result<(), ValidationError> {
     let keys = AmountOfKeys {
         global: count_uniq(
             keys.authentication
@@ -33,9 +33,7 @@ pub(super) fn validate_request_amount_of_keys(
     };
 
     if !did_method.validate_keys(keys) {
-        Err(ServiceError::Validation(
-            ValidationError::DidInvalidKeyNumber,
-        ))
+        Err(ValidationError::DidInvalidKeyNumber)
     } else {
         Ok(())
     }
@@ -50,8 +48,20 @@ pub(super) fn validate_deactivation_request(
         return Err(DidDeactivationError::RemoteDid.into());
     }
 
-    if !did_method.can_be_deactivated() {
+    if deactivate
+        && !did_method
+            .get_capabilities()
+            .operations
+            .contains(&Operation::DEACTIVATE)
+    {
         return Err(DidDeactivationError::CannotBeDeactivated {
+            method: did.did_method.to_owned(),
+        }
+        .into());
+    }
+
+    if !deactivate {
+        return Err(DidDeactivationError::CannotBeReactivated {
             method: did.did_method.to_owned(),
         }
         .into());

@@ -1,7 +1,8 @@
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
 use one_core::service::error::ServiceError;
-use shared_types::CertificateId;
+use proc_macros::require_permissions;
+use shared_types::{CertificateId, Permission};
 
 use super::dto::CertificateResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
@@ -22,6 +23,7 @@ use crate::router::AppState;
     summary = "Get a certificate",
     description = "Retrieves detailed information about a certificate.",
 )]
+#[require_permissions(Permission::IdentifierDetail)]
 pub(crate) async fn get_certificate(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<CertificateId>, ErrorResponseRestDTO>,
@@ -33,15 +35,15 @@ pub(crate) async fn get_certificate(
             Ok(value) => OkOrErrorResponse::ok(value),
             Err(error) => {
                 tracing::error!("Error while converting certificate response: {:?}", error);
-                OkOrErrorResponse::from_service_error(
-                    ServiceError::MappingError(error.to_string()),
+                OkOrErrorResponse::from_error(
+                    &ServiceError::MappingError(error.to_string()),
                     state.config.hide_error_response_cause,
                 )
             }
         },
         Err(error) => {
             tracing::error!("Error while getting certificate details: {:?}", error);
-            OkOrErrorResponse::from_service_error(error, state.config.hide_error_response_cause)
+            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
         }
     }
 }

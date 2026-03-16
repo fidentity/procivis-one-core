@@ -8,13 +8,14 @@ use p256::elliptic_curve::{JwkEcKey, SecretKey};
 use p256::pkcs8::DecodePublicKey;
 use p256::{AffinePoint, EncodedPoint, NistP256, PublicKey};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 
 use crate::encryption::EncryptionError;
-use crate::jwe::{RemoteJwk, decode_b64};
+use crate::jwe::decode_b64;
 use crate::utilities::get_rng;
 use crate::{Signer, SignerError};
 
-pub struct ECDSASigner {}
+pub struct ECDSASigner;
 
 impl ECDSASigner {
     fn from_bytes(public_key: &[u8]) -> Result<VerifyingKey, SignerError> {
@@ -40,6 +41,20 @@ impl ECDSASigner {
         y: &[u8],
         compressed: bool,
     ) -> Result<Vec<u8>, SignerError> {
+        if x.len() != 32 {
+            return Err(SignerError::CouldNotExtractPublicKey(format!(
+                "Couldn't initialize verifying key, invalid x length: {}",
+                x.len()
+            )));
+        };
+
+        if y.len() != 32 {
+            return Err(SignerError::CouldNotExtractPublicKey(format!(
+                "Couldn't initialize verifying key, invalid y length: {}",
+                y.len()
+            )));
+        };
+
         let encoded_point = EncodedPoint::from_affine_coordinates(
             GenericArray::from_slice(x),
             GenericArray::from_slice(y),
@@ -53,6 +68,22 @@ impl ECDSASigner {
         })?;
 
         Ok(key.to_encoded_point(compressed).to_bytes().into())
+    }
+
+    pub fn parse_private_key_coordinates(
+        d: &SecretSlice<u8>,
+        compressed: bool,
+    ) -> Result<(SecretSlice<u8>, Vec<u8>), SignerError> {
+        let sk = SigningKey::from_slice(d.expose_secret()).map_err(|err| {
+            SignerError::CouldNotExtractPrivateKey(format!(
+                "couldn't initialize signing key: {err}"
+            ))
+        })?;
+        let vk = sk.verifying_key();
+        Ok((
+            sk.to_bytes().to_vec().into(),
+            vk.to_encoded_point(compressed).to_bytes().into(),
+        ))
     }
 
     pub fn parse_public_key_from_der(
@@ -104,14 +135,34 @@ impl ECDSASigner {
 
     pub fn shared_secret_p256(
         private_key: &SecretSlice<u8>,
-        recipient_jwk: &RemoteJwk,
+        recipient_jwk: &PublicJwk,
     ) -> Result<SecretSlice<u8>, EncryptionError> {
+        let PublicJwk::Ec(recipient_jwk) = recipient_jwk else {
+            return Err(EncryptionError::Crypto(format!(
+                "Expected elliptic curve jwk, got {recipient_jwk:?}"
+            )));
+        };
         let x = decode_b64(recipient_jwk.x.as_str(), "x coordinate")?;
         let y_encoded = recipient_jwk
             .y
             .clone()
             .ok_or(EncryptionError::Crypto("Missing y coordinate".to_string()))?;
         let y = decode_b64(y_encoded.as_str(), "y coordinate")?;
+
+        if x.len() != 32 {
+            return Err(EncryptionError::Crypto(format!(
+                "Couldn't initialize remote key, invalid x length: {}",
+                x.len()
+            )));
+        };
+
+        if y.len() != 32 {
+            return Err(EncryptionError::Crypto(format!(
+                "Couldn't initialize remote key, invalid y length: {}",
+                y.len()
+            )));
+        };
+
         let peer_affine_point =
             AffinePoint::from_encoded_point(&EncodedPoint::from_affine_coordinates(
                 GenericArray::from_slice(&x),
@@ -133,11 +184,11 @@ impl ECDSASigner {
         Ok(SecretSlice::from(shared_secret))
     }
 
-    pub fn bytes_as_jwk(public_key: &[u8]) -> Result<RemoteJwk, EncryptionError> {
+    pub fn bytes_as_jwk(public_key: &[u8]) -> Result<PublicJwk, EncryptionError> {
         let verifying_key = ECDSASigner::from_bytes(public_key)
             .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
         let public_key = PublicKey::from(verifying_key);
-        public_key.to_jwk().try_into()
+        ec_key_to_public_jwk(public_key.to_jwk())
     }
 }
 
@@ -171,30 +222,28 @@ impl Signer for ECDSASigner {
     }
 }
 
-impl TryFrom<JwkEcKey> for RemoteJwk {
-    type Error = EncryptionError;
-
-    fn try_from(value: JwkEcKey) -> Result<Self, Self::Error> {
-        let point = value.to_encoded_point::<NistP256>().map_err(|e| {
-            EncryptionError::Crypto(format!("failed to convert JWK to encoded point: {}", e))
-        })?;
-        let x = Base64UrlSafeNoPadding::encode_to_string(
-            point
-                .x()
-                .ok_or(EncryptionError::Crypto("missing x coordinate".to_string()))?,
-        )
-        .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {}", e)))?;
-        let y = Base64UrlSafeNoPadding::encode_to_string(
-            point
-                .y()
-                .ok_or(EncryptionError::Crypto("missing y coordinate".to_string()))?,
-        )
-        .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {}", e)))?;
-        Ok(Self {
-            kty: "EC".to_string(),
-            crv: value.crv().to_string(),
-            x,
-            y: Some(y),
-        })
-    }
+fn ec_key_to_public_jwk(key: JwkEcKey) -> Result<PublicJwk, EncryptionError> {
+    let point = key.to_encoded_point::<NistP256>().map_err(|e| {
+        EncryptionError::Crypto(format!("failed to convert JWK to encoded point: {e}"))
+    })?;
+    let x = Base64UrlSafeNoPadding::encode_to_string(
+        point
+            .x()
+            .ok_or(EncryptionError::Crypto("missing x coordinate".to_string()))?,
+    )
+    .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {e}")))?;
+    let y = Base64UrlSafeNoPadding::encode_to_string(
+        point
+            .y()
+            .ok_or(EncryptionError::Crypto("missing y coordinate".to_string()))?,
+    )
+    .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {e}")))?;
+    Ok(PublicJwk::Ec(PublicJwkEc {
+        alg: None,
+        r#use: None,
+        kid: None,
+        crv: key.crv().to_string(),
+        x,
+        y: Some(y),
+    }))
 }

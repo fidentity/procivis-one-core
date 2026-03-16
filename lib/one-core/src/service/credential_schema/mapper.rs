@@ -1,15 +1,15 @@
 use one_dto_mapper::convert_inner;
-use shared_types::{ClaimSchemaId, CredentialSchemaId, OrganisationId};
+use shared_types::{CredentialSchemaId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::dto::{CredentialSchemaFilterValue, ImportCredentialSchemaRequestSchemaDTO};
-use crate::common_mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
-use crate::config::core_config::FormatType;
-use crate::model::claim_schema::ClaimSchema;
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType, LayoutType,
+use super::dto::{
+    CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
+    CredentialSchemaFilterValue, CredentialSchemaLogoPropertiesRequestDTO,
 };
+use crate::mapper::credential_schema_claim::from_jwt_request_claim_schema;
+use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
+use crate::model::credential_schema::CredentialSchema;
 use crate::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
@@ -23,8 +23,13 @@ impl TryFrom<CredentialSchema> for CredentialSchemaDetailResponseDTO {
     type Error = ServiceError;
 
     fn try_from(value: CredentialSchema) -> Result<Self, Self::Error> {
-        let claim_schemas =
-            renest_claim_schemas(convert_inner(value.claim_schemas.unwrap_or_default()))?;
+        let claim_schemas = value
+            .claim_schemas
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|schema| !schema.metadata)
+            .collect::<Vec<_>>();
+        let claim_schemas = renest_claim_schemas(convert_inner(claim_schemas))?;
 
         let organisation_id = match value.organisation {
             None => Err(ServiceError::MappingError(
@@ -41,15 +46,15 @@ impl TryFrom<CredentialSchema> for CredentialSchemaDetailResponseDTO {
             format: value.format,
             imported_source_url: value.imported_source_url,
             revocation_method: value.revocation_method,
-            external_schema: value.external_schema,
             organisation_id,
             claims: claim_schemas,
-            wallet_storage_type: value.wallet_storage_type,
+            key_storage_security: value.key_storage_security,
             schema_id: value.schema_id,
-            schema_type: value.schema_type.into(),
             layout_type: Some(value.layout_type),
             layout_properties: value.layout_properties.map(|item| item.into()),
             allow_suspension: value.allow_suspension,
+            requires_wallet_instance_attestation: value.requires_wallet_instance_attestation,
+            transaction_code: convert_inner(value.transaction_code),
         })
     }
 }
@@ -86,8 +91,6 @@ pub(super) fn from_create_request_with_id(
     id: CredentialSchemaId,
     request: CreateCredentialSchemaRequestDTO,
     organisation: Organisation,
-    format_type: &FormatType,
-    schema_type: Option<CredentialSchemaType>,
     schema_id: String,
     imported_source_url: String,
 ) -> Result<CredentialSchema, ServiceError> {
@@ -101,12 +104,6 @@ pub(super) fn from_create_request_with_id(
 
     let claim_schemas = unnest_claim_schemas(request.claims);
 
-    let schema_type = schema_type.unwrap_or(match format_type {
-        FormatType::Mdoc => CredentialSchemaType::Mdoc,
-        FormatType::SdJwtVc => CredentialSchemaType::SdJwtVc,
-        _ => CredentialSchemaType::ProcivisOneSchema2024,
-    });
-
     Ok(CredentialSchema {
         id,
         deleted_at: None,
@@ -114,8 +111,7 @@ pub(super) fn from_create_request_with_id(
         last_modified: now,
         name: request.name,
         format: request.format,
-        wallet_storage_type: request.wallet_storage_type,
-        external_schema: request.external_schema,
+        key_storage_security: request.key_storage_security,
         revocation_method: request.revocation_method,
         claim_schemas: Some(
             claim_schemas
@@ -135,32 +131,12 @@ pub(super) fn from_create_request_with_id(
         organisation: Some(organisation),
         layout_type: request.layout_type,
         layout_properties: request.layout_properties.map(Into::into),
-        schema_type,
         imported_source_url,
         schema_id,
         allow_suspension: request.allow_suspension.unwrap_or_default(),
+        requires_wallet_instance_attestation: request.requires_wallet_instance_attestation,
+        transaction_code: convert_inner(request.transaction_code),
     })
-}
-
-fn from_jwt_request_claim_schema(
-    now: OffsetDateTime,
-    id: ClaimSchemaId,
-    key: String,
-    datatype: String,
-    required: bool,
-    array: Option<bool>,
-) -> CredentialSchemaClaim {
-    CredentialSchemaClaim {
-        schema: ClaimSchema {
-            id,
-            key,
-            data_type: datatype,
-            created_date: now,
-            last_modified: now,
-            array: array.unwrap_or(false),
-        },
-        required,
-    }
 }
 
 pub(super) fn renest_claim_schemas(
@@ -236,20 +212,36 @@ fn unnest_claim_schemas_inner(
     result
 }
 
-impl From<ImportCredentialSchemaRequestSchemaDTO> for CreateCredentialSchemaRequestDTO {
-    fn from(value: ImportCredentialSchemaRequestSchemaDTO) -> Self {
-        CreateCredentialSchemaRequestDTO {
-            name: value.name,
-            format: value.format,
-            revocation_method: value.revocation_method,
-            organisation_id: value.organisation_id.into(),
-            claims: value.claims.into_iter().map(Into::into).collect(),
-            external_schema: value.external_schema,
-            wallet_storage_type: convert_inner(value.wallet_storage_type),
-            layout_type: value.layout_type.unwrap_or(LayoutType::Card),
-            layout_properties: convert_inner(value.layout_properties),
-            schema_id: Some(value.schema_id),
-            allow_suspension: value.allow_suspension,
+impl From<CredentialSchemaLogoPropertiesRequestDTO>
+    for crate::proto::credential_schema::dto::CredentialSchemaLogoPropertiesRequestDTO
+{
+    fn from(value: CredentialSchemaLogoPropertiesRequestDTO) -> Self {
+        Self {
+            font_color: value.font_color,
+            background_color: value.background_color,
+            image: value.image,
+        }
+    }
+}
+
+impl From<CredentialSchemaCodePropertiesDTO>
+    for crate::proto::credential_schema::dto::CredentialSchemaCodePropertiesDTO
+{
+    fn from(value: CredentialSchemaCodePropertiesDTO) -> Self {
+        Self {
+            attribute: value.attribute,
+            r#type: value.r#type.into(),
+        }
+    }
+}
+
+impl From<CredentialSchemaBackgroundPropertiesRequestDTO>
+    for crate::proto::credential_schema::dto::CredentialSchemaBackgroundPropertiesRequestDTO
+{
+    fn from(value: CredentialSchemaBackgroundPropertiesRequestDTO) -> Self {
+        Self {
+            color: value.color,
+            image: value.image,
         }
     }
 }

@@ -1,6 +1,9 @@
+use one_dto_mapper::Into;
 use serde::{Deserialize, Serialize};
-use shared_types::{IdentifierId, OrganisationId};
+use shared_types::{IdentifierId, KeyId, OrganisationId};
+use strum::{AsRefStr, Display};
 use time::OffsetDateTime;
+use url::Url;
 
 use super::certificate::{Certificate, CertificateRelations};
 use super::common::GetListResponse;
@@ -9,6 +12,8 @@ use super::key::{Key, KeyRelations};
 use super::list_filter::{ListFilterValue, StringMatch};
 use super::list_query::ListQuery;
 use super::organisation::{Organisation, OrganisationRelations};
+use crate::config;
+use crate::model::list_filter::ValueComparison;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Identifier {
@@ -28,6 +33,22 @@ pub struct Identifier {
     pub certificates: Option<Vec<Certificate>>,
 }
 
+impl Identifier {
+    pub(crate) fn as_url(&self) -> Option<Url> {
+        match self.r#type {
+            IdentifierType::Did => self
+                .did
+                .as_ref()
+                .map(|did| did.did.as_str())
+                .map(Url::parse)
+                .and_then(Result::ok),
+            IdentifierType::Key
+            | IdentifierType::Certificate
+            | IdentifierType::CertificateAuthority => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum SortableIdentifierColumn {
     Name,
@@ -36,15 +57,18 @@ pub enum SortableIdentifierColumn {
     State,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Display, AsRefStr, Into)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into(config::core_config::IdentifierType)]
 pub enum IdentifierType {
     Key,
     Did,
     Certificate,
+    #[serde(rename = "CA")]
+    CertificateAuthority,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum IdentifierState {
     Active,
@@ -70,13 +94,16 @@ pub enum IdentifierFilterValue {
     Ids(Vec<IdentifierId>),
     Name(StringMatch),
     Types(Vec<IdentifierType>),
-    State(IdentifierState),
+    States(Vec<IdentifierState>),
     OrganisationId(OrganisationId),
     DidMethods(Vec<String>),
     IsRemote(bool),
     KeyAlgorithms(Vec<String>),
     KeyRoles(Vec<KeyRole>),
     KeyStorages(Vec<String>),
+    KeyIds(Vec<KeyId>),
+    CreatedDate(ValueComparison<OffsetDateTime>),
+    LastModified(ValueComparison<OffsetDateTime>),
 }
 
 impl ListFilterValue for IdentifierFilterValue {}

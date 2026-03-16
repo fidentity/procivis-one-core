@@ -1,8 +1,10 @@
 use core::str;
 
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
+use one_core::model::interaction::InteractionType;
 use one_core::model::proof::ProofStateEnum;
 use serde_json::json;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
@@ -58,7 +60,7 @@ async fn test_get_client_request() {
             &schema_id,
             "NewCredentialSchema",
             &organisation,
-            "NONE",
+            None,
             &new_claim_schemas,
             "JWT",
             &schema_id.to_string(),
@@ -82,9 +84,10 @@ async fn test_get_client_request() {
         .interactions
         .create(
             None,
-            &context.server_mock.uri(),
             interaction_data.to_string().as_bytes(),
             &organisation,
+            InteractionType::Verification,
+            None,
         )
         .await;
 
@@ -94,12 +97,13 @@ async fn test_get_client_request() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Pending,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key.to_owned(),
+            None,
+            None,
         )
         .await;
 

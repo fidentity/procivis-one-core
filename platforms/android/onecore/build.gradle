@@ -1,6 +1,7 @@
 plugins {
     id 'com.android.library'
     id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.dokka'
 }
 
 android {
@@ -8,7 +9,7 @@ android {
     compileSdk 34
 
     defaultConfig {
-        minSdk 21
+        minSdk 22
         targetSdk 33
 
         consumerProguardFiles 'proguard-lib.pro'
@@ -30,7 +31,17 @@ android {
 }
 
 dependencies {
-    implementation 'net.java.dev.jna:jna:5.13.0'
+    implementation 'net.java.dev.jna:jna:5.17.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.annotation:annotation:1.8.0'
+    implementation 'org.greenrobot:eventbus:3.3.1'
+    dokkaPlugin 'org.jetbrains.dokka:android-documentation-plugin:2.0.0'
+}
+
+tasks.dokkaHtml {
+    dokkaSourceSets {
+        configureEach {
+            suppressInheritedMembers.set(true)
+        }
+    }
 }

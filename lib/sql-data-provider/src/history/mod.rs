@@ -1,11 +1,13 @@
-use sea_orm::DatabaseConnection;
+use crate::transaction_context::TransactionManagerImpl;
 
 pub mod mapper;
 pub mod queries;
 pub mod repository;
 
+mod model;
+
 pub(crate) struct HistoryProvider {
-    pub db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+use similar_asserts::assert_eq;
+
 use crate::utils::context::TestContext;
 use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
 use crate::utils::db_clients::proof_schemas::{CreateProofClaim, CreateProofInputSchema};
@@ -11,7 +13,7 @@ async fn test_create_proof_schema_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claims = credential_schema
@@ -19,7 +21,7 @@ async fn test_create_proof_schema_success() {
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -30,7 +32,6 @@ async fn test_create_proof_schema_success() {
             organisation.id,
             claims,
             credential_schema.id,
-            Some(10),
         )
         .await;
 
@@ -44,8 +45,42 @@ async fn test_create_proof_schema_success() {
 
     let input_schemas = proof_schema.input_schemas.unwrap();
     assert_eq!(input_schemas.len(), 1);
-    assert_eq!(input_schemas[0].validity_constraint, Some(10));
     assert_eq!(input_schemas[0].claim_schemas.as_ref().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_create_proof_schema_fails_deactivated_organisation() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    context.db.organisations.deactivate(&organisation.id).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+
+    let claims = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|v| (v.id, v.required));
+
+    // WHEN
+    let resp = context
+        .api
+        .proof_schemas
+        .create(
+            "proof-schema-name",
+            organisation.id,
+            claims,
+            credential_schema.id,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+    assert_eq!("BR_0241", resp.error_code().await);
 }
 
 #[tokio::test]
@@ -56,7 +91,7 @@ async fn test_create_nested_proof_schema_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create_with_nested_claims("test", &organisation, "NONE", Default::default())
+        .create_with_nested_claims("test", &organisation, None, Default::default())
         .await;
 
     //Get only root element
@@ -66,7 +101,7 @@ async fn test_create_nested_proof_schema_success() {
         .unwrap()
         .iter()
         .take(1)
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -77,7 +112,6 @@ async fn test_create_nested_proof_schema_success() {
             organisation.id,
             claims,
             credential_schema.id,
-            Some(10),
         )
         .await;
 
@@ -91,7 +125,6 @@ async fn test_create_nested_proof_schema_success() {
 
     let input_schemas = proof_schema.input_schemas.unwrap();
     assert_eq!(input_schemas.len(), 1);
-    assert_eq!(input_schemas[0].validity_constraint, Some(10));
     assert_eq!(input_schemas[0].claim_schemas.as_ref().unwrap().len(), 1);
 }
 
@@ -106,9 +139,9 @@ async fn test_succeed_to_create_nested_proof_schema_without_object_claim() {
         .create_with_nested_claims(
             "test",
             &organisation,
-            "NONE",
+            None,
             TestingCreateSchemaParams {
-                format: Some("SD_JWT".to_owned()),
+                format: Some("SD_JWT".into()),
                 ..Default::default()
             },
         )
@@ -119,8 +152,8 @@ async fn test_succeed_to_create_nested_proof_schema_without_object_claim() {
         .as_ref()
         .unwrap()
         .iter()
-        .filter(|v| v.schema.data_type != "OBJECT")
-        .map(|v| (v.schema.id, v.required));
+        .filter(|v| v.data_type != "OBJECT")
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -131,7 +164,6 @@ async fn test_succeed_to_create_nested_proof_schema_without_object_claim() {
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -147,7 +179,7 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claims = credential_schema
@@ -155,7 +187,7 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     let resp = context
         .api
@@ -165,7 +197,6 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -174,7 +205,7 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation1, "NONE", Default::default())
+        .create("test", &organisation1, None, Default::default())
         .await;
 
     let claims = credential_schema
@@ -182,7 +213,7 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     let resp1 = context
         .api
@@ -192,7 +223,6 @@ async fn test_create_proof_schema_with_the_same_name_in_different_organisations(
             organisation1.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -207,7 +237,7 @@ async fn test_fail_to_create_proof_schema_with_the_same_name_in_organisation() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claims = credential_schema
@@ -215,7 +245,7 @@ async fn test_fail_to_create_proof_schema_with_the_same_name_in_organisation() {
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -226,7 +256,6 @@ async fn test_fail_to_create_proof_schema_with_the_same_name_in_organisation() {
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
     assert_eq!(resp.status(), 201);
@@ -236,7 +265,7 @@ async fn test_fail_to_create_proof_schema_with_the_same_name_in_organisation() {
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     let resp = context
         .api
@@ -246,7 +275,6 @@ async fn test_fail_to_create_proof_schema_with_the_same_name_in_organisation() {
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -262,7 +290,7 @@ async fn test_create_proof_schema_with_the_same_name_and_organisation_as_deleted
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claims = credential_schema
@@ -270,9 +298,9 @@ async fn test_create_proof_schema_with_the_same_name_and_organisation_as_deleted
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
-    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0].schema;
+    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
 
     let proof_schema = context
         .db
@@ -289,7 +317,6 @@ async fn test_create_proof_schema_with_the_same_name_and_organisation_as_deleted
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: None,
             }],
         )
         .await;
@@ -305,7 +332,6 @@ async fn test_create_proof_schema_with_the_same_name_and_organisation_as_deleted
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -321,7 +347,7 @@ async fn test_fail_to_create_proof_schema_from_deleted_credential_schema() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     context
@@ -335,7 +361,7 @@ async fn test_fail_to_create_proof_schema_from_deleted_credential_schema() {
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -346,7 +372,6 @@ async fn test_fail_to_create_proof_schema_from_deleted_credential_schema() {
             organisation.id,
             claims,
             credential_schema.id,
-            None,
         )
         .await;
 
@@ -362,13 +387,13 @@ async fn test_fail_to_create_proof_schema_with_claims_not_related_to_credential_
     let credential_schema1 = context
         .db
         .credential_schemas
-        .create("test1", &organisation, "NONE", Default::default())
+        .create("test1", &organisation, None, Default::default())
         .await;
 
     let credential_schema2 = context
         .db
         .credential_schemas
-        .create("test2", &organisation, "NONE", Default::default())
+        .create("test2", &organisation, None, Default::default())
         .await;
 
     let claims2 = credential_schema2
@@ -376,7 +401,7 @@ async fn test_fail_to_create_proof_schema_with_claims_not_related_to_credential_
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
@@ -387,7 +412,6 @@ async fn test_fail_to_create_proof_schema_with_claims_not_related_to_credential_
             organisation.id,
             claims2,
             credential_schema1.id,
-            None,
         )
         .await;
 
@@ -397,37 +421,214 @@ async fn test_fail_to_create_proof_schema_with_claims_not_related_to_credential_
 }
 
 #[tokio::test]
-async fn test_fail_missing_validity_constraint_for_lvvc() {
+async fn test_fail_to_create_proof_schema_with_mixed_combined_presentation_support() {
     // GIVEN
     let (context, organisation) = TestContext::new_with_organisation(None).await;
 
-    let credential_schema2 = context
+    // Create SWIYU credential schema (doesn't support combined presentations)
+    let swiyu_schema = context
         .db
         .credential_schemas
-        .create("test2", &organisation, "LVVC", Default::default())
+        .create(
+            "swiyu-schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                format: Some("SD_JWT_VC_SWIYU".into()),
+                ..Default::default()
+            },
+        )
         .await;
 
-    let claims2 = credential_schema2
+    // Create MDOC credential schema (supports combined presentations)
+    let mdoc_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "mdoc-schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                format: Some("MDOC".into()),
+                schema_id: Some("org.iso.18013.5.1.mDL".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let swiyu_claims: Vec<_> = swiyu_schema
         .claim_schemas
         .as_ref()
         .unwrap()
         .iter()
-        .map(|v| (v.schema.id, v.required));
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "required": v.required
+            })
+        })
+        .collect();
+
+    let mdoc_claims: Vec<_> = mdoc_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "required": v.required
+            })
+        })
+        .collect();
+
+    // WHEN
+    let proof_input_schemas = serde_json::json!([
+        {
+            "claimSchemas": swiyu_claims,
+            "credentialSchemaId": swiyu_schema.id,
+        },
+        {
+            "claimSchemas": mdoc_claims,
+            "credentialSchemaId": mdoc_schema.id,
+        }
+    ]);
+
+    let resp = context
+        .api
+        .proof_schemas
+        .create_with_multiple_schemas("mixed-proof-schema", organisation.id, proof_input_schemas)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+    assert_eq!(resp.error_code().await, "BR_0305");
+}
+
+#[tokio::test]
+async fn test_create_proof_schema_with_both_schemas_supporting_combined_presentation() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let mdoc_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "mdoc-schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                format: Some("MDOC".into()),
+                schema_id: Some("org.iso.18013.5.1.mDL".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let jwt_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "jwt-schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                format: Some("JWT".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let mdoc_claims: Vec<_> = mdoc_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "required": v.required
+            })
+        })
+        .collect();
+
+    let jwt_claims: Vec<_> = jwt_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "id": v.id,
+                "required": v.required
+            })
+        })
+        .collect();
+
+    // WHEN - both schemas supporting combined presentations
+    let proof_input_schemas = serde_json::json!([
+        {
+            "claimSchemas": mdoc_claims,
+            "credentialSchemaId": mdoc_schema.id,
+        },
+        {
+            "claimSchemas": jwt_claims,
+            "credentialSchemaId": jwt_schema.id,
+        }
+    ]);
+
+    let resp = context
+        .api
+        .proof_schemas
+        .create_with_multiple_schemas(
+            "combined-proof-schema",
+            organisation.id,
+            proof_input_schemas,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 201);
+}
+
+#[tokio::test]
+async fn test_create_proof_schema_with_single_schema_without_combined_presentation_support() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let swiyu_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "swiyu-schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                format: Some("SD_JWT_VC_SWIYU".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let claims = swiyu_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|v| (v.id, v.required));
 
     // WHEN
     let resp = context
         .api
         .proof_schemas
         .create(
-            "proof-schema-name",
+            "swiyu-proof-schema",
             organisation.id,
-            claims2,
-            credential_schema2.id,
-            None,
+            claims,
+            swiyu_schema.id,
         )
         .await;
 
     // THEN
-    assert_eq!(resp.status(), 400);
-    assert_eq!(resp.error_code().await, "BR_0140");
+    assert_eq!(resp.status(), 201);
 }

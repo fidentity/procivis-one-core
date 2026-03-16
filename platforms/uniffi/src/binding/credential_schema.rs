@@ -1,8 +1,10 @@
-use one_core::model::common::ExactColumn;
 use one_core::model::credential_schema::{
-    LayoutType, SortableCredentialSchemaColumn, WalletStorageTypeEnum,
+    KeyStorageSecurity, LayoutType, SortableCredentialSchemaColumn, TransactionCodeType,
 };
-use one_core::model::list_filter::{ListFilterCondition, ListFilterValue, StringMatch};
+use one_core::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::credential_schema::dto::{
     CredentialClaimSchemaDTO, CredentialSchemaBackgroundPropertiesRequestDTO,
@@ -11,15 +13,17 @@ use one_core::service::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaLayoutPropertiesResponseDTO,
     CredentialSchemaListIncludeEntityTypeEnum, CredentialSchemaLogoPropertiesRequestDTO,
     CredentialSchemaLogoPropertiesResponseDTO, CredentialSchemaShareResponseDTO,
-    GetCredentialSchemaListResponseDTO, GetCredentialSchemaQueryDTO,
-    ImportCredentialSchemaLayoutPropertiesDTO, ImportCredentialSchemaRequestDTO,
-    ImportCredentialSchemaRequestSchemaDTO,
+    CredentialSchemaTransactionCodeDTO, GetCredentialSchemaListResponseDTO,
+    GetCredentialSchemaQueryDTO, ImportCredentialSchemaLayoutPropertiesDTO,
+    ImportCredentialSchemaRequestDTO, ImportCredentialSchemaRequestSchemaDTO,
+    ImportCredentialSchemaTransactionCodeDTO,
 };
 use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
 use shared_types::CredentialSchemaId;
 
 use super::OneCoreBinding;
 use super::common::SortDirection;
+use crate::binding::mapper::deserialize_timestamp;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, into_id, into_timestamp};
 
@@ -45,27 +49,48 @@ impl OneCoreBinding {
         &self,
         query: CredentialSchemaListQueryBindingDTO,
     ) -> Result<CredentialSchemaListBindingDTO, BindingError> {
+        let organisation_id = into_id(&query.organisation_id)?;
         let sorting = query.sort.map(|sort_by| ListSorting {
             column: sort_by.into(),
             direction: query.sort_direction.map(Into::into),
         });
 
-        let mut conditions = vec![
-            CredentialSchemaFilterValue::OrganisationId(into_id(&query.organisation_id)?)
-                .condition(),
-        ];
+        let mut conditions =
+            vec![CredentialSchemaFilterValue::OrganisationId(organisation_id).condition()];
 
-        if let Some(name) = query.name {
-            let name_filter = if query
-                .exact
-                .is_some_and(|e| e.contains(&CredentialSchemaListQueryExactColumnBindingEnum::Name))
-            {
-                StringMatch::equals(name)
+        let exact = query.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
             } else {
-                StringMatch::starts_with(name)
-            };
+                StringMatchType::StartsWith
+            }
+        };
 
-            conditions.push(CredentialSchemaFilterValue::Name(name_filter).condition())
+        if let Some(name) = query.name.map(|name| {
+            CredentialSchemaFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(
+                    CredentialSchemaListQueryExactColumnBindingEnum::Name,
+                ),
+                value: name,
+            })
+        }) {
+            conditions.push(name.condition())
+        }
+
+        if let Some(schema_id) = query.schema_id.map(|schema_id| {
+            CredentialSchemaFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(
+                    CredentialSchemaListQueryExactColumnBindingEnum::SchemaId,
+                ),
+                value: schema_id,
+            })
+        }) {
+            conditions.push(schema_id.condition())
+        }
+
+        if let Some(formats) = query.formats.map(CredentialSchemaFilterValue::Formats) {
+            conditions.push(formats.condition())
         }
 
         if let Some(ids) = query.ids {
@@ -73,20 +98,60 @@ impl OneCoreBinding {
             conditions.push(CredentialSchemaFilterValue::CredentialSchemaIds(ids).condition());
         }
 
+        if let Some(value) = query.created_date_after {
+            conditions.push(
+                CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&value)?,
+                })
+                .condition(),
+            );
+        }
+        if let Some(value) = query.created_date_before {
+            conditions.push(
+                CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&value)?,
+                })
+                .condition(),
+            );
+        }
+        if let Some(value) = query.last_modified_after {
+            conditions.push(
+                CredentialSchemaFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&value)?,
+                })
+                .condition(),
+            );
+        }
+        if let Some(value) = query.last_modified_before {
+            conditions.push(
+                CredentialSchemaFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&value)?,
+                })
+                .condition(),
+            );
+        }
+
         let core = self.use_core().await?;
         Ok(core
             .credential_schema_service
-            .get_credential_schema_list(GetCredentialSchemaQueryDTO {
-                pagination: Some(ListPagination {
-                    page: query.page,
-                    page_size: query.page_size,
-                }),
-                filtering: Some(ListFilterCondition::And(conditions)),
-                sorting,
-                include: query
-                    .include
-                    .map(|incl| incl.into_iter().map(Into::into).collect()),
-            })
+            .get_credential_schema_list(
+                &organisation_id,
+                GetCredentialSchemaQueryDTO {
+                    pagination: Some(ListPagination {
+                        page: query.page,
+                        page_size: query.page_size,
+                    }),
+                    filtering: Some(ListFilterCondition::And(conditions)),
+                    sorting,
+                    include: query
+                        .include
+                        .map(|incl| incl.into_iter().map(Into::into).collect()),
+                },
+            )
             .await?
             .into())
     }
@@ -145,19 +210,32 @@ pub struct CredentialSchemaDetailBindingDTO {
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
     pub last_modified: String,
     pub name: String,
+    #[from(with_fn_ref = "ToString::to_string")]
     pub format: String,
-    pub revocation_method: String,
+    #[from(with_fn = inner_to_string)]
+    pub revocation_method: Option<String>,
     #[from(with_fn = convert_inner)]
     pub claims: Vec<CredentialClaimSchemaBindingDTO>,
     #[from(with_fn = convert_inner)]
-    pub wallet_storage_type: Option<WalletStorageTypeBindingEnum>,
+    pub key_storage_security: Option<KeyStorageSecurityBindingEnum>,
     pub schema_id: String,
-    pub schema_type: CredentialSchemaTypeBindingEnum,
     pub imported_source_url: String,
     #[from(with_fn = convert_inner)]
     pub layout_type: Option<LayoutTypeBindingEnum>,
     #[from(with_fn = convert_inner)]
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesBindingDTO>,
+    pub allow_suspension: bool,
+    pub requires_wallet_instance_attestation: bool,
+    #[from(with_fn = convert_inner)]
+    pub transaction_code: Option<CredentialSchemaTransactionCodeBindingDTO>,
+}
+
+#[derive(Clone, Debug, uniffi::Record, From)]
+#[from(CredentialSchemaTransactionCodeDTO)]
+pub struct CredentialSchemaTransactionCodeBindingDTO {
+    pub r#type: TransactionCodeTypeBindingEnum,
+    pub length: u32,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -167,13 +245,14 @@ pub struct CredentialSchemaBindingDTO {
     pub last_modified: String,
     pub name: String,
     pub format: String,
-    pub revocation_method: String,
-    pub wallet_storage_type: Option<WalletStorageTypeBindingEnum>,
+    pub revocation_method: Option<String>,
+    pub key_storage_security: Option<KeyStorageSecurityBindingEnum>,
     pub schema_id: String,
-    pub schema_type: CredentialSchemaTypeBindingEnum,
     pub layout_type: Option<LayoutTypeBindingEnum>,
     pub imported_source_url: String,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesBindingDTO>,
+    pub allow_suspension: bool,
+    pub requires_wallet_instance_attestation: bool,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -196,12 +275,19 @@ pub struct CredentialSchemaListQueryBindingDTO {
     pub ids: Option<Vec<String>>,
     pub exact: Option<Vec<CredentialSchemaListQueryExactColumnBindingEnum>>,
     pub include: Option<Vec<CredentialSchemaListIncludeEntityType>>,
+    pub schema_id: Option<String>,
+    pub formats: Option<Vec<String>>,
+
+    pub created_date_after: Option<String>,
+    pub created_date_before: Option<String>,
+    pub last_modified_after: Option<String>,
+    pub last_modified_before: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
-#[into(ExactColumn)]
+#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
 pub enum CredentialSchemaListQueryExactColumnBindingEnum {
     Name,
+    SchemaId,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -241,15 +327,6 @@ pub struct CredentialClaimSchemaBindingDTO {
     pub array: bool,
     #[from(with_fn = convert_inner)]
     pub claims: Vec<CredentialClaimSchemaBindingDTO>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum CredentialSchemaTypeBindingEnum {
-    ProcivisOneSchema2024 {},
-    FallbackSchema2024 {},
-    Mdoc {},
-    SdJwtVc {},
-    Other { value: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, From, Into, uniffi::Enum)]
@@ -347,21 +424,39 @@ pub struct ImportCredentialSchemaRequestSchemaBindingDTO {
     #[try_into(with_fn = try_convert_inner)]
     pub claims: Vec<ImportCredentialSchemaClaimSchemaBindingDTO>,
     #[try_into(infallible, with_fn = convert_inner)]
-    pub wallet_storage_type: Option<WalletStorageTypeBindingEnum>,
+    pub key_storage_security: Option<KeyStorageSecurityBindingEnum>,
     #[try_into(infallible)]
     pub schema_id: String,
     #[try_into(infallible)]
     pub imported_source_url: String,
-    #[try_into(infallible)]
-    pub schema_type: CredentialSchemaTypeBindingEnum,
     #[try_into(infallible, with_fn = convert_inner)]
     pub layout_type: Option<LayoutTypeBindingEnum>,
     #[try_into(with_fn = try_convert_inner)]
     pub layout_properties: Option<ImportCredentialSchemaLayoutPropertiesBindingDTO>,
     #[try_into(infallible, with_fn = convert_inner)]
     pub allow_suspension: Option<bool>,
+    #[try_into(with_fn = try_convert_inner)]
+    pub requires_wallet_instance_attestation: Option<bool>,
+    #[try_into(with_fn = try_convert_inner)]
+    pub transaction_code: Option<ImportCredentialSchemaTransactionCodeBindingDTO>,
+}
+
+#[derive(Clone, Debug, uniffi::Record, TryInto)]
+#[try_into(T = ImportCredentialSchemaTransactionCodeDTO, Error = ErrorResponseBindingDTO)]
+pub struct ImportCredentialSchemaTransactionCodeBindingDTO {
     #[try_into(infallible)]
-    pub external_schema: bool,
+    pub r#type: TransactionCodeTypeBindingEnum,
+    pub length: u32,
+    #[try_into(infallible)]
+    pub description: Option<String>,
+}
+
+#[derive(From, Clone, Debug, Into, uniffi::Enum)]
+#[from(TransactionCodeType)]
+#[into(TransactionCodeType)]
+pub enum TransactionCodeTypeBindingEnum {
+    Numeric,
+    Alphanumeric,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -394,10 +489,15 @@ pub struct ImportCredentialSchemaLayoutPropertiesBindingDTO {
 }
 
 #[derive(From, Clone, Debug, Into, uniffi::Enum)]
-#[from(WalletStorageTypeEnum)]
-#[into(WalletStorageTypeEnum)]
-pub enum WalletStorageTypeBindingEnum {
-    Hardware,
-    Software,
-    RemoteSecureElement,
+#[from(KeyStorageSecurity)]
+#[into(KeyStorageSecurity)]
+pub enum KeyStorageSecurityBindingEnum {
+    High,
+    Moderate,
+    EnhancedBasic,
+    Basic,
+}
+
+fn inner_to_string(value: Option<impl ToString>) -> Option<String> {
+    value.map(|inner| inner.to_string())
 }

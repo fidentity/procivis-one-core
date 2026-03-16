@@ -1,5 +1,7 @@
 use autometrics::autometrics;
+use futures::FutureExt;
 use one_core::model::trust_anchor::TrustAnchor;
+use one_core::proto::transaction_manager::IsolationLevel;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::trust_anchor_repository::TrustAnchorRepository;
 use one_core::service::trust_anchor::dto::{GetTrustAnchorsResponseDTO, ListTrustAnchorsQueryDTO};
@@ -8,7 +10,7 @@ use sea_orm::prelude::Expr;
 use sea_orm::sea_query::{Alias, Func};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    QuerySelect,
 };
 use shared_types::TrustAnchorId;
 
@@ -24,7 +26,18 @@ use crate::trust_anchor::entities::TrustAnchorsListItemEntityModel;
 impl TrustAnchorRepository for TrustAnchorProvider {
     async fn create(&self, anchor: TrustAnchor) -> Result<TrustAnchorId, DataLayerError> {
         let anchor: trust_anchor::ActiveModel = anchor.into();
-        let result = anchor.insert(&self.db).await.map_err(to_data_layer_error)?;
+
+        let result = self
+            .db
+            .tx_with_config(
+                async { anchor.insert(&self.db).await.map_err(to_data_layer_error) }.boxed(),
+                // In isolation mode "read committed" InnoDB will _not_ create gap locks. Given there
+                // are multiple unique indexes, this is necessary to avoid deadlocks during parallel
+                // inserts.
+                Some(IsolationLevel::ReadCommitted),
+                None,
+            )
+            .await??;
 
         Ok(result.id)
     }
@@ -61,17 +74,15 @@ impl TrustAnchorRepository for TrustAnchorProvider {
             .order_by_desc(trust_anchor::Column::CreatedDate)
             .order_by_desc(trust_anchor::Column::Id);
 
-        let items_count = query
-            .to_owned()
-            .count(&self.db)
-            .await
-            .map_err(to_data_layer_error)?;
+        let (items_count, trust_anchors) = tokio::join!(
+            query.to_owned().count(&self.db),
+            query
+                .into_model::<TrustAnchorsListItemEntityModel>()
+                .all(&self.db),
+        );
 
-        let trust_anchors = query
-            .into_model::<TrustAnchorsListItemEntityModel>()
-            .all(&self.db)
-            .await
-            .map_err(to_data_layer_error)?;
+        let items_count = items_count.map_err(to_data_layer_error)?;
+        let trust_anchors = trust_anchors.map_err(to_data_layer_error)?;
 
         Ok(GetTrustAnchorsResponseDTO {
             values: convert_inner(trust_anchors),
@@ -81,21 +92,21 @@ impl TrustAnchorRepository for TrustAnchorProvider {
     }
 
     async fn delete(&self, id: TrustAnchorId) -> Result<(), DataLayerError> {
-        let tx = self.db.begin().await.map_err(to_data_layer_error)?;
+        self.db
+            .tx(async {
+                trust_entity::Entity::delete_many()
+                    .filter(trust_entity::Column::TrustAnchorId.eq(id))
+                    .exec(&self.db)
+                    .await
+                    .map_err(to_data_layer_error)?;
 
-        trust_entity::Entity::delete_many()
-            .filter(trust_entity::Column::TrustAnchorId.eq(id))
-            .exec(&tx)
-            .await
-            .map_err(to_data_layer_error)?;
-
-        trust_anchor::Entity::delete_by_id(id)
-            .exec(&tx)
-            .await
-            .map_err(to_data_layer_error)?;
-
-        tx.commit().await.map_err(to_data_layer_error)?;
-
-        Ok(())
+                trust_anchor::Entity::delete_by_id(id)
+                    .exec(&self.db)
+                    .await
+                    .map_err(to_data_layer_error)?;
+                Ok(())
+            }
+            .boxed())
+            .await?
     }
 }

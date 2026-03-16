@@ -1,10 +1,15 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
+use mockall::predicate::eq;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
+use shared_types::{CredentialFormat, DidValue};
+use similar_asserts::assert_eq;
+use standardized_types::openid4vp::{GenericAlgs, PresentationFormat};
+use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
 use wiremock::http::Method;
@@ -13,33 +18,36 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::OpenID4VP20HTTP;
 use super::model::OpenID4Vp20Params;
-use crate::common_mapper::PublicKeyWithJwk;
 use crate::config::core_config::{CoreConfig, FormatType, KeyAlgorithmType};
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaType, LayoutType};
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
 use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
 use crate::model::identifier::Identifier;
-use crate::model::key::{Key, PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::key::Key;
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputSchema, ProofSchema};
+use crate::proto::certificate_validator::MockCertificateValidator;
+use crate::proto::http_client::reqwest_client::ReqwestClient;
+use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
-use crate::provider::credential_formatter::model::FormatterCapabilities;
+use crate::provider::credential_formatter::model::{FormatterCapabilities, IdentifierDetails};
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
 use crate::provider::did_method::DidMethod;
 use crate::provider::did_method::jwk::JWKDidMethod;
 use crate::provider::did_method::provider::MockDidMethodProvider;
-use crate::provider::http_client::reqwest_client::ReqwestClient;
 use crate::provider::key_algorithm::MockKeyAlgorithm;
 use crate::provider::key_algorithm::key::{
     KeyHandle, MockSignaturePublicKeyHandle, SignatureKeyHandle,
 };
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_storage::provider::MockKeyProvider;
+use crate::provider::presentation_formatter::provider::MockPresentationFormatterProvider;
 use crate::provider::verification_protocol::dto::ShareResponse;
+use crate::provider::verification_protocol::model::CommonParams;
 use crate::provider::verification_protocol::openid4vp::VerificationProtocolError;
+use crate::provider::verification_protocol::openid4vp::draft20::model::OpenID4VC20PresentationVerifierParams;
 use crate::provider::verification_protocol::openid4vp::model::{
-    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCPresentationVerifierParams,
-    OpenID4VCRedirectUriParams, OpenID4VPAlgs, OpenID4VPClientMetadata,
-    OpenID4VPHolderInteractionData, OpenID4VPPresentationDefinition, OpenID4VpPresentationFormat,
+    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
+    OpenID4VPDraftClientMetadata, OpenID4VPHolderInteractionData, OpenID4VPPresentationDefinition,
 };
 use crate::provider::verification_protocol::{
     FormatMapper, TypeToDescriptorMapper, VerificationProtocol, deserialize_interaction_data,
@@ -50,44 +58,49 @@ use crate::service::test_utilities::{dummy_identifier, dummy_organisation};
 
 #[derive(Default)]
 struct TestInputs {
-    pub formatter_provider: MockCredentialFormatterProvider,
+    pub credential_formatter_provider: MockCredentialFormatterProvider,
+    pub presentation_formatter_provider: MockPresentationFormatterProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
     pub key_provider: MockKeyProvider,
     pub did_method_provider: MockDidMethodProvider,
+    pub certificate_validator: MockCertificateValidator,
+    pub metadata_cache: MockOpenIDMetadataFetcher,
     pub params: Option<OpenID4Vp20Params>,
 }
 
 fn setup_protocol(inputs: TestInputs) -> OpenID4VP20HTTP {
     OpenID4VP20HTTP::new(
         Some("http://base_url".to_string()),
-        Arc::new(inputs.formatter_provider),
+        Arc::new(inputs.credential_formatter_provider),
+        Arc::new(inputs.presentation_formatter_provider),
         Arc::new(inputs.did_method_provider),
         Arc::new(inputs.key_algorithm_provider),
         Arc::new(inputs.key_provider),
+        Arc::new(inputs.certificate_validator),
         Arc::new(ReqwestClient::default()),
-        inputs
-            .params
-            .unwrap_or(generic_params(ClientIdScheme::RedirectUri)),
+        Arc::new(inputs.metadata_cache),
+        inputs.params.unwrap_or(generic_params()),
         Arc::new(CoreConfig::default()),
     )
 }
 
-fn generic_params(client_id_scheme: ClientIdScheme) -> OpenID4Vp20Params {
+fn generic_params() -> OpenID4Vp20Params {
     OpenID4Vp20Params {
         client_metadata_by_value: false,
         presentation_definition_by_value: false,
         allow_insecure_http_transport: true,
         use_request_uri: false,
         url_scheme: "openid4vp".to_string(),
-        x509_ca_certificate: None,
         holder: OpenID4VCPresentationHolderParams {
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
+                ClientIdScheme::Did,
             ],
+            dcql_vp_token_single_presentation: false,
         },
-        verifier: OpenID4VCPresentationVerifierParams {
-            default_client_id_scheme: client_id_scheme,
+        verifier: OpenID4VC20PresentationVerifierParams {
+            interaction_expires_in: Some(Duration::seconds(1000)),
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
@@ -99,6 +112,7 @@ fn generic_params(client_id_scheme: ClientIdScheme) -> OpenID4Vp20Params {
             allowed_schemes: vec!["https".to_string()],
         },
         predefined_client_metadata: None,
+        common: CommonParams { webhook_task: None },
     }
 }
 
@@ -183,38 +197,26 @@ fn test_client_request_response(
 
 #[tokio::test]
 async fn test_share_proof() {
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
     let mut credential_formatter = MockCredentialFormatter::new();
     credential_formatter
         .expect_get_capabilities()
         .returning(FormatterCapabilities::default);
     let arc = Arc::new(credential_formatter);
-    formatter_provider
-        .expect_get_formatter()
+    credential_formatter_provider
+        .expect_get_credential_formatter()
         .returning(move |_| Some(arc.clone()));
     let protocol = setup_protocol(TestInputs {
-        formatter_provider,
+        credential_formatter_provider,
         ..Default::default()
     });
 
     let proof_id = Uuid::new_v4();
-    let proof = test_proof(proof_id, "JWT");
+    let proof = test_proof(proof_id, "JWT".into());
 
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Jwt));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
-
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
 
     let ShareResponse {
         url,
@@ -224,8 +226,6 @@ async fn test_share_proof() {
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -291,44 +291,30 @@ async fn test_share_proof() {
 
 #[tokio::test]
 async fn test_response_mode_direct_post_jwt_for_mdoc() {
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
     let mut credential_formatter = MockCredentialFormatter::new();
     credential_formatter
         .expect_get_capabilities()
         .returning(FormatterCapabilities::default);
     let arc = Arc::new(credential_formatter);
-    formatter_provider
-        .expect_get_formatter()
+    credential_formatter_provider
+        .expect_get_credential_formatter()
         .returning(move |_| Some(arc.clone()));
     let protocol = setup_protocol(TestInputs {
-        formatter_provider,
+        credential_formatter_provider,
         ..Default::default()
     });
 
-    let proof = test_proof(Uuid::new_v4(), "MDOC");
+    let proof = test_proof(Uuid::new_v4(), "MDOC".into());
 
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Mdoc));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
 
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
-
     let ShareResponse { url, .. } = protocol
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -342,13 +328,12 @@ async fn test_response_mode_direct_post_jwt_for_mdoc() {
     assert_eq!("direct_post.jwt", query_pairs.get("response_mode").unwrap());
 }
 
-fn test_proof(proof_id: Uuid, credential_format: &str) -> Proof {
+fn test_proof(proof_id: Uuid, credential_format: CredentialFormat) -> Proof {
     Proof {
         id: proof_id.into(),
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: "OPENID4VP_DRAFT20".to_string(),
+        protocol: "OPENID4VP_DRAFT20".to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Created,
@@ -365,134 +350,112 @@ fn test_proof(proof_id: Uuid, credential_format: &str) -> Proof {
             imported_source_url: None,
             organisation: None,
             input_schemas: Some(vec![ProofInputSchema {
-                validity_constraint: None,
                 claim_schemas: None,
                 credential_schema: Some(CredentialSchema {
                     id: Uuid::new_v4().into(),
-                    external_schema: false,
                     deleted_at: None,
                     created_date: OffsetDateTime::now_utc(),
                     last_modified: OffsetDateTime::now_utc(),
                     name: "test-credential-schema".to_string(),
-                    format: credential_format.to_string(),
-                    revocation_method: "NONE".to_string(),
-                    wallet_storage_type: None,
+                    format: credential_format,
+                    revocation_method: None,
+                    key_storage_security: None,
                     layout_type: LayoutType::Card,
                     layout_properties: None,
                     schema_id: "test_schema_id".to_string(),
-                    schema_type: CredentialSchemaType::ProcivisOneSchema2024,
                     imported_source_url: "test_imported_src_url".to_string(),
                     allow_suspension: false,
+                    requires_wallet_instance_attestation: false,
                     claim_schemas: None,
                     organisation: None,
+                    transaction_code: None,
                 }),
             }]),
         }),
         claims: None,
-        verifier_identifier: None,
-        holder_identifier: None,
-        verifier_key: None,
+        verifier_identifier: Some(Identifier {
+            did: Some(Did {
+                id: Uuid::new_v4().into(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                name: "did".to_string(),
+                did: "did:example:123".parse().unwrap(),
+                did_type: DidType::Local,
+                did_method: "KEY".to_string(),
+                deactivated: false,
+                keys: Some(vec![RelatedKey {
+                    role: KeyRole::Authentication,
+                    key: Key {
+                        id: Uuid::new_v4().into(),
+                        created_date: OffsetDateTime::now_utc(),
+                        last_modified: OffsetDateTime::now_utc(),
+                        public_key: vec![],
+                        name: "".to_string(),
+                        key_reference: None,
+                        storage_type: "".to_string(),
+                        key_type: "".to_string(),
+                        organisation: None,
+                    },
+                    reference: "1".to_string(),
+                }]),
+                organisation: None,
+                log: None,
+            }),
+            ..dummy_identifier()
+        }),
+        verifier_key: Some(Key {
+            id: Uuid::new_v4().into(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            public_key: vec![],
+            name: "verifier_key".to_string(),
+            key_reference: None,
+            storage_type: "".to_string(),
+            key_type: "".to_string(),
+            organisation: None,
+        }),
+        verifier_certificate: None,
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     }
 }
 
 #[tokio::test]
 async fn test_share_proof_with_use_request_uri() {
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter = MockCredentialFormatter::new();
+    credential_formatter
+        .expect_get_capabilities()
+        .returning(FormatterCapabilities::default);
+
+    let arc = Arc::new(credential_formatter);
+    credential_formatter_provider
+        .expect_get_credential_formatter()
+        .with(eq(CredentialFormat::from("JWT")))
+        .returning(move |_| Some(arc.clone()));
+
     let protocol = setup_protocol(TestInputs {
         params: Some(OpenID4Vp20Params {
             use_request_uri: true,
-            ..generic_params(ClientIdScheme::RedirectUri)
+            ..generic_params()
         }),
+        credential_formatter_provider,
         ..Default::default()
     });
 
-    let now = OffsetDateTime::now_utc();
-    let did = Did {
-        id: Uuid::new_v4().into(),
-        created_date: now,
-        last_modified: now,
-        name: "did".to_string(),
-        did: "did:example:123".parse().unwrap(),
-        did_type: DidType::Local,
-        did_method: "KEY".to_string(),
-        deactivated: false,
-        keys: Some(vec![RelatedKey {
-            role: KeyRole::Authentication,
-            key: Key {
-                id: Uuid::new_v4().into(),
-                created_date: now,
-                last_modified: now,
-                public_key: vec![],
-                name: "".to_string(),
-                key_reference: vec![],
-                storage_type: "".to_string(),
-                key_type: "".to_string(),
-                organisation: None,
-            },
-        }]),
-        organisation: None,
-        log: None,
-    };
     let proof_id = Uuid::new_v4();
-    let proof = Proof {
-        id: proof_id.into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: "OPENID4VP_DRAFT20".to_string(),
-        transport: "HTTP".to_string(),
-        redirect_uri: None,
-        state: ProofStateEnum::Created,
-        role: ProofRole::Verifier,
-        requested_date: None,
-        completed_date: None,
-        schema: Some(ProofSchema {
-            id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
-            deleted_at: None,
-            name: "test-share-proof".into(),
-            expire_duration: 123,
-            imported_source_url: None,
-            organisation: None,
-            input_schemas: Some(vec![ProofInputSchema {
-                validity_constraint: None,
-                claim_schemas: None,
-                credential_schema: None,
-            }]),
-        }),
-        claims: None,
-        verifier_identifier: Some(Identifier {
-            did: Some(did.clone()),
-            ..dummy_identifier()
-        }),
-        holder_identifier: None,
-        verifier_key: None,
-        interaction: None,
-    };
-
+    let proof = test_proof(proof_id, "JWT".into());
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Jwt));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
-
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
 
     let ShareResponse { url, .. } = protocol
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -506,7 +469,7 @@ async fn test_share_proof_with_use_request_uri() {
 
     assert_eq!(
         HashSet::from_iter([
-            ("client_id".into(), (&did.did.to_string()).into()),
+            ("client_id".into(), ("did:example:123".to_string()).into()),
             ("client_id_scheme".into(), "did".into()),
             (
                 "request_uri".into(),
@@ -519,50 +482,36 @@ async fn test_share_proof_with_use_request_uri() {
 
 #[tokio::test]
 async fn test_share_proof_with_use_request_uri_did_client_id_scheme() {
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
     let mut credential_formatter = MockCredentialFormatter::new();
     credential_formatter
         .expect_get_capabilities()
         .returning(FormatterCapabilities::default);
     let arc = Arc::new(credential_formatter);
-    formatter_provider
-        .expect_get_formatter()
+    credential_formatter_provider
+        .expect_get_credential_formatter()
         .returning(move |_| Some(arc.clone()));
 
     let protocol = setup_protocol(TestInputs {
-        formatter_provider,
+        credential_formatter_provider,
         params: Some(OpenID4Vp20Params {
             use_request_uri: true,
-            ..generic_params(ClientIdScheme::RedirectUri)
+            ..generic_params()
         }),
         ..Default::default()
     });
 
     let proof_id = Uuid::new_v4();
-    let proof = test_proof(proof_id, "JWT");
+    let proof = test_proof(proof_id, "JWT".into());
 
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Jwt));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
 
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
-
     let ShareResponse { url, .. } = protocol
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -592,13 +541,11 @@ async fn test_share_proof_with_use_request_uri_did_client_id_scheme() {
 
 #[tokio::test]
 async fn test_handle_invitation_proof_success() {
-    let protocol = setup_protocol(Default::default());
-
-    let client_metadata = serde_json::to_string(&OpenID4VPClientMetadata {
+    let client_metadata = serde_json::to_string(&OpenID4VPDraftClientMetadata {
         jwks: Default::default(),
         vp_formats: HashMap::from([(
             "jwt_vp_json".to_string(),
-            OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+            PresentationFormat::GenericAlgList(GenericAlgs {
                 alg: vec!["EdDSA".to_string()],
             }),
         )]),
@@ -614,8 +561,7 @@ async fn test_handle_invitation_proof_success() {
     let nonce = Uuid::new_v4().to_string();
     let callback_url = "http://127.0.0.1/callback";
 
-    let url = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-        , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let url = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
 
     let mut storage_proxy = MockStorageProxy::default();
     storage_proxy
@@ -623,7 +569,7 @@ async fn test_handle_invitation_proof_success() {
         .times(2)
         .returning(move |request| Ok(request.id));
 
-    protocol
+    setup_protocol(Default::default())
         .holder_handle_invitation(
             url,
             dummy_organisation(None),
@@ -634,18 +580,9 @@ async fn test_handle_invitation_proof_success() {
         .unwrap();
 
     let mock_server = MockServer::start().await;
-
     let client_metadata_uri = format!("{}/client_metadata_uri", mock_server.uri());
     let presentation_definition_uri = format!("{}/presentation_definition_uri", mock_server.uri());
 
-    Mock::given(method(Method::GET))
-        .and(path("/client_metadata_uri"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(client_metadata.to_owned(), "application/json"),
-        )
-        .expect(1)
-        .mount(&mock_server)
-        .await;
     Mock::given(method(Method::GET))
         .and(path("/presentation_definition_uri"))
         .respond_with(
@@ -656,24 +593,33 @@ async fn test_handle_invitation_proof_success() {
         .mount(&mock_server)
         .await;
 
-    let url_using_uri_instead_of_values = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata_uri={}&response_mode=direct_post&response_uri={}&presentation_definition_uri={}"
-                                                              , nonce, callback_url, client_metadata_uri, callback_url, presentation_definition_uri)).unwrap();
+    let mut metadata_cache = MockOpenIDMetadataFetcher::new();
+    metadata_cache
+        .expect_get()
+        .with(eq(client_metadata_uri.clone()))
+        .once()
+        .returning(move |_| Ok(client_metadata.to_string().into_bytes()));
 
-    protocol
-        .holder_handle_invitation(
-            url_using_uri_instead_of_values,
-            dummy_organisation(None),
-            &storage_proxy,
-            "HTTP".to_string(),
-        )
-        .await
-        .unwrap();
+    let url_using_uri_instead_of_values = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata_uri={client_metadata_uri}&response_mode=direct_post&response_uri={callback_url}&presentation_definition_uri={presentation_definition_uri}")).unwrap();
+
+    setup_protocol(TestInputs {
+        metadata_cache,
+        ..Default::default()
+    })
+    .holder_handle_invitation(
+        url_using_uri_instead_of_values,
+        dummy_organisation(None),
+        &storage_proxy,
+        "HTTP".to_string(),
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
 async fn test_handle_invitation_proof_with_client_request_ok() {
     let protocol = setup_protocol(TestInputs {
-        params: Some(generic_params(ClientIdScheme::RedirectUri)),
+        params: Some(generic_params()),
         ..Default::default()
     });
 
@@ -738,7 +684,7 @@ async fn test_handle_invitation_proof_with_client_id_scheme_in_client_request_to
         .return_once(|_| Some((KeyAlgorithmType::Ecdsa, Arc::new(key_alg))));
 
     let protocol = setup_protocol(TestInputs {
-        params: Some(generic_params(ClientIdScheme::Did)),
+        params: Some(generic_params()),
         did_method_provider,
         key_algorithm_provider,
         ..Default::default()
@@ -778,7 +724,10 @@ async fn test_handle_invitation_proof_with_client_id_scheme_in_client_request_to
             let data: OpenID4VPHolderInteractionData =
                 deserialize_interaction_data(interaction.data.as_ref()).unwrap();
             data.client_id_scheme == ClientIdScheme::Did
-                && data.verifier_did == Some(client_id.to_string())
+                && data.verifier_details
+                    == Some(IdentifierDetails::Did(
+                        DidValue::from_str(client_id).unwrap(),
+                    ))
         })
         .returning(move |request| Ok(request.id));
 
@@ -798,11 +747,11 @@ async fn test_handle_invitation_proof_failed() {
     let protocol = setup_protocol(Default::default());
 
     let client_metadata_uri = "https://127.0.0.1/client_metadata_uri";
-    let client_metadata = serde_json::to_string(&OpenID4VPClientMetadata {
+    let client_metadata = serde_json::to_string(&OpenID4VPDraftClientMetadata {
         jwks: Default::default(),
         vp_formats: HashMap::from([(
             "jwt_vp_json".to_string(),
-            OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+            PresentationFormat::GenericAlgList(GenericAlgs {
                 alg: vec!["EdDSA".to_string()],
             }),
         )]),
@@ -821,8 +770,7 @@ async fn test_handle_invitation_proof_failed() {
 
     let storage_proxy = MockStorageProxy::default();
 
-    let incorrect_response_type = Url::parse(&format!("openid4vp://?response_type=some_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                                      , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let incorrect_response_type = Url::parse(&format!("openid4vp://?response_type=some_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             incorrect_response_type,
@@ -837,8 +785,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let missing_nonce = Url::parse(&format!("openid4vp://?response_type=vp_token&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                            , callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let missing_nonce = Url::parse(&format!("openid4vp://?response_type=vp_token&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             missing_nonce,
@@ -853,8 +800,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let incorrect_client_id_scheme = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=some_scheme&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                                         , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let incorrect_client_id_scheme = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=some_scheme&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             incorrect_client_id_scheme,
@@ -869,8 +815,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let incorrect_response_mode = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=some_mode&response_uri={}&presentation_definition={}"
-                                                      , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let incorrect_response_mode = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=some_mode&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             incorrect_response_mode,
@@ -885,8 +830,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let incorrect_client_id_scheme = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=some_scheme&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                                         , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap();
+    let incorrect_client_id_scheme = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=some_scheme&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             incorrect_client_id_scheme,
@@ -902,8 +846,8 @@ async fn test_handle_invitation_proof_failed() {
     ));
 
     let metadata_missing_jwt_vp_json =
-        serde_json::to_string(&OpenID4VPClientMetadata::default()).unwrap();
-    let missing_metadata_field = Url::parse(&format!("openid4vp://?response_type=some_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}", nonce, callback_url, metadata_missing_jwt_vp_json, callback_url, presentation_definition)).unwrap();
+        serde_json::to_string(&OpenID4VPDraftClientMetadata::default()).unwrap();
+    let missing_metadata_field = Url::parse(&format!("openid4vp://?response_type=some_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={metadata_missing_jwt_vp_json}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             missing_metadata_field,
@@ -918,8 +862,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let both_client_metadata_and_uri_specified = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&client_metadata_uri={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                                                     , nonce, callback_url, client_metadata, client_metadata_uri, callback_url, presentation_definition)).unwrap();
+    let both_client_metadata_and_uri_specified = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&client_metadata_uri={client_metadata_uri}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             both_client_metadata_and_uri_specified,
@@ -934,8 +877,7 @@ async fn test_handle_invitation_proof_failed() {
         VerificationProtocolError::InvalidRequest(_)
     ));
 
-    let both_presentation_definition_and_uri_specified = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}&presentation_definition_uri={}"
-                                                                             , nonce, callback_url, client_metadata, callback_url, presentation_definition, presentation_definition_uri)).unwrap();
+    let both_presentation_definition_and_uri_specified = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}&presentation_definition_uri={presentation_definition_uri}")).unwrap();
     let result = protocol
         .holder_handle_invitation(
             both_presentation_definition_and_uri_specified,
@@ -953,14 +895,13 @@ async fn test_handle_invitation_proof_failed() {
     let protocol_https_only = setup_protocol(TestInputs {
         params: Some(OpenID4Vp20Params {
             allow_insecure_http_transport: false,
-            ..generic_params(ClientIdScheme::RedirectUri)
+            ..generic_params()
         }),
         ..Default::default()
     });
 
     let invalid_client_metadata_uri = "http://127.0.0.1/client_metadata_uri";
-    let client_metadata_uri_is_not_https = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata_uri={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                                               , nonce, callback_url, invalid_client_metadata_uri, callback_url, presentation_definition)).unwrap();
+    let client_metadata_uri_is_not_https = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata_uri={invalid_client_metadata_uri}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap();
     let result = protocol_https_only
         .holder_handle_invitation(
             client_metadata_uri_is_not_https,
@@ -976,8 +917,7 @@ async fn test_handle_invitation_proof_failed() {
     ));
 
     let invalid_presentation_definition_uri = "http://127.0.0.1/presentation_definition_uri";
-    let presentation_definition_uri_is_not_https = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition_uri={}"
-                                                                       , nonce, callback_url, client_metadata, callback_url, invalid_presentation_definition_uri)).unwrap();
+    let presentation_definition_uri_is_not_https = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition_uri={invalid_presentation_definition_uri}")).unwrap();
     let result = protocol_https_only
         .holder_handle_invitation(
             presentation_definition_uri_is_not_https,
@@ -995,11 +935,11 @@ async fn test_handle_invitation_proof_failed() {
 
 #[test]
 fn test_serialize_and_deserialize_interaction_data() {
-    let client_metadata = serde_json::to_string(&OpenID4VPClientMetadata {
+    let client_metadata = serde_json::to_string(&OpenID4VPDraftClientMetadata {
         jwks: Default::default(),
         vp_formats: HashMap::from([(
             "jwt_vp_json".to_string(),
-            OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+            PresentationFormat::GenericAlgList(GenericAlgs {
                 alg: vec!["EdDSA".to_string()],
             }),
         )]),
@@ -1015,15 +955,13 @@ fn test_serialize_and_deserialize_interaction_data() {
     let nonce = Uuid::new_v4().to_string();
     let callback_url = "http://127.0.0.1/callback";
 
-    let query = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition={}"
-                                    , nonce, callback_url, client_metadata, callback_url, presentation_definition)).unwrap().query().unwrap().to_string();
+    let query = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition={presentation_definition}")).unwrap().query().unwrap().to_string();
     let data: OpenID4VPHolderInteractionData = serde_qs::from_str(&query).unwrap();
     let json = serde_json::to_string(&data).unwrap();
     let _data_from_json: OpenID4VPHolderInteractionData = serde_json::from_str(&json).unwrap();
 
     let presentation_definition_uri = "https://127.0.0.1/presentation-definition";
-    let query_with_presentation_definition_uri = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={}&client_id_scheme=redirect_uri&client_id={}&client_metadata={}&response_mode=direct_post&response_uri={}&presentation_definition_uri={}"
-                                                                     , nonce, callback_url, client_metadata, callback_url, presentation_definition_uri)).unwrap().query().unwrap().to_string();
+    let query_with_presentation_definition_uri = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata={client_metadata}&response_mode=direct_post&response_uri={callback_url}&presentation_definition_uri={presentation_definition_uri}")).unwrap().query().unwrap().to_string();
     let data: OpenID4VPHolderInteractionData =
         serde_qs::from_str(&query_with_presentation_definition_uri).unwrap();
     let json = serde_json::to_string(&data).unwrap();
@@ -1064,46 +1002,32 @@ fn test_can_handle_presentation_fail_with_custom_url_scheme() {
 #[tokio::test]
 async fn test_share_proof_custom_scheme() {
     let url_scheme = "my-custom-scheme";
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
     let mut credential_formatter = MockCredentialFormatter::new();
     credential_formatter
         .expect_get_capabilities()
         .returning(FormatterCapabilities::default);
     let arc = Arc::new(credential_formatter);
-    formatter_provider
-        .expect_get_formatter()
+    credential_formatter_provider
+        .expect_get_credential_formatter()
         .returning(move |_| Some(arc.clone()));
     let protocol = setup_protocol(TestInputs {
-        formatter_provider,
+        credential_formatter_provider,
         params: Some(test_params(url_scheme)),
         ..Default::default()
     });
 
     let proof_id = Uuid::new_v4();
-    let proof = test_proof(proof_id, "JWT");
+    let proof = test_proof(proof_id, "JWT".into());
 
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Jwt));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
 
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
-
     let ShareResponse { url, .. } = protocol
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -1122,15 +1046,15 @@ fn test_params(presentation_url_scheme: &str) -> OpenID4Vp20Params {
         allow_insecure_http_transport: true,
         use_request_uri: false,
         url_scheme: presentation_url_scheme.to_string(),
-        x509_ca_certificate: None,
         holder: OpenID4VCPresentationHolderParams {
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
             ],
+            dcql_vp_token_single_presentation: false,
         },
-        verifier: OpenID4VCPresentationVerifierParams {
-            default_client_id_scheme: ClientIdScheme::RedirectUri,
+        verifier: OpenID4VC20PresentationVerifierParams {
+            interaction_expires_in: Some(Duration::seconds(1000)),
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
@@ -1141,5 +1065,6 @@ fn test_params(presentation_url_scheme: &str) -> OpenID4Vp20Params {
             allowed_schemes: vec!["https".to_string()],
         },
         predefined_client_metadata: None,
+        common: CommonParams { webhook_task: None },
     }
 }

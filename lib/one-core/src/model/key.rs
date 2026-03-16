@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use shared_types::{KeyId, OrganisationId};
+use standardized_types::jwk::PrivateJwk;
 use time::OffsetDateTime;
 
 use super::list_filter::{ListFilterValue, StringMatch};
@@ -8,6 +9,7 @@ use super::list_query::ListQuery;
 use super::organisation::Organisation;
 use crate::config::core_config::KeyAlgorithmType;
 use crate::model::common::GetListResponse;
+use crate::model::list_filter::ValueComparison;
 use crate::model::organisation::OrganisationRelations;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -17,7 +19,7 @@ pub struct Key {
     pub last_modified: OffsetDateTime,
     pub public_key: Vec<u8>,
     pub name: String,
-    pub key_reference: Vec<u8>,
+    pub key_reference: Option<Vec<u8>>,
     pub storage_type: String,
     pub key_type: String,
 
@@ -28,6 +30,10 @@ pub struct Key {
 impl Key {
     pub fn key_algorithm_type(&self) -> Option<KeyAlgorithmType> {
         KeyAlgorithmType::from_str(&self.key_type).ok()
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.key_reference.is_none()
     }
 }
 
@@ -49,9 +55,19 @@ pub enum SortableKeyColumn {
 pub enum KeyFilterValue {
     Name(StringMatch),
     OrganisationId(OrganisationId),
-    KeyType(String),
-    KeyStorage(String),
+    KeyTypes(Vec<String>),
+    KeyStorages(Vec<String>),
     Ids(Vec<KeyId>),
+    Remote(bool),
+    RawPublicKey(Vec<u8>),
+    CreatedDate(ValueComparison<OffsetDateTime>),
+    LastModified(ValueComparison<OffsetDateTime>),
+}
+
+impl KeyFilterValue {
+    pub fn remote(v: impl Into<bool>) -> Self {
+        Self::Remote(v.into())
+    }
 }
 
 impl ListFilterValue for KeyFilterValue {}
@@ -60,43 +76,16 @@ pub type KeyListQuery = ListQuery<SortableKeyColumn, KeyFilterValue>;
 
 pub type GetKeyList = GetListResponse<Key>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PublicKeyJwk {
-    Ec(PublicKeyJwkEllipticData),
-    Rsa(PublicKeyJwkRsaData),
-    Okp(PublicKeyJwkEllipticData),
-    Oct(PublicKeyJwkOctData),
-    Mlwe(PublicKeyJwkMlweData),
+pub trait PrivateJwkExt {
+    fn supported_key_type(&self) -> KeyAlgorithmType;
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublicKeyJwkRsaData {
-    pub r#use: Option<String>,
-    pub kid: Option<String>,
-    pub e: String,
-    pub n: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublicKeyJwkOctData {
-    pub r#use: Option<String>,
-    pub kid: Option<String>,
-    pub k: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublicKeyJwkMlweData {
-    pub r#use: Option<String>,
-    pub kid: Option<String>,
-    pub alg: String,
-    pub x: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublicKeyJwkEllipticData {
-    pub r#use: Option<String>,
-    pub kid: Option<String>,
-    pub crv: String,
-    pub x: String,
-    pub y: Option<String>,
+impl PrivateJwkExt for PrivateJwk {
+    fn supported_key_type(&self) -> KeyAlgorithmType {
+        match self {
+            PrivateJwk::Ec(_) => KeyAlgorithmType::Ecdsa,
+            PrivateJwk::Okp(_) => KeyAlgorithmType::Eddsa,
+            PrivateJwk::Akp(_) => KeyAlgorithmType::MlDsa,
+        }
+    }
 }

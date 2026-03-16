@@ -1,6 +1,5 @@
-use async_trait;
-use one_crypto::SignerError;
 use shared_types::KeyId;
+use standardized_types::jwk::PrivateJwk;
 
 use crate::config::core_config::KeyAlgorithmType;
 use crate::model::key::Key;
@@ -31,6 +30,34 @@ pub trait KeyStorage: Send + Sync {
         key_algorithm: KeyAlgorithmType,
     ) -> Result<model::StorageGeneratedKey, error::KeyStorageError>;
 
+    async fn import(
+        &self,
+        key_id: KeyId,
+        key_algorithm: KeyAlgorithmType,
+        jwk: PrivateJwk,
+    ) -> Result<model::StorageGeneratedKey, error::KeyStorageError>;
+
     /// Access to key operations
-    fn key_handle(&self, key: &Key) -> Result<KeyHandle, SignerError>;
+    fn key_handle(&self, key: &Key) -> Result<KeyHandle, error::KeyStorageError>;
+
+    // Generate hardware bound key for wallet unit attestations
+    async fn generate_attestation_key(
+        &self,
+        key_id: KeyId,
+        nonce: Option<String>,
+    ) -> Result<model::StorageGeneratedKey, error::KeyStorageError>;
+
+    /// Generate attestation for a hardware bound key
+    async fn generate_attestation(
+        &self,
+        key: &Key,
+        nonce: Option<String>,
+    ) -> Result<Vec<String>, error::KeyStorageError>;
+
+    // Generate a signed assertion, using a hardware bound attestation key
+    async fn sign_with_attestation_key(
+        &self,
+        key: &Key,
+        data: &[u8],
+    ) -> Result<Vec<u8>, error::KeyStorageError>;
 }

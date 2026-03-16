@@ -1,11 +1,12 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
 use hmac::Mac;
+use p256::ecdsa::Signature;
 use rand::distributions::{Alphanumeric, DistString};
-use rand::{CryptoRng, RngCore, SeedableRng};
+use rand::{CryptoRng, Rng, RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Deserializer};
 
-use super::HmacSha256;
+use super::{HmacSha256, SignerError};
 
 pub fn generate_salt_base64_16() -> String {
     let seed = generate_random_bytes::<16>();
@@ -14,20 +15,29 @@ pub fn generate_salt_base64_16() -> String {
     Base64UrlSafeNoPadding::encode_to_string(seed).unwrap_or_default()
 }
 
+pub fn generate_numeric(length: usize) -> String {
+    let rng = &mut get_rng();
+    std::iter::repeat_with(|| rng.gen_range('0'..='9'))
+        .take(length)
+        .collect()
+}
+
 pub fn generate_alphanumeric(length: usize) -> String {
     Alphanumeric.sample_string(&mut get_rng(), length)
 }
 
-pub fn create_hmac(key: &[u8], message: &[u8]) -> Option<Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key).ok()?;
+pub fn create_hmac(key: &[u8], message: &[u8]) -> Result<Vec<u8>, SignerError> {
+    let mut mac =
+        HmacSha256::new_from_slice(key).map_err(|e| SignerError::HmacError(e.to_string()))?;
     mac.update(message);
     let result = mac.finalize();
-    Some(result.into_bytes().to_vec())
+    Ok(result.into_bytes().to_vec())
 }
 
-pub fn build_hmac_sha256(key: &[u8]) -> Option<impl FnMut(&[u8]) -> Vec<u8>> {
-    let mut mac = HmacSha256::new_from_slice(key).ok()?;
-    Some(move |message: &[u8]| {
+pub fn build_hmac_sha256(key: &[u8]) -> Result<impl FnMut(&[u8]) -> Vec<u8>, SignerError> {
+    let mut mac =
+        HmacSha256::new_from_slice(key).map_err(|e| SignerError::HmacError(e.to_string()))?;
+    Ok(move |message: &[u8]| {
         mac.update(message);
         mac.finalize_reset().into_bytes().to_vec()
     })
@@ -50,4 +60,9 @@ where
     let s = String::deserialize(deserializer)?;
 
     Base64UrlSafeNoPadding::decode_to_vec(s, None).map_err(serde::de::Error::custom)
+}
+
+pub fn ecdsa_sig_from_der(der_bytes: &[u8]) -> Result<Vec<u8>, SignerError> {
+    let sig = Signature::from_der(der_bytes).map_err(|_| SignerError::InvalidSignature)?;
+    Ok(sig.to_bytes().to_vec())
 }

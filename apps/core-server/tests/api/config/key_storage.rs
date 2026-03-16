@@ -1,4 +1,5 @@
 use serde_json::json;
+use similar_asserts::assert_eq;
 
 use crate::utils::context::TestContext;
 
@@ -16,10 +17,6 @@ async fn test_capabilities_features_are_present_in_config() {
 
     assert_eq!(
         resp["keyStorage"]["INTERNAL"]["capabilities"]["features"],
-        json!(["EXPORTABLE"])
-    );
-    assert_eq!(
-        resp["keyStorage"]["PKCS11"]["capabilities"]["features"],
-        json!([])
+        json!(["EXPORTABLE", "IMPORTABLE"])
     );
 }

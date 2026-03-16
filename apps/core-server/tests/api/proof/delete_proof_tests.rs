@@ -1,10 +1,15 @@
-use one_core::model::history::HistoryAction;
+use one_core::model::blob::BlobType;
+use one_core::model::history::{HistoryAction, HistoryEntityType};
+use one_core::model::interaction::InteractionType;
 use one_core::model::organisation::Organisation;
 use one_core::model::proof::ProofStateEnum;
 use one_core::model::proof_schema::ProofSchema;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::blobs::TestingBlobParams;
+use crate::utils::db_clients::histories::TestingHistoryParams;
 use crate::utils::db_clients::proof_schemas::{CreateProofClaim, CreateProofInputSchema};
 
 #[tokio::test]
@@ -15,8 +20,25 @@ async fn test_delete_proof_created_holder_success() {
     let interaction = context
         .db
         .interactions
-        .create(None, "https://example.com", &[], &organisation)
+        .create(
+            None,
+            &[],
+            &organisation,
+            InteractionType::Verification,
+            None,
+        )
         .await;
+
+    let blob = context
+        .db
+        .blobs
+        .create(TestingBlobParams {
+            value: Some(vec![1, 2, 3, 4, 5]),
+            r#type: Some(BlobType::Proof),
+            ..Default::default()
+        })
+        .await;
+
     let proof = context
         .db
         .proofs
@@ -24,24 +46,30 @@ async fn test_delete_proof_created_holder_success() {
             None,
             &identifier,
             None,
-            None,
             ProofStateEnum::Created,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            Some(blob.id),
+            None,
+        )
+        .await;
+
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Created),
+                entity_id: Some(proof.id.into()),
+                entity_type: Some(HistoryEntityType::Proof),
+                ..Default::default()
+            },
         )
         .await;
 
     // WHEN
-    assert!(
-        !context
-            .db
-            .histories
-            .get_by_entity_id(&proof.id.into())
-            .await
-            .values
-            .is_empty()
-    );
     let resp = context.api.proofs.delete_proof(proof.id).await;
 
     // THEN
@@ -60,6 +88,9 @@ async fn test_delete_proof_created_holder_success() {
     assert_eq!(resp.status(), 404);
     let resp = context.db.interactions.get(interaction.id).await;
     assert!(resp.is_none());
+
+    let blob = context.db.blobs.get(&blob.id).await;
+    assert!(blob.is_none());
 }
 
 #[tokio::test]
@@ -70,7 +101,13 @@ async fn test_delete_proof_accepted_holder_fail() {
     let interaction = context
         .db
         .interactions
-        .create(None, "https://example.com", &[], &organisation)
+        .create(
+            None,
+            &[],
+            &organisation,
+            InteractionType::Verification,
+            None,
+        )
         .await;
     let proof = context
         .db
@@ -79,11 +116,12 @@ async fn test_delete_proof_accepted_holder_fail() {
             None,
             &identifier,
             None,
-            None,
             ProofStateEnum::Accepted,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            None,
+            None,
         )
         .await;
 
@@ -106,25 +144,31 @@ async fn test_delete_proof_created_issuer_success() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Created,
             "OPENID4VP_DRAFT20",
             None,
             key,
+            None,
+            None,
+        )
+        .await;
+
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Created),
+                entity_id: Some(proof.id.into()),
+                entity_type: Some(HistoryEntityType::Proof),
+                ..Default::default()
+            },
         )
         .await;
 
     // WHEN
-    assert!(
-        !context
-            .db
-            .histories
-            .get_by_entity_id(&proof.id.into())
-            .await
-            .values
-            .is_empty()
-    );
     let resp = context.api.proofs.delete_proof(proof.id).await;
 
     // THEN
@@ -155,12 +199,13 @@ async fn test_delete_proof_accepted_issuer_fail() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Accepted,
             "OPENID4VP_DRAFT20",
             None,
             key,
+            None,
+            None,
         )
         .await;
 
@@ -183,25 +228,31 @@ async fn test_delete_proof_issuer_requested_to_retracted() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             None,
             key,
+            None,
+            None,
+        )
+        .await;
+
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Requested),
+                entity_id: Some(proof.id.into()),
+                entity_type: Some(HistoryEntityType::Proof),
+                ..Default::default()
+            },
         )
         .await;
 
     // WHEN
-    assert!(
-        !context
-            .db
-            .histories
-            .get_by_entity_id(&proof.id.into())
-            .await
-            .values
-            .is_empty()
-    );
     let resp = context.api.proofs.delete_proof(proof.id).await;
 
     // THEN
@@ -240,11 +291,11 @@ async fn setup_proof_schema(context: &TestContext, organisation: &Organisation) 
     let credential_schema = context
         .db
         .credential_schemas
-        .create_with_nested_claims("test", organisation, "NONE", Default::default())
+        .create_with_nested_claims("test", organisation, None, Default::default())
         .await;
 
     // Select a root claim.
-    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0].schema;
+    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
 
     context
         .db
@@ -261,7 +312,6 @@ async fn setup_proof_schema(context: &TestContext, organisation: &Organisation) 
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: None,
             }],
         )
         .await
@@ -279,25 +329,31 @@ async fn test_delete_proof_old_exchange() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Requested,
             "PROCIVIS_TEMPORARY", // this provider no longer exists
             None,
             key,
+            None,
+            None,
+        )
+        .await;
+
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Requested),
+                entity_id: Some(proof.id.into()),
+                entity_type: Some(HistoryEntityType::Proof),
+                ..Default::default()
+            },
         )
         .await;
 
     // WHEN
-    assert!(
-        !context
-            .db
-            .histories
-            .get_by_entity_id(&proof.id.into())
-            .await
-            .values
-            .is_empty()
-    );
     let resp = context.api.proofs.delete_proof(proof.id).await;
 
     // THEN

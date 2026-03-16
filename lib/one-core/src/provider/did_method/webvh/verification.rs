@@ -1,3 +1,4 @@
+use std::ops::Add;
 use std::str::FromStr;
 
 use DidMethodError::{Deactivated, ResolutionError};
@@ -23,14 +24,14 @@ pub async fn verify_did_log(
     did_method_provider: &dyn DidMethodProvider,
     params: &Params,
 ) -> Result<(), DidMethodError> {
-    if let Some(limit) = params.max_did_log_entry_check {
-        if log.len() > limit as usize {
-            return Err(ResolutionError(format!(
-                "Failed to verify did log: log has {} entries which is more than the max allowed length ({})",
-                log.len(),
-                limit
-            )));
-        }
+    if let Some(limit) = params.max_did_log_entry_check
+        && log.len() > limit as usize
+    {
+        return Err(ResolutionError(format!(
+            "Failed to verify did log: log has {} entries which is more than the max allowed length ({})",
+            log.len(),
+            limit
+        )));
     }
 
     let mut log_iter = log.iter().peekable();
@@ -54,20 +55,20 @@ pub async fn verify_did_log(
         verify_proof(&active_parameters, entry, did_method_provider).await?;
         scid_or_version_id = &entry.version_id;
 
-        if entry.version_time > now {
+        if entry.version_time > now.add(params.leeway) {
             return Err(ResolutionError(format!(
                 "Invalid log entry {}: version time {} is in the future",
                 entry.version_id, entry.version_time
             )));
         }
 
-        if let Some(prev_time) = last_entry_time.replace(entry.version_time) {
-            if prev_time > entry.version_time {
-                return Err(ResolutionError(format!(
-                    "Invalid log entry {}: version time {} is before version time of the previous entry",
-                    entry.version_id, entry.version_time
-                )));
-            }
+        if let Some(prev_time) = last_entry_time.replace(entry.version_time)
+            && prev_time > entry.version_time
+        {
+            return Err(ResolutionError(format!(
+                "Invalid log entry {}: version time {} is before version time of the previous entry",
+                entry.version_id, entry.version_time
+            )));
         }
 
         check_parameters(index, &entry.parameters)?;
@@ -164,7 +165,7 @@ fn verify_version(params: &DidLogParameters, mandatory: bool) -> Result<(), DidM
 fn verify_scid(scid: &str, first_line_raw: &str) -> Result<(), DidMethodError> {
     let replaced = first_line_raw.replace(scid, "{SCID}");
     let mut json_value = json_syntax::Value::from_str(&replaced).map_err(|err| {
-        ResolutionError(format!("Failed to parse SCID hash input as JSON: {}", err))
+        ResolutionError(format!("Failed to parse SCID hash input as JSON: {err}"))
     })?;
     let json_array = json_value
         .as_array_mut()
@@ -175,18 +176,23 @@ fn verify_scid(scid: &str, first_line_raw: &str) -> Result<(), DidMethodError> {
         ));
     }
 
-    json_array[0] = json!("{SCID}");
+    let Some(elem) = json_array.get_mut(0) else {
+        return Err(ResolutionError(
+            "Log entry must be a JSON array with 5 elements".to_string(),
+        ));
+    };
+    *elem = json!("{SCID}");
+
     json_array.pop(); // remove proof
 
     let hash = canonicalized_hash(json_value)?;
     let multihash = multihash::Multihash::<32>::wrap(0x12, &hash)
-        .map_err(|err| ResolutionError(format!("Failed to create multihash: {}", err)))?;
+        .map_err(|err| ResolutionError(format!("Failed to create multihash: {err}")))?;
 
     let derived_scid = bs58::encode(multihash.to_bytes()).into_string();
     if scid != derived_scid {
         return Err(ResolutionError(format!(
-            "Invalid SCID: expected {}, got {}",
-            scid, derived_scid
+            "Invalid SCID: expected {scid}, got {derived_scid}"
         )));
     };
     Ok(())
@@ -198,7 +204,7 @@ fn verify_version_id(
     line_raw: &str,
 ) -> Result<(), DidMethodError> {
     let mut json_value = json_syntax::Value::from_str(line_raw).map_err(|err| {
-        ResolutionError(format!("Failed to parse SCID hash input as JSON: {}", err))
+        ResolutionError(format!("Failed to parse SCID hash input as JSON: {err}"))
     })?;
     let json_array = json_value
         .as_array_mut()
@@ -208,11 +214,16 @@ fn verify_version_id(
             "Log entry must be a JSON array with 5 elements".to_string(),
         ));
     }
-    let current_version_id = json_array[0]
+
+    let Some(current_version_id) = json_array.first() else {
+        return Err(ResolutionError(
+            "Log entry must be a JSON array with 5 elements".to_string(),
+        ));
+    };
+    let current_version_id = current_version_id
         .as_str()
         .ok_or(ResolutionError(format!(
-            "Expected versionId of type string but got '{}'.",
-            json_array[0]
+            "Expected versionId of type string but got '{current_version_id}'."
         )))?
         .to_string();
     let (index, expected_entry_hash) =
@@ -228,12 +239,18 @@ fn verify_version_id(
         )));
     }
 
-    json_array[0] = json!(scid_or_prev_version_id);
+    let Some(elem) = json_array.get_mut(0) else {
+        return Err(ResolutionError(
+            "Log entry must be a JSON array with 5 elements".to_string(),
+        ));
+    };
+    *elem = json!(scid_or_prev_version_id);
+
     json_array.pop(); // remove proof
 
     let hash = canonicalized_hash(json_value)?;
     let multihash = multihash::Multihash::<32>::wrap(0x12, &hash)
-        .map_err(|err| ResolutionError(format!("Failed to create multihash: {}", err)))?;
+        .map_err(|err| ResolutionError(format!("Failed to create multihash: {err}")))?;
 
     let entry_hash = bs58::encode(multihash.to_bytes()).into_string();
     if entry_hash != expected_entry_hash {
@@ -266,12 +283,12 @@ async fn verify_proof(
         )));
     };
 
-    if let Some(proof_timestamp) = proof.created {
-        if proof_timestamp < entry.version_time {
-            return Err(ResolutionError(
-                "Invalid proof: created time is before entry time.".to_string(),
-            ));
-        }
+    if let Some(proof_timestamp) = proof.created
+        && proof_timestamp < entry.version_time
+    {
+        return Err(ResolutionError(
+            "Invalid proof: created time is before entry time.".to_string(),
+        ));
     }
 
     if *challenge != entry.version_id {
@@ -347,8 +364,7 @@ async fn verify_verification_method(
         .ok_or(ResolutionError(
             "Proof verification failed: missing update_keys".to_string(),
         ))?
-        .iter()
-        .any(|key| *key == multibase)
+        .contains(&multibase)
     {
         return Err(ResolutionError(format!(
             "Proof verification failed: verification method {} is not allowed update_key",

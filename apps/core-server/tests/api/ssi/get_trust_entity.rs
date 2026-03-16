@@ -1,23 +1,23 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use one_core::config::core_config::KeyAlgorithmType;
 use one_core::model::did::{Did, DidType, KeyRole, RelatedKey};
 use one_core::model::organisation::Organisation;
-use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState};
-use one_core::provider::credential_formatter::jwt::Jwt;
-use one_core::provider::credential_formatter::jwt::model::{JWTHeader, JWTPayload};
+use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
+use one_core::proto::jwt::Jwt;
+use one_core::proto::jwt::model::{JWTHeader, JWTPayload};
 use one_core::provider::credential_formatter::model::SignatureProvider;
 use one_core::provider::did_method::key::KeyDidMethod;
 use one_core::provider::did_method::{DidKeys, DidMethod};
-use one_core::provider::key_algorithm::KeyAlgorithm;
 use one_core::provider::key_algorithm::ecdsa::Ecdsa;
-use one_core::provider::key_algorithm::provider::KeyAlgorithmProviderImpl;
+use one_core::provider::key_algorithm::error::KeyAlgorithmError;
+use one_core::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
+use one_crypto::Signer;
 use one_crypto::signer::ecdsa::ECDSASigner;
-use one_crypto::{Signer, SignerError};
 use secrecy::SecretSlice;
 use serde::{Deserialize, Serialize};
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 
 use crate::fixtures::{TestingDidParams, TestingKeyParams};
@@ -40,7 +40,7 @@ async fn test_get_trust_entity_by_did_success() {
         .create(TestingTrustAnchorParams::default())
         .await;
 
-    // recreate did on server with no organsation linked
+    // recreate did on server with no organisation linked
     let did = context
         .db
         .dids
@@ -63,7 +63,10 @@ async fn test_get_trust_entity_by_did_success() {
             TrustEntityRole::Verifier,
             TrustEntityState::Active,
             trust_anchor.clone(),
-            did.clone(),
+            TrustEntityType::Did,
+            (&did.did).into(),
+            None,
+            did.organisation,
         )
         .await;
 
@@ -90,8 +93,8 @@ struct FakeEcdsaSigner {
 
 #[async_trait]
 impl SignatureProvider for FakeEcdsaSigner {
-    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignerError> {
-        ECDSASigner {}.sign(message, &self.public_key, &self.private_key)
+    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, KeyAlgorithmError> {
+        Ok(ECDSASigner.sign(message, &self.public_key, &self.private_key)?)
     }
 
     fn get_key_id(&self) -> Option<String> {
@@ -126,12 +129,11 @@ async fn prepare_bearer_token(context: &TestContext, org: &Organisation) -> (Did
         )
         .await;
 
-    let key_algorithm_provider =
-        Arc::new(KeyAlgorithmProviderImpl::new(HashMap::from_iter(vec![(
-            KeyAlgorithmType::Ecdsa,
-            Arc::new(Ecdsa) as Arc<dyn KeyAlgorithm>,
-        )])));
-    let did_method = KeyDidMethod::new(key_algorithm_provider.clone());
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider
+        .expect_key_algorithm_from_type()
+        .returning(|_| Some(Arc::new(Ecdsa)));
+    let did_method = KeyDidMethod::new(Arc::new(key_algorithm_provider));
 
     let keys = vec![key.clone()];
     let did_value = did_method
@@ -159,6 +161,7 @@ async fn prepare_bearer_token(context: &TestContext, org: &Organisation) -> (Did
                 keys: Some(vec![RelatedKey {
                     role: KeyRole::Authentication,
                     key,
+                    reference: "1".to_string(),
                 }]),
                 did: Some(did_value.clone()),
                 ..Default::default()
@@ -190,11 +193,12 @@ async fn prepare_bearer_token(context: &TestContext, org: &Organisation) -> (Did
             r#type: None,
             jwk: None,
             jwt: None,
+            key_attestation: None,
             x5c: None,
         },
         payload,
     }
-    .tokenize(Some(Box::new(signer)))
+    .tokenize(Some(&signer))
     .await
     .unwrap();
 

@@ -1,11 +1,4 @@
 format:
-  PHYSICAL_CARD:
-    type: "PHYSICAL_CARD"
-    display: "format.physicalCard"
-    order: 340
-    params:
-      public:
-        embedLayoutProperties: false
   JWT:
     type: "JWT"
     display: "format.jwt"
@@ -24,7 +17,7 @@ format:
         embedLayoutProperties: true
   JSON_LD_CLASSIC:
     type: "JSON_LD_CLASSIC"
-    display: "format.jsonld_classic"
+    display: "format.jsonldClassic"
     order: 320
     params:
       public:
@@ -32,7 +25,7 @@ format:
         embedLayoutProperties: true
   JSON_LD_BBSPLUS:
     type: "JSON_LD_BBSPLUS"
-    display: "format.jsonld_bbsplus"
+    display: "format.jsonldBbsplus"
     order: 330
     params:
       public:
@@ -48,15 +41,42 @@ format:
         msoExpectedUpdateIn: 86400 # 24h in seconds
         msoMinimumRefreshTime: 300 # 5 min in seconds
         leeway: 60
-        embedLayoutProperties: true
+        ecosystemSchemaIds:
+          [
+            "org.iso.18013.5.1.mDL",
+            "org.iso.23220.photoid.1",
+            "eu.europa.ec.av.1",
+            "eu.europa.ec.eudi.iban.1",
+            "eu.europa.ec.eudi.ehic.1",
+            "eu.europa.ec.eudi.pseudonym.age_over_18.1",
+            "eu.europa.ec.eudi.loyalty.1",
+            "eu.europa.ec.eudi.hiid.1",
+            "eu.europa.ec.eudi.pid.1",
+            "eu.europa.ec.eudi.msisdn.1",
+            "eu.europa.ec.eudi.por.1",
+            "eu.europa.ec.eudi.tax.1",
+          ]
   SD_JWT_VC:
     type: "SD_JWT_VC"
-    display: "format.sdjwt_vc"
+    display: "format.sdjwtVc"
     order: 200
+    priority: 100
     params:
       public:
         leeway: 60
         embedLayoutProperties: true
+        ecosystemSchemaIds:
+          [
+            "urn:eudi:pid:1",
+            "urn:eu.europa.ec.eudi:pseudonym_age_over_18:1",
+            "urn:eu.europa.ec.eudi:ehic:1",
+            "urn:eu.europa.ec.eudi:por:1",
+            "urn:eu.europa.ec.eudi:pid:1",
+            "urn:eu.europa.ec.eudi:tax:1",
+            "urn:eu.europa.ec.eudi:msisdn:1",
+            "urn:eu.europa.ec.eudi:iban:1",
+            "urn:eu.europa.ec.eudi:hiid:1",
+          ]
   SD_JWT_VC_SWIYU:
     type: "SD_JWT_VC"
     display:
@@ -68,6 +88,7 @@ format:
         leeway: 60
         embedLayoutProperties: true
         swiyuMode: true
+        ecosystemSchemaIds: ["betaid-sdjwt"]
 identifier:
   DID:
     display: "identifier.did"
@@ -81,13 +102,18 @@ identifier:
     display: "identifier.key"
     enabled: true
     order: 2
+  CA:
+    display: "identifier.certificate_authority"
+    enabled: true
+    order: 3
 issuanceProtocol:
   OPENID4VCI_DRAFT13:
-    display: "exchange.openid"
+    display: "exchange.openid4vciDraft13"
     order: 1
     type: "OPENID4VCI_DRAFT13"
     params:
       public:
+        webhookTask: "WEBHOOK_NOTIFY"
         preAuthorizedCodeExpiresIn: 300
         tokenExpiresIn: 86400
         refreshExpiresIn: 7776000 # 90 days in seconds
@@ -102,8 +128,40 @@ issuanceProtocol:
     type: "OPENID4VCI_DRAFT13_SWIYU"
     params:
       public:
-        urlScheme: swiyu
-        credentialOfferByValue: true
+        webhookTask: "WEBHOOK_NOTIFY"
+        preAuthorizedCodeExpiresIn: 300
+        tokenExpiresIn: 86400
+        refreshExpiresIn: 7776000 # 90 days in seconds
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
+  OPENID4VCI_FINAL1:
+    display: exchange.openid4vciFinal1
+    order: 3
+    type: "OPENID4VCI_FINAL1"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        oauthAttestationLeeway: 60
+        keyAttestationLeeway: 60
+        preAuthorizedCodeExpiresIn: 300
+        tokenExpiresIn: 86400
+        refreshExpiresIn: 7776000 # 90 days in seconds
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
+  OPENID4VCI_FINAL1_HAIP:
+    display:
+      en: "OpenID4VCI final 1.0 (HAIP)"
+      de: "OpenID4VCI final 1.0 (HAIP)"
+    order: 4
+    type: "OPENID4VCI_FINAL1"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        urlScheme: "haip-vci"
+        oauthAttestationLeeway: 60
+        keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
         tokenExpiresIn: 86400
         refreshExpiresIn: 7776000 # 90 days in seconds
@@ -117,44 +175,35 @@ verificationProtocol:
     type: "OPENID4VP_DRAFT20"
     params:
       public:
+        webhookTask: "WEBHOOK_NOTIFY"
         useRequestUri: true
+        urlScheme: openid4vp-draft20
         verifier:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did]
-          defaultClientIdScheme: verifier_attestation
+          interactionExpiresIn: 3600
+          supportedClientIdSchemes:
+            [verifier_attestation, redirect_uri, did, x509_san_dns]
         holder:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did]
+          supportedClientIdSchemes:
+            [verifier_attestation, redirect_uri, did, x509_san_dns]
         redirectUri:
           enabled: true
           allowedSchemes: ["https"]
   MDOC_OPENID4VP:
-    display: "exchange.mdocOpenid"
+    display:
+      en: "OpenID4VP (ISO 18013-7 Annex B)"
+      de: "OpenID4VP (ISO 18013-7 Annex B)"
     order: 2
     type: "OPENID4VP_DRAFT20"
     params:
       public:
+        webhookTask: "WEBHOOK_NOTIFY"
         useRequestUri: true
         urlScheme: mdoc-openid4vp
-        x509CaCertificate: MIIC6jCCApCgAwIBAgIULOnT9JtSjwzSk5XUCy4lzAXgzsMwCgYIKoZIzj0EAwQwgZYxHDAaBgNVBAMME2NhLmRldi5tZGwtcGx1cy5jb20xCzAJBgNVBAYTAkNIMQ8wDQYDVQQHDAZadXJpY2gxFDASBgNVBAoMC1Byb2NpdmlzIEFHMR4wHAYDVQQLDBVDZXJ0aWZpY2F0ZSBBdXRob3JpdHkxIjAgBgkqhkiG9w0BCQEWE3N1cHBvcnRAcHJvY2l2aXMuY2gwHhcNMjUwMzEzMTQzNzAwWhcNMzUwMzExMTQzNzAwWjCBljEcMBoGA1UEAwwTY2EuZGV2Lm1kbC1wbHVzLmNvbTELMAkGA1UEBhMCQ0gxDzANBgNVBAcMBlp1cmljaDEUMBIGA1UECgwLUHJvY2l2aXMgQUcxHjAcBgNVBAsMFUNlcnRpZmljYXRlIEF1dGhvcml0eTEiMCAGCSqGSIb3DQEJARYTc3VwcG9ydEBwcm9jaXZpcy5jaDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABC8hfYMdzhP87J1EnaaIInDNqGebPugTdzANq8kd2no4Xav_cyHsOVCe6FL7yYHButVR7xrmCbQip_0ctE0cdrejgbkwgbYwDgYDVR0PAQH_BAQDAgEGMDAGA1UdHwQpMCcwJaAjoCGGH2h0dHA6Ly9jYS5kZXYubWRsLXBsdXMuY29tL2NybC8wHgYDVR0SBBcwFYITY2EuZGV2Lm1kbC1wbHVzLmNvbTASBgNVHRMBAf8ECDAGAQH_AgEAMB0GA1UdDgQWBBTlL0m2S8gpkPlLfxPsQM9qwqL4cDAfBgNVHSMEGDAWgBTlL0m2S8gpkPlLfxPsQM9qwqL4cDAKBggqhkjOPQQDBANIADBFAiAwMs_rQEDwt0HbrAt4lvAwT3jrtqqR4BzZDQhqqh8zyAIhAKTYqzmSNPsC3TZzs4uCBIsS3LKDZHCktmj3La1PCGSS
         verifier:
+          interactionExpiresIn: 3600
           supportedClientIdSchemes: [x509_san_dns]
-          defaultClientIdScheme: x509_san_dns
         holder:
           supportedClientIdSchemes: [x509_san_dns]
-        redirectUri:
-          enabled: true
-          allowedSchemes: ["https"]
-  OPENID4VP_DRAFT25:
-    display: "exchange.openid4vp25"
-    order: 3
-    type: "OPENID4VP_DRAFT25"
-    params:
-      public:
-        useRequestUri: true
-        verifier:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did]
-          defaultClientIdScheme: verifier_attestation
-        holder:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did]
         redirectUri:
           enabled: true
           allowedSchemes: ["https"]
@@ -162,25 +211,135 @@ verificationProtocol:
     display:
       en: "OpenID4VP draft 20 (SWIYU)"
       de: "OpenID4VP draft 20 (SWIYU)"
-    order: 7
+    order: 3
     type: "OPENID4VP_DRAFT20_SWIYU"
     params:
       public:
-        urlScheme: https
-        useRequestUri: true
-        verifier:
-          supportedClientIdSchemes: [did]
-          defaultClientIdScheme: did
-        holder:
-          supportedClientIdSchemes: [did]
+        webhookTask: "WEBHOOK_NOTIFY"
         redirectUri:
           enabled: true
           allowedSchemes: ["https"]
-        predefinedClientMetadata:
-          vp_formats:
-            dc+sd-jwt:
-              sd-jwt_alg_values: ["ES256"]
-              kb-jwt_alg_values: ["ES256"]
+        verifier:
+          interactionExpiresIn: 3600
+  OPENID4VP_DRAFT25:
+    display: "exchange.openid4vp25"
+    order: 10
+    type: "OPENID4VP_DRAFT25"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        useRequestUri: true
+        urlScheme: openid4vp-draft25
+        verifier:
+          interactionExpiresIn: 3600
+          useDcql: false
+          supportedClientIdSchemes:
+            [verifier_attestation, redirect_uri, did, x509_san_dns, x509_hash]
+        holder:
+          supportedClientIdSchemes:
+            [verifier_attestation, redirect_uri, did, x509_san_dns, x509_hash]
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
+  OPENID4VP_DRAFT25_EUDI:
+    display:
+      en: "OpenID4VP draft 25 (EUDI)"
+      de: "OpenID4VP draft 25 (EUDI)"
+    order: 30 #TODO: ONE-8430: explicitly last to prefer OPENID4VP_FINAL1 on holder side
+    type: "OPENID4VP_DRAFT25"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        useRequestUri: true
+        urlScheme: openid4vp
+        verifier:
+          interactionExpiresIn: 3600
+          useDcql: false
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+        holder:
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
+  OPENID4VP_FINAL1:
+    display: "exchange.openid4vpFinal1"
+    order: 20
+    type: "OPENID4VP_FINAL1"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        useRequestUri: true
+        verifier:
+          interactionExpiresIn: 3600
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+        holder:
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
+  OPENID4VP_FINAL1_HAIP:
+    display:
+      en: "OpenID4VP final 1.0 (HAIP)"
+      de: "OpenID4VP final 1.0 (HAIP)"
+    order: 21
+    type: "OPENID4VP_FINAL1"
+    params:
+      public:
+        webhookTask: "WEBHOOK_NOTIFY"
+        useRequestUri: true
+        urlScheme: haip-vp
+        verifier:
+          interactionExpiresIn: 3600
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+        holder:
+          supportedClientIdSchemes:
+            [
+              verifier_attestation,
+              redirect_uri,
+              decentralized_identifier,
+              x509_san_dns,
+              x509_hash,
+            ]
+          # EUDI compatibility flag for non-standard compliant vp_token formatting
+          dcqlVpTokenSinglePresentation: true
+        redirectUri:
+          enabled: true
+          allowedSchemes: ["https"]
 transport:
   HTTP:
     type: "HTTP"
@@ -208,14 +367,6 @@ revocation:
     enabled: true
     type: "MDOC_MSO_UPDATE_SUSPENSION"
     params: null
-  LVVC:
-    display: "revocation.lvvc"
-    order: 2
-    type: "LVVC"
-    params:
-      private:
-        credentialExpiry: 2592000 # 30 days
-        minimumRefreshTime: 300
   TOKENSTATUSLIST:
     display: "revocation.tokenList"
     order: 5
@@ -224,6 +375,13 @@ revocation:
     params:
       public:
         format: "JWT"
+  CRL:
+    display: "revocation.crl"
+    order: 6
+    type: "CRL"
+    params:
+      public:
+        refreshInterval: 86400
 did:
   KEY:
     display: "did.key"
@@ -259,12 +417,6 @@ did:
     display: "did.jwk"
     order: 2
     params: null
-  X509:
-    type: "X509"
-    display: "did.x509"
-    order: 3
-    enabled: false
-    params: null
   ION:
     display: "did.ion"
     order: 4
@@ -275,20 +427,6 @@ did:
         resolverUrl: https://dev.uniresolver.io
         supportedMethodNames:
           - "ion"
-  MDL:
-    type: "MDL"
-    display: "did.mdl"
-    order: 5
-    params:
-      private:
-        iacaCertificate: MIIC6jCCApCgAwIBAgIULOnT9JtSjwzSk5XUCy4lzAXgzsMwCgYIKoZIzj0EAwQwgZYxHDAaBgNVBAMME2NhLmRldi5tZGwtcGx1cy5jb20xCzAJBgNVBAYTAkNIMQ8wDQYDVQQHDAZadXJpY2gxFDASBgNVBAoMC1Byb2NpdmlzIEFHMR4wHAYDVQQLDBVDZXJ0aWZpY2F0ZSBBdXRob3JpdHkxIjAgBgkqhkiG9w0BCQEWE3N1cHBvcnRAcHJvY2l2aXMuY2gwHhcNMjUwMzEzMTQzNzAwWhcNMzUwMzExMTQzNzAwWjCBljEcMBoGA1UEAwwTY2EuZGV2Lm1kbC1wbHVzLmNvbTELMAkGA1UEBhMCQ0gxDzANBgNVBAcMBlp1cmljaDEUMBIGA1UECgwLUHJvY2l2aXMgQUcxHjAcBgNVBAsMFUNlcnRpZmljYXRlIEF1dGhvcml0eTEiMCAGCSqGSIb3DQEJARYTc3VwcG9ydEBwcm9jaXZpcy5jaDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABC8hfYMdzhP87J1EnaaIInDNqGebPugTdzANq8kd2no4Xav_cyHsOVCe6FL7yYHButVR7xrmCbQip_0ctE0cdrejgbkwgbYwDgYDVR0PAQH_BAQDAgEGMDAGA1UdHwQpMCcwJaAjoCGGH2h0dHA6Ly9jYS5kZXYubWRsLXBsdXMuY29tL2NybC8wHgYDVR0SBBcwFYITY2EuZGV2Lm1kbC1wbHVzLmNvbTASBgNVHRMBAf8ECDAGAQH_AgEAMB0GA1UdDgQWBBTlL0m2S8gpkPlLfxPsQM9qwqL4cDAfBgNVHSMEGDAWgBTlL0m2S8gpkPlLfxPsQM9qwqL4cDAKBggqhkjOPQQDBANIADBFAiAwMs_rQEDwt0HbrAt4lvAwT3jrtqqR4BzZDQhqqh8zyAIhAKTYqzmSNPsC3TZzs4uCBIsS3LKDZHCktmj3La1PCGSS
-  SD_JWT_VC_ISSUER_METADATA:
-    type: "SD_JWT_VC_ISSUER_METADATA"
-    display: "did.sd_jwt_vc_issuer_metadata"
-    order: 20
-    params:
-      private:
-        iacaCertificate: MIIC3TCCAoOgAwIBAgIUEwybFc9Jw-az3r188OiHDaxCfHEwCgYIKoZIzj0EAwMwXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4XDTI1MDMyNDIwMjYxNFoXDTM0MDYyMDIwMjYxM1owXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEesDKj9rCIcrGj0wbSXYvCV953bOPSYLZH5TNmhTz2xa7VdlvQgQeGZRg1PrF5AFwt070wvL9qr1DUDdvLp6a1qOCASEwggEdMBIGA1UdEwEB_wQIMAYBAf8CAQAwHwYDVR0jBBgwFoAUYseURyi9D6IWIKeawkmURPEB08cwEwYDVR0lBAwwCgYIK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5ldWRpdy5kZXYvY3JsL3BpZF9DQV9VVF8wMi5jcmwwHQYDVR0OBBYEFGLHlEcovQ-iFiCnmsJJlETxAdPHMA4GA1UdDwEB_wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczovL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0dXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0gAMEUCIQCe4R9rO4JhFp821kO8Gkb8rXm4qGG_e5_Oi2XmnTQqOQIgfFs-LDbnP2_j1MB4rwZ1FgGdpr4oyrFB9daZyRIcP90
   WEBVH:
     type: "WEBVH"
     display: "did.webvh"
@@ -313,6 +451,7 @@ did:
           capabilityDelegation:
             min: 0
             max: 1
+        leeway: 60
       private:
         maxDidLogEntryCheck: 10
 datatype:
@@ -320,12 +459,22 @@ datatype:
     display: "datatype.string"
     type: "STRING"
     order: 100
-    params: null
+    params:
+      public:
+        supportedInputMode: TEXT
+      private:
+        holder:
+          valueExtraction: ENABLED_FALLBACK
   NUMBER:
     display: "datatype.number"
     type: "NUMBER"
     order: 200
-    params: null
+    params:
+      public:
+        supportedInputMode: NUMBER_INPUT
+      private:
+        holder:
+          valueExtraction: ENABLED_FALLBACK
   DATE:
     display: "datatype.date"
     type: "DATE"
@@ -333,8 +482,12 @@ datatype:
     params:
       public:
         formats: ["date", "datetime"]
+        supportedInputMode: DATE_PICKER
+      private:
+        holder:
+          valueExtraction: ENABLED
   BIRTH_DATE:
-    display: "datatype.birth_date"
+    display: "datatype.birthDate"
     type: "DATE"
     order: 310
     params:
@@ -346,6 +499,7 @@ datatype:
         error:
           de: "Bitte wählen Sie ein Datum zwischen 1900-1-1 und heute"
           en: "Please choose a date between 1900-1-1 and today"
+        supportedInputMode: DATE_PICKER
   EMAIL:
     display: "datatype.email"
     type: "STRING"
@@ -358,9 +512,10 @@ datatype:
           de: "Please provide email like abc@abc.com"
           en: "Please provide email like abc@abc.com"
         pattern: '^[\w\-\.]+@([\w\-]+\.)+[\w\-]{2,4}$'
+        supportedInputMode: TEXT
   PICTURE:
     display: "datatype.picture"
-    type: "FILE"
+    type: "PICTURE"
     order: 400
     params:
       public:
@@ -368,30 +523,43 @@ datatype:
           - image/jpeg
           - image/png
         fileSize: 4194304
+        supportedInputMode: FILE_UPLOAD
         showAs: IMAGE
+      private:
+        holder:
+          valueExtraction: ENABLED
   MDL_PICTURE:
     display: "datatype.mdlPicture"
-    type: "FILE"
+    type: "PICTURE"
     order: 402
     params:
       public:
         accept:
           - image/jpeg
+          - image/jp2
         fileSize: 4194304
         showAs: IMAGE
+        supportedInputMode: FILE_UPLOAD
         encodeAsMdlPortrait: true
+      private:
+        holder:
+          valueExtraction: ENABLED
   SWIYU_PICTURE:
     display:
       en: "Picture (SWIYU)"
       de: "Bild (SWIYU)"
-    type: "FILE"
+    type: "SWIYU_PICTURE"
     order: 403
     params:
       public:
         accept:
           - image/jpeg
         fileSize: 4194304
+        supportedInputMode: FILE_UPLOAD
         showAs: IMAGE
+      private:
+        holder:
+          valueExtraction: ENABLED
   COUNT:
     display: "datatype.count"
     type: "NUMBER"
@@ -403,6 +571,7 @@ datatype:
         error:
           de: "Bitte wählen Sie eine Zahl zwischen 0 und 9999"
           en: "Please provide a number between 0 and 9999"
+        supportedInputMode: NUMBER_INPUT
   OBJECT:
     display: "datatype.object"
     type: "OBJECT"
@@ -412,7 +581,12 @@ datatype:
     display: "datatype.boolean"
     type: "BOOLEAN"
     order: 301
-    params: null
+    params:
+      public:
+        supportedInputMode: CHECKBOX
+      private:
+        holder:
+          valueExtraction: ENABLED_FALLBACK
   ARRAY:
     display: "datatype.array"
     type: "ARRAY"
@@ -423,16 +597,18 @@ keyAlgorithm:
     display: "keyAlgorithm.eddsa"
     order: 0
     params: null
+    holderPriority: 50
   ECDSA:
     display: "keyAlgorithm.ecdsa"
     order: 1
     params: null
+    holderPriority: 100
   BBS_PLUS:
-    display: "keyAlgorithm.bbs_plus"
+    display: "keyAlgorithm.bbsPlus"
     order: 2
     params: null
-  DILITHIUM:
-    display: "keyAlgorithm.dilithium"
+  ML_DSA:
+    display: "keyAlgorithm.mlDsa"
     order: 3
     params: null
 keyStorage:
@@ -446,6 +622,40 @@ keyStorage:
     enabled: false
     order: 2
     params: null
+keySecurityLevel:
+  BASIC:
+    display: keySecurityLevel.basic
+    order: 10
+    params:
+      public:
+        holder:
+          priority: 40
+          keyStorages: ["INTERNAL"]
+  ENHANCED_BASIC:
+    enabled: false
+    display: keySecurityLevel.enhancedBasic
+    order: 20
+    params:
+      public:
+        holder:
+          priority: 0
+          keyStorages: []
+  MODERATE:
+    display: keySecurityLevel.moderate
+    order: 30
+    params:
+      public:
+        holder:
+          priority: 30
+          keyStorages: []
+  HIGH:
+    display: keySecurityLevel.high
+    order: 40
+    params:
+      public:
+        holder:
+          priority: 20
+          keyStorages: ["AZURE_VAULT"]
 task:
   SUSPEND_CHECK:
     type: "SUSPEND_CHECK"
@@ -463,7 +673,27 @@ task:
     type: "HOLDER_CHECK_CREDENTIAL_STATUS"
     display: "task.holderCheckCredentialStatus"
     order: 3
+  INTERACTION_EXPIRATION_CHECK:
+    type: "INTERACTION_EXPIRATION_CHECK"
+    display: "task.interactionExpirationCheck"
+    order: 4
+  WEBHOOK_NOTIFY:
+    type: "WEBHOOK_NOTIFY"
+    display: "task.webhookNotify"
+    order: 5
+    params:
+      private:
+        requestTimeout: 30
+        retries:
+          interval: 1
+          maxAttempts: 5
+          exponentialFactor: 2.5
 cacheEntities:
+  X509_CRL:
+    cacheType: DB
+    refreshAfter: 86400
+    cacheRefreshTimeout: 86400
+    cacheSize: 1000
   STATUS_LIST_CREDENTIAL:
     cacheType: DB
     refreshAfter: 300
@@ -494,6 +724,11 @@ cacheEntities:
     refreshAfter: 300
     cacheRefreshTimeout: 86400
     cacheSize: 1000
+  OPENID_METADATA:
+    cacheType: DB
+    refreshAfter: 300
+    cacheRefreshTimeout: 86400
+    cacheSize: 1000
 trustManagement:
   SIMPLE_TRUST_LIST:
     display: "trustManagement.simpleTrustList"
@@ -503,3 +738,14 @@ trustManagement:
     params:
       public:
         enablePublishing: true
+        proofOfPossessionLeeway: 60
+blobStorage:
+  DB:
+    enabled: true
+verificationEngagement:
+  QR_CODE:
+    display: verificationEngagement.qrCode
+    order: 1
+    enabled: true
+certificateValidation:
+  leeway: 60

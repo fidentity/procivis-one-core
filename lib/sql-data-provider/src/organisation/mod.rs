@@ -1,6 +1,5 @@
-use sea_orm::DatabaseConnection;
+use crate::transaction_context::TransactionManagerImpl;
 
-pub mod history;
 mod mapper;
 pub mod repository;
 
@@ -8,5 +7,5 @@ pub mod repository;
 mod test;
 
 pub(crate) struct OrganisationProvider {
-    pub db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
 }

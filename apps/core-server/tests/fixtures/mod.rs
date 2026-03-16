@@ -1,22 +1,34 @@
+pub(crate) mod certificate;
+pub(crate) mod dcql;
+pub(crate) mod jsonld_contexts;
+pub(crate) mod jwt;
+pub(crate) mod mdoc;
+pub(crate) mod presentation;
+pub(crate) mod signature;
+pub(crate) mod sts;
+pub(crate) mod wallet_provider;
+
 use std::str::FromStr;
 
-use core_server::ServerConfig;
+use core_server::{AuthMode, ServerConfig};
 use hex_literal::hex;
-use one_core::config::core_config::{self, AppConfig};
+use one_core::config::core_config::{self, AppConfig, InputFormat};
+use one_core::model::blob::Blob;
 use one_core::model::certificate::Certificate;
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
-use one_core::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use one_core::model::credential::{
+    Credential, CredentialRelations, CredentialRole, CredentialStateEnum,
+};
 use one_core::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaRelations, CredentialSchemaType,
-    LayoutProperties, LayoutType, WalletStorageTypeEnum,
+    CredentialSchema, CredentialSchemaRelations, KeyStorageSecurity, LayoutProperties, LayoutType,
 };
 use one_core::model::did::{Did, DidType, RelatedKey};
 use one_core::model::history::HistoryAction;
 use one_core::model::identifier::{
     Identifier, IdentifierRelations, IdentifierState, IdentifierType,
 };
-use one_core::model::interaction::{Interaction, InteractionRelations};
+use one_core::model::interaction::{Interaction, InteractionRelations, InteractionType};
 use one_core::model::key::{Key, KeyRelations};
 use one_core::model::organisation::{Organisation, OrganisationRelations};
 use one_core::model::proof::{
@@ -26,15 +38,17 @@ use one_core::model::proof_schema::{
     ProofInputClaimSchema, ProofInputSchema, ProofInputSchemaRelations, ProofSchema,
     ProofSchemaClaimRelations, ProofSchemaRelations,
 };
-use one_core::model::revocation_list::{
-    RevocationList, RevocationListPurpose, StatusListCredentialFormat, StatusListType,
-};
 use one_core::repository::DataRepository;
 use one_crypto::encryption::encrypt_string;
 use one_crypto::utilities::generate_alphanumeric;
-use sea_orm::ConnectionTrait;
+use sea_orm::sqlx::{Executor, raw_sql};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use secrecy::{SecretSlice, SecretString};
-use shared_types::{CredentialSchemaId, DidId, DidValue, EntityId, IdentifierId, KeyId, ProofId};
+use shared_types::{
+    BlobId, ClaimSchemaId, CredentialFormat, CredentialSchemaId, DidId, DidValue, EntityId,
+    IdentifierId, InteractionId, KeyId, ProofId, RevocationMethodId,
+};
+use similar_asserts::assert_eq;
 use sql_data_provider::test_utilities::*;
 use sql_data_provider::{DataLayer, DbConn};
 use time::OffsetDateTime;
@@ -90,22 +104,25 @@ pub fn create_config(
     let root = std::env!("CARGO_MANIFEST_DIR");
 
     let configs = [
-        format!("{}/../../config/config.yml", root),
-        format!("{}/../../config/config-procivis-base.yml", root),
-        format!("{}/../../config/config-local.yml", root),
+        InputFormat::yaml_file(format!("{root}/../../config/config.yml")),
+        InputFormat::yaml_file(format!("{root}/../../config/config-procivis-base.yml")),
+        InputFormat::yaml_file(format!("{root}/../../config/config-local.yml")),
     ]
     .into_iter()
-    .map(|path| std::fs::read_to_string(path).unwrap())
-    .chain(ion_config)
-    .chain(params.additional_config)
-    .chain(allow_insecure_http);
+    .chain(ion_config.map(InputFormat::yaml_str))
+    .chain(params.additional_config.map(InputFormat::yaml_str))
+    .chain(allow_insecure_http.map(InputFormat::yaml_str));
 
-    let mut app_config: AppConfig<ServerConfig> =
-        core_config::AppConfig::from_yaml(configs).unwrap();
+    let mut app_config: AppConfig<ServerConfig> = core_config::AppConfig::parse(configs).unwrap();
+
+    if let AuthMode::UnsafeStatic { static_token } = &mut app_config.app.auth
+        && static_token.is_empty()
+    {
+        *static_token = "test".to_string();
+    }
 
     app_config.app = ServerConfig {
         database_url: std::env::var("ONE_app__databaseUrl").unwrap_or("sqlite::memory:".into()),
-        auth_token: "test".to_string(),
         core_base_url: core_base_url.into(),
         server_ip: None,
         server_port: None,
@@ -122,15 +139,21 @@ pub fn create_config(
     app_config
 }
 
-pub async fn create_db(config: &AppConfig<ServerConfig>) -> DbConn {
+static SQLITE_INIT_DB: tokio::sync::OnceCell<DatabaseConnection> =
+    tokio::sync::OnceCell::const_new();
+static MARIADB_DB_INIT_STMNTS: tokio::sync::OnceCell<Vec<String>> =
+    tokio::sync::OnceCell::const_new();
+
+pub async fn create_db(_config: &AppConfig<ServerConfig>) -> DbConn {
     let env_db_url = std::env::var("ONE_app__databaseUrl").ok();
     match env_db_url {
-        Some(url) if url != "sqlite::memory:" => {
-            let mut url: url::Url = url.parse().unwrap();
+        Some(url) if !url.starts_with("sqlite") => {
+            let mut url: Url = url.parse().unwrap();
             // remove path to connect to cluster
             url.set_path("");
             let conn = sea_orm::Database::connect(url.clone()).await.unwrap();
             let db_name: String = ulid::Ulid::new().to_string();
+            println!("USING DATABASE {db_name}");
 
             conn.execute_unprepared(&format!("CREATE DATABASE {db_name};"))
                 .await
@@ -140,13 +163,116 @@ pub async fn create_db(config: &AppConfig<ServerConfig>) -> DbConn {
                 .await
                 .unwrap();
 
-            url.set_path(&db_name);
-            sql_data_provider::db_conn(url, true).await.unwrap()
+            if url.scheme() == "mysql" {
+                /*
+                 * When dealing with MariaDB databases, prepare an "init"
+                 * database with migrations applied. From that "init" db, extract all
+                 * the `CREATE TABLE` table statements required to set up the tables in the
+                 * fully migrated state directly.
+                 * Then, whenever a new database is created, simply apply all the `CREATE TABLE`
+                 * statements to the new DB. Copying the schema this way is
+                 * a lot faster than re-running the migrations each time.
+                 */
+                let init_stmnts = MARIADB_DB_INIT_STMNTS
+                    .get_or_init(|| async { init_db_statements(&url).await })
+                    .await;
+                url.set_path(&db_name);
+                initialize_db(url, init_stmnts).await
+            } else {
+                url.set_path(&db_name);
+                sql_data_provider::db_conn(url, true).await.unwrap()
+            }
         }
-        _ => sql_data_provider::db_conn(&config.app.database_url, true)
-            .await
-            .unwrap(),
+        // Allows to run API test locally against persistent SQLite DB using e.g.
+        // ONE_app__databaseUrl="sqlite://database.sqlite3?mode=rwc";RUST_BACKTRACE=1
+        Some(url) => sql_data_provider::db_conn(url, true).await.unwrap(),
+        _ => {
+            /*
+             * When dealing with in-memory SQLite databases, prepare an "init"
+             * database with migrations applied. Then, whenever a new in-memory
+             * database is created, serialize the "init" DB and deserialize it
+             * into the new DB. Copying the schema this way is
+             * a lot faster than re-running the migrations each time.
+             */
+            let init_db = SQLITE_INIT_DB
+                .get_or_init(|| async {
+                    sql_data_provider::db_conn("sqlite::memory:", true)
+                        .await
+                        .unwrap()
+                })
+                .await;
+
+            let new_db = sql_data_provider::db_conn("sqlite::memory:", false)
+                .await
+                .unwrap();
+
+            let mut init_conn = init_db
+                .get_sqlite_connection_pool()
+                .acquire()
+                .await
+                .unwrap();
+            let buffer = init_conn.serialize(None).await.unwrap();
+
+            let mut new_conn = new_db.get_sqlite_connection_pool().acquire().await.unwrap();
+            new_conn.deserialize(None, buffer, false).await.unwrap();
+
+            new_db
+        }
     }
+}
+
+async fn initialize_db(url: Url, init_statements: &[String]) -> DatabaseConnection {
+    let db_con = sql_data_provider::db_conn(url, false).await.unwrap();
+    let mut single_con = db_con.get_mysql_connection_pool().acquire().await.unwrap();
+    single_con
+        .execute(raw_sql("SET FOREIGN_KEY_CHECKS = 0;"))
+        .await
+        .unwrap();
+    for stmnt in init_statements {
+        single_con.execute(raw_sql(stmnt.as_str())).await.unwrap();
+    }
+    single_con
+        .execute(raw_sql("SET FOREIGN_KEY_CHECKS = 1;"))
+        .await
+        .unwrap();
+    db_con
+}
+
+async fn init_db_statements(url: &Url) -> Vec<String> {
+    let conn = sea_orm::Database::connect(url.clone()).await.unwrap();
+    let db_name: String = ulid::Ulid::new().to_string();
+    conn.execute_unprepared(&format!("CREATE DATABASE {db_name};"))
+        .await
+        .unwrap();
+    conn.execute_unprepared(&format!("USE {db_name};"))
+        .await
+        .unwrap();
+
+    let mut init_db_url = url.clone();
+    init_db_url.set_path(&db_name);
+    let init_db = sql_data_provider::db_conn(init_db_url, true).await.unwrap();
+
+    let result = init_db
+        .query_all(Statement::from_string(DbBackend::MySql, "SHOW TABLES;"))
+        .await
+        .unwrap();
+
+    let mut statements = Vec::with_capacity(result.len());
+    for row in result {
+        let table: String = row.try_get_by_index(0).unwrap();
+        let create_stmt: String = init_db
+            .query_one(Statement::from_string(
+                DbBackend::MySql,
+                format!("SHOW CREATE TABLE `{table}`;"),
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get_by_index(1)
+            .unwrap();
+        statements.push(create_stmt);
+    }
+    statements
 }
 
 pub async fn create_organisation(db_conn: &DbConn) -> Organisation {
@@ -157,6 +283,9 @@ pub async fn create_organisation(db_conn: &DbConn) -> Organisation {
         name: "org_name".to_string(),
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
+        deactivated_at: None,
+        wallet_provider: None,
+        wallet_provider_issuer: None,
     };
 
     data_layer
@@ -194,7 +323,7 @@ pub async fn create_key(
         last_modified: params.last_modified.unwrap_or(now),
         public_key: params.public_key.unwrap_or_default(),
         name: unwrap_or_random(params.name),
-        key_reference: params.key_reference.unwrap_or_default(),
+        key_reference: params.key_reference,
         storage_type: params.storage_type.unwrap_or_default(),
         key_type: params.key_type.unwrap_or_default(),
         organisation: Some(organisation.to_owned()),
@@ -259,21 +388,6 @@ pub async fn create_eddsa_key(db_conn: &DbConn, organisation: &Organisation) -> 
         }),
     )
     .await
-}
-
-pub async fn get_key(db_conn: &DbConn, id: &KeyId) -> Key {
-    let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
-    data_layer
-        .get_key_repository()
-        .get_key(
-            id,
-            &KeyRelations {
-                organisation: Some(OrganisationRelations::default()),
-            },
-        )
-        .await
-        .unwrap()
-        .unwrap()
 }
 
 #[derive(Debug, Default)]
@@ -381,12 +495,11 @@ pub struct TestingCredentialSchemaParams {
     pub last_modified: Option<OffsetDateTime>,
     pub deleted_at: Option<OffsetDateTime>,
     pub name: Option<String>,
-    pub format: Option<String>,
-    pub wallet_storage_type: Option<Option<WalletStorageTypeEnum>>,
-    pub revocation_method: Option<String>,
+    pub format: Option<CredentialFormat>,
+    pub key_storage_security: Option<Option<KeyStorageSecurity>>,
+    pub revocation_method: Option<RevocationMethodId>,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<LayoutProperties>,
-    pub schema_type: Option<CredentialSchemaType>,
     pub schema_id: Option<String>,
 }
 
@@ -404,11 +517,10 @@ pub async fn create_credential_schema(
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
         array: false,
-    };
-    let claim_schemas = vec![CredentialSchemaClaim {
-        schema: claim_schema.to_owned(),
+        metadata: false,
         required: true,
-    }];
+    };
+    let claim_schemas = vec![claim_schema.to_owned()];
 
     let params = params.unwrap_or_default();
     let now = OffsetDateTime::now_utc();
@@ -421,22 +533,18 @@ pub async fn create_credential_schema(
         imported_source_url: "CORE_URL".to_string(),
         last_modified: params.last_modified.unwrap_or(now),
         name: unwrap_or_random(params.name),
-        wallet_storage_type: params
-            .wallet_storage_type
-            .unwrap_or(Some(WalletStorageTypeEnum::Software)),
+        key_storage_security: params.key_storage_security.unwrap_or_default(),
         organisation: Some(organisation.to_owned()),
         deleted_at: params.deleted_at,
-        format: params.format.unwrap_or("JWT".to_string()),
-        revocation_method: params.revocation_method.unwrap_or("NONE".to_string()),
+        format: params.format.unwrap_or("JWT".into()),
+        revocation_method: params.revocation_method,
         claim_schemas: Some(claim_schemas),
         layout_type: params.layout_type.unwrap_or(LayoutType::Card),
         layout_properties: params.layout_properties,
-        schema_type: params
-            .schema_type
-            .unwrap_or(CredentialSchemaType::ProcivisOneSchema2024),
         schema_id: params.schema_id.unwrap_or(id.to_string()),
         allow_suspension: true,
-        external_schema: false,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     };
 
     data_layer
@@ -452,26 +560,23 @@ pub async fn create_credential_schema_with_claims(
     db_conn: &DbConn,
     name: &str,
     organisation: &Organisation,
-    revocation_method: &str,
+    revocation_method: impl Into<Option<RevocationMethodId>>,
     claims: &[(Uuid, &str, bool, &str, bool)],
 ) -> CredentialSchema {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
 
     let claim_schemas = claims
         .iter()
-        .map(
-            |(id, key, required, data_type, array)| CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    id: (*id).into(),
-                    key: key.to_string(),
-                    data_type: data_type.to_string(),
-                    created_date: get_dummy_date(),
-                    last_modified: get_dummy_date(),
-                    array: *array,
-                },
-                required: required.to_owned(),
-            },
-        )
+        .map(|(id, key, required, data_type, array)| ClaimSchema {
+            id: (*id).into(),
+            key: key.to_string(),
+            data_type: data_type.to_string(),
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            array: *array,
+            metadata: false,
+            required: required.to_owned(),
+        })
         .collect();
     let id = Uuid::new_v4();
     let credential_schema = CredentialSchema {
@@ -479,19 +584,19 @@ pub async fn create_credential_schema_with_claims(
         imported_source_url: "CORE_URL".to_string(),
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        wallet_storage_type: None,
+        key_storage_security: None,
         name: name.to_owned(),
         organisation: Some(organisation.to_owned()),
         deleted_at: None,
-        format: "JWT".to_string(),
-        external_schema: false,
-        revocation_method: revocation_method.to_owned(),
+        format: "JWT".into(),
+        revocation_method: revocation_method.into(),
         claim_schemas: Some(claim_schemas),
         layout_type: LayoutType::Card,
         layout_properties: None,
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         schema_id: id.to_string(),
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     };
 
     data_layer
@@ -526,6 +631,8 @@ pub async fn create_proof_schema(
                         created_date: get_dummy_date(),
                         last_modified: get_dummy_date(),
                         array: false,
+                        metadata: false,
+                        required: true,
                     },
                     required: claim.required.to_owned(),
                     order: order as _,
@@ -533,7 +640,6 @@ pub async fn create_proof_schema(
                 .collect();
 
             ProofInputSchema {
-                validity_constraint: proof_input_schema.validity_constraint,
                 claim_schemas: Some(claim_schemas),
                 credential_schema: Some(proof_input_schema.credential_schema.to_owned()),
             }
@@ -562,11 +668,11 @@ pub async fn create_proof_schema(
 }
 
 pub async fn create_interaction_with_id(
-    id: Uuid,
+    id: InteractionId,
     db_conn: &DbConn,
-    host: &str,
     data: &[u8],
     organisation: &Organisation,
+    interaction_type: InteractionType,
 ) -> Interaction {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
 
@@ -574,9 +680,11 @@ pub async fn create_interaction_with_id(
         id,
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        host: Some(Url::parse(host).unwrap()),
         data: Some(data.into()),
         organisation: Some(organisation.to_owned()),
+        nonce_id: None,
+        interaction_type,
+        expires_at: None,
     };
 
     data_layer
@@ -590,82 +698,72 @@ pub async fn create_interaction_with_id(
 
 pub async fn create_interaction(
     db_conn: &DbConn,
-    host: &str,
     data: &[u8],
     organisation: &Organisation,
+    interaction_type: InteractionType,
 ) -> Interaction {
-    create_interaction_with_id(Uuid::new_v4(), db_conn, host, data, organisation).await
+    create_interaction_with_id(
+        Uuid::new_v4().into(),
+        db_conn,
+        data,
+        organisation,
+        interaction_type,
+    )
+    .await
 }
 
-pub async fn create_revocation_list(
-    db_conn: &DbConn,
-    issuer_did: &Did,
-    credentials: Option<&[u8]>,
-) -> RevocationList {
-    let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
-
-    let revocation_list = RevocationList {
-        id: Default::default(),
-        created_date: get_dummy_date(),
-        last_modified: get_dummy_date(),
-        credentials: credentials.unwrap_or_default().to_owned(),
-        purpose: RevocationListPurpose::Revocation,
-        issuer_did: Some(issuer_did.to_owned()),
-        format: StatusListCredentialFormat::JsonLdClassic,
-        r#type: StatusListType::BitstringStatusList,
-    };
-
-    data_layer
-        .get_revocation_list_repository()
-        .create_revocation_list(revocation_list.to_owned())
-        .await
-        .unwrap();
-
-    revocation_list
+#[derive(Debug)]
+pub struct ClaimData {
+    pub schema_id: ClaimSchemaId,
+    pub path: String,
+    pub value: Option<String>,
+    pub selectively_disclosable: bool,
 }
-
-type ClaimPath<'a> = &'a str;
-type ClaimValue<'a> = &'a str;
-type TestClaimSchema = Uuid;
 
 #[derive(Debug, Default)]
-pub struct TestingCredentialParams<'a> {
+pub struct TestingCredentialParams {
     pub holder_identifier: Option<Identifier>,
-    pub credential: Option<&'a str>,
     pub interaction: Option<Interaction>,
     pub deleted_at: Option<OffsetDateTime>,
     pub role: Option<CredentialRole>,
     pub key: Option<Key>,
+    pub issuer_certificate: Option<Certificate>,
     pub suspend_end_date: Option<OffsetDateTime>,
     pub random_claims: bool,
-    pub claims_data: Option<Vec<(TestClaimSchema, ClaimPath<'a>, ClaimValue<'a>)>>,
+    pub claims_data: Option<Vec<ClaimData>>,
+    pub profile: Option<String>,
+    pub credential_blob_id: Option<BlobId>,
+    pub wallet_unit_attestation_blob_id: Option<BlobId>,
+    pub wallet_instance_attestation_blob_id: Option<BlobId>,
+    pub webhook_url: Option<String>,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn create_credential(
     db_conn: &DbConn,
     credential_schema: &CredentialSchema,
     state: CredentialStateEnum,
     issuer_identifier: &Identifier,
     exchange: &str,
-    params: TestingCredentialParams<'_>,
+    params: TestingCredentialParams,
 ) -> Credential {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
 
     let credential_id = Uuid::new_v4().into();
+    assert!(params.claims_data.is_none());
     let claims: Vec<Claim> = credential_schema
         .claim_schemas
         .as_ref()
         .unwrap()
         .iter()
         .map(move |claim_schema| Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
-            value: "test".to_string(),
-            schema: Some(claim_schema.schema.to_owned()),
-            path: claim_schema.schema.key.clone(),
+            value: Some("test".to_string()),
+            schema: Some(claim_schema.to_owned()),
+            path: claim_schema.key.clone(),
+            selectively_disclosable: false,
         })
         .collect();
 
@@ -673,21 +771,25 @@ pub async fn create_credential(
         id: credential_id,
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        issuance_date: get_dummy_date(),
+        issuance_date: None,
         deleted_at: params.deleted_at,
-        credential: params.credential.unwrap_or("").as_bytes().to_owned(),
-        exchange: exchange.to_owned(),
+        protocol: exchange.to_owned(),
         redirect_uri: None,
         role: params.role.unwrap_or(CredentialRole::Issuer),
         state,
         suspend_end_date: params.suspend_end_date,
         claims: Some(claims),
         issuer_identifier: Some(issuer_identifier.to_owned()),
+        issuer_certificate: None,
         holder_identifier: params.holder_identifier,
         schema: Some(credential_schema.to_owned()),
         interaction: params.interaction,
-        revocation_list: None,
         key: params.key,
+        profile: None,
+        credential_blob_id: params.credential_blob_id,
+        wallet_unit_attestation_blob_id: params.wallet_unit_attestation_blob_id,
+        wallet_instance_attestation_blob_id: params.wallet_instance_attestation_blob_id,
+        webhook_url: params.webhook_url,
     };
 
     data_layer
@@ -699,15 +801,18 @@ pub async fn create_credential(
     credential
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn create_proof(
     db_conn: &DbConn,
     verifier_identifier: &Identifier,
-    holder_identifier: Option<&Identifier>,
     proof_schema: Option<&ProofSchema>,
     state: ProofStateEnum,
+    role: ProofRole,
     exchange: &str,
     interaction: Option<&Interaction>,
+    verifier_key: Option<&Key>,
+    profile: Option<String>,
+    engagement: Option<String>,
 ) -> Proof {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
 
@@ -729,20 +834,23 @@ pub async fn create_proof(
         id: Uuid::new_v4().into(),
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        issuance_date: get_dummy_date(),
-        exchange: exchange.to_owned(),
+        protocol: exchange.to_owned(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state,
-        role: ProofRole::Verifier,
+        role,
         requested_date,
         completed_date,
         claims: None,
         schema: proof_schema.cloned(),
         verifier_identifier: Some(verifier_identifier.to_owned()),
-        holder_identifier: holder_identifier.cloned(),
-        verifier_key: None,
+        verifier_key: verifier_key.cloned(),
+        verifier_certificate: None,
         interaction: interaction.cloned(),
+        profile,
+        proof_blob_id: None,
+        engagement,
+        webhook_url: None,
     };
 
     data_layer
@@ -765,7 +873,7 @@ pub async fn get_proof(db_conn: &DbConn, proof_id: &ProofId) -> Proof {
                     claim: ClaimRelations {
                         schema: Some(ClaimSchemaRelations {}),
                     },
-                    ..Default::default()
+                    credential: Some(CredentialRelations::default()),
                 }),
                 schema: Some(ProofSchemaRelations {
                     organisation: Some(OrganisationRelations {}),
@@ -778,14 +886,22 @@ pub async fn get_proof(db_conn: &DbConn, proof_id: &ProofId) -> Proof {
                     did: Some(Default::default()),
                     ..Default::default()
                 }),
-                holder_identifier: Some(IdentifierRelations {
-                    did: Some(Default::default()),
-                    ..Default::default()
-                }),
                 verifier_key: Some(KeyRelations::default()),
+                verifier_certificate: Some(Default::default()),
                 interaction: Some(InteractionRelations { organisation: None }),
             },
+            None,
         )
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+pub async fn get_blob(db_conn: &DbConn, blob_id: &BlobId) -> Blob {
+    let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
+    data_layer
+        .get_blob_repository()
+        .get(blob_id)
         .await
         .unwrap()
         .unwrap()
@@ -808,8 +924,7 @@ pub async fn assert_history_count(
         .count();
     assert_eq!(
         num_entries, expected_count,
-        "expected {expected_count} entries with action {:?} for entity {entity_id}, but found {num_entries}",
-        action
+        "expected {expected_count} entries with action {action:?} for entity {entity_id}, but found {num_entries}"
     );
 }
 
@@ -821,4 +936,15 @@ pub fn encrypted_token(token: &str) -> Vec<u8> {
         ),
     )
     .unwrap()
+}
+
+pub fn key_to_claim_schema_id(key: &str, credential_schema: &CredentialSchema) -> ClaimSchemaId {
+    credential_schema
+        .claim_schemas
+        .clone()
+        .unwrap()
+        .into_iter()
+        .find(|claim| claim.key == key)
+        .unwrap()
+        .id
 }

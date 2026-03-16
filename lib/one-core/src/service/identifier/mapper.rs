@@ -14,6 +14,8 @@ impl TryFrom<Identifier> for GetIdentifierResponseDTO {
     fn try_from(value: Identifier) -> Result<Self, Self::Error> {
         let organisation_id = value.organisation.map(|org| org.id);
 
+        let mut certificates = None;
+        let mut certificate_authorities = None;
         match value.r#type {
             IdentifierType::Did => {
                 if value.did.is_none() {
@@ -29,7 +31,32 @@ impl TryFrom<Identifier> for GetIdentifierResponseDTO {
                     ));
                 }
             }
-            IdentifierType::Certificate => {}
+            IdentifierType::Certificate => {
+                let mut certs = vec![];
+                for certificate in value
+                    .certificates
+                    .ok_or(ServiceError::MappingError(format!(
+                        "Certificates required for identifier type {}",
+                        value.r#type
+                    )))?
+                {
+                    certs.push(certificate.try_into()?);
+                }
+                certificates = Some(certs);
+            }
+            IdentifierType::CertificateAuthority => {
+                let mut certs = vec![];
+                for certificate in value
+                    .certificates
+                    .ok_or(ServiceError::MappingError(format!(
+                        "Certificates required for identifier type {}",
+                        value.r#type
+                    )))?
+                {
+                    certs.push(certificate.try_into()?);
+                }
+                certificate_authorities = Some(certs);
+            }
         }
 
         Ok(Self {
@@ -42,8 +69,15 @@ impl TryFrom<Identifier> for GetIdentifierResponseDTO {
             is_remote: value.is_remote,
             state: value.state,
             did: value.did.map(TryInto::try_into).transpose()?,
-            key: value.key.map(TryInto::try_into).transpose()?,
-            certificates: None,
+            key: value
+                .key
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(|err| {
+                    ServiceError::MappingError(format!("Failed to convert key: {err}"))
+                })?,
+            certificates,
+            certificate_authorities,
         })
     }
 }

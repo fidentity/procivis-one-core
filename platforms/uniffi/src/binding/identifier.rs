@@ -5,7 +5,9 @@ use one_core::model::identifier::{
     IdentifierFilterValue, IdentifierListQuery, IdentifierState, IdentifierType,
     SortableIdentifierColumn,
 };
-use one_core::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
+use one_core::model::list_filter::{
+    ComparisonType, ListFilterValue, StringMatch, StringMatchType, ValueComparison,
+};
 use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::certificate::dto::{
     CertificateResponseDTO, CertificateX509AttributesDTO, CertificateX509ExtensionDTO,
@@ -13,8 +15,9 @@ use one_core::service::certificate::dto::{
 };
 use one_core::service::did::dto::{DidResponseDTO, DidResponseKeysDTO};
 use one_core::service::identifier::dto::{
-    CreateIdentifierRequestDTO, GetIdentifierListItemResponseDTO, GetIdentifierListResponseDTO,
-    GetIdentifierResponseDTO,
+    CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
+    CreateIdentifierRequestDTO, CreateSelfSignedCertificateAuthorityRequestDTO,
+    GetIdentifierListItemResponseDTO, GetIdentifierListResponseDTO, GetIdentifierResponseDTO,
 };
 use one_core::service::key::dto::{KeyListItemResponseDTO, KeyResponseDTO};
 use one_dto_mapper::{
@@ -25,8 +28,10 @@ use one_dto_mapper::{
 use super::common::SortDirection;
 use super::did::{DidTypeBindingEnum, KeyRoleBindingEnum};
 use crate::OneCoreBinding;
+use crate::binding::key::KeyGenerateCSRRequestSubjectBindingDTO;
+use crate::binding::mapper::deserialize_timestamp;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
-use crate::utils::{TimestampFormat, from_id_opt, into_id, into_id_opt};
+use crate::utils::{TimestampFormat, from_id_opt, into_id, into_id_opt, into_timestamp_opt};
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCoreBinding {
@@ -50,6 +55,7 @@ impl OneCoreBinding {
     ) -> Result<GetIdentifierListBindingDTO, BindingError> {
         let core = self.use_core().await?;
 
+        let organisation_id = into_id(&query.organisation_id)?;
         let condition = {
             let exact = query.exact.unwrap_or_default();
             let get_string_match_type = |column| {
@@ -60,8 +66,7 @@ impl OneCoreBinding {
                 }
             };
 
-            let organisation =
-                IdentifierFilterValue::OrganisationId(into_id(&query.organisation_id)?).condition();
+            let organisation = IdentifierFilterValue::OrganisationId(organisation_id).condition();
 
             let name = query.name.map(|name| {
                 IdentifierFilterValue::Name(StringMatch {
@@ -75,8 +80,8 @@ impl OneCoreBinding {
                 .map(|types| IdentifierFilterValue::Types(convert_inner(types)));
 
             let state = query
-                .state
-                .map(|state| IdentifierFilterValue::State(state.into()));
+                .states
+                .map(|states| IdentifierFilterValue::States(convert_inner(states)));
 
             let did_methods = query.did_methods.map(IdentifierFilterValue::DidMethods);
 
@@ -92,6 +97,44 @@ impl OneCoreBinding {
 
             let key_storages = query.key_storages.map(IdentifierFilterValue::KeyStorages);
 
+            let created_date_after = query
+                .created_date_after
+                .map(|date| {
+                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let created_date_before = query
+                .created_date_before
+                .map(|date| {
+                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
+            let last_modified_after = query
+                .last_modified_after
+                .map(|date| {
+                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let last_modified_before = query
+                .last_modified_before
+                .map(|date| {
+                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
             organisation
                 & name
                 & types
@@ -101,6 +144,10 @@ impl OneCoreBinding {
                 & key_algorithms
                 & key_roles
                 & key_storages
+                & created_date_after
+                & created_date_before
+                & last_modified_after
+                & last_modified_before
         };
 
         let sorting = query.sort.map(|sort| ListSorting {
@@ -120,7 +167,7 @@ impl OneCoreBinding {
 
         Ok(core
             .identifier_service
-            .get_identifier_list(query)
+            .get_identifier_list(&organisation_id, query)
             .await?
             .into())
     }
@@ -246,6 +293,8 @@ pub struct KeyResponseBindingDTO {
 pub struct CertificateResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
+    #[from(with_fn_ref = "ToString::to_string")]
+    pub identifier_id: String,
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
     pub created_date: String,
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
@@ -319,13 +368,18 @@ pub struct IdentifierListQueryBindingDTO {
     pub organisation_id: String,
     pub name: Option<String>,
     pub types: Option<Vec<IdentifierTypeBindingEnum>>,
-    pub state: Option<IdentifierStateBindingEnum>,
+    pub states: Option<Vec<IdentifierStateBindingEnum>>,
     pub exact: Option<Vec<ExactIdentifierFilterColumnBindingEnum>>,
     pub did_methods: Option<Vec<String>>,
     pub is_remote: Option<bool>,
     pub key_algorithms: Option<Vec<String>>,
     pub key_roles: Option<Vec<KeyRoleBindingEnum>>,
     pub key_storages: Option<Vec<String>>,
+
+    pub created_date_after: Option<String>,
+    pub created_date_before: Option<String>,
+    pub last_modified_after: Option<String>,
+    pub last_modified_before: Option<String>,
 }
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
@@ -349,6 +403,7 @@ pub enum IdentifierTypeBindingEnum {
     Key,
     Did,
     Certificate,
+    CertificateAuthority,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
@@ -362,16 +417,21 @@ pub enum IdentifierStateBindingEnum {
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateIdentifierRequestDTO, Error = ErrorResponseBindingDTO)]
 pub struct CreateIdentifierRequestBindingDTO {
-    #[try_into(with_fn_ref = "into_id")]
+    #[try_into(with_fn_ref = into_id)]
     pub organisation_id: String,
     #[try_into(infallible)]
     pub name: String,
-    #[try_into(with_fn = "into_id_opt")]
+    /// Deprecated. Use the `key` field instead.
+    #[try_into(with_fn = into_id_opt)]
     pub key_id: Option<String>,
-    #[try_into(with_fn = "try_convert_inner")]
+    #[try_into(with_fn = try_convert_inner)]
+    pub key: Option<CreateIdentifierKeyRequestBindingDTO>,
+    #[try_into(with_fn = try_convert_inner)]
     pub did: Option<CreateIdentifierDidRequestBindingDTO>,
-    #[try_into(with_fn = "try_convert_inner_of_inner")]
+    #[try_into(with_fn = try_convert_inner_of_inner)]
     pub certificates: Option<Vec<CreateCertificateRequestBindingDTO>>,
+    #[try_into(with_fn = try_convert_inner_of_inner)]
+    pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestBindingDTO>>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -383,6 +443,13 @@ pub struct CreateIdentifierDidRequestBindingDTO {
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
+#[try_into(T = CreateIdentifierKeyRequestDTO, Error = ErrorResponseBindingDTO)]
+pub struct CreateIdentifierKeyRequestBindingDTO {
+    #[try_into(with_fn = into_id)]
+    pub key_id: String,
+}
+
+#[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateCertificateRequestDTO, Error = ErrorResponseBindingDTO)]
 pub struct CreateCertificateRequestBindingDTO {
     #[try_into(infallible)]
@@ -391,4 +458,35 @@ pub struct CreateCertificateRequestBindingDTO {
     pub chain: String,
     #[try_into(with_fn_ref = "into_id")]
     pub key_id: String,
+}
+
+#[derive(Clone, Debug, TryInto, uniffi::Record)]
+#[try_into(T = CreateCertificateAuthorityRequestDTO, Error = ErrorResponseBindingDTO)]
+pub struct CreateCertificateAuthorityRequestBindingDTO {
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub name: Option<String>,
+    #[try_into(with_fn_ref = "into_id")]
+    pub key_id: String,
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub chain: Option<String>,
+    #[try_into(with_fn = try_convert_inner)]
+    pub self_signed: Option<CreateSelfSignedCertificateAuthorityRequestBindingDTO>,
+}
+
+#[derive(Clone, Debug, TryInto, uniffi::Record)]
+#[try_into(T = CreateSelfSignedCertificateAuthorityRequestDTO, Error = ErrorResponseBindingDTO)]
+pub struct CreateSelfSignedCertificateAuthorityRequestBindingDTO {
+    #[try_into(infallible)]
+    pub content: CreateCaCSRRequestBindingDTO,
+    #[try_into(infallible)]
+    pub signer: String,
+    #[try_into(with_fn = "into_timestamp_opt")]
+    pub validity_start: Option<String>,
+    #[try_into(with_fn = "into_timestamp_opt")]
+    pub validity_end: Option<String>,
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct CreateCaCSRRequestBindingDTO {
+    pub subject: KeyGenerateCSRRequestSubjectBindingDTO,
 }

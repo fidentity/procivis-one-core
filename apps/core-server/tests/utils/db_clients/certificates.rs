@@ -3,7 +3,7 @@ use std::sync::Arc;
 use one_core::model::certificate::{Certificate, CertificateRelations, CertificateState};
 use one_core::model::key::Key;
 use one_core::repository::certificate_repository::CertificateRepository;
-use shared_types::{CertificateId, IdentifierId};
+use shared_types::{CertificateId, IdentifierId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -17,8 +17,27 @@ pub struct TestingCertificateParams {
     pub expiry_date: Option<OffsetDateTime>,
     pub name: Option<String>,
     pub chain: Option<String>,
+    pub fingerprint: Option<String>,
     pub state: Option<CertificateState>,
     pub key: Option<Key>,
+    pub organisation_id: Option<OrganisationId>,
+}
+
+impl From<Certificate> for TestingCertificateParams {
+    fn from(certificate: Certificate) -> Self {
+        Self {
+            id: Some(certificate.id),
+            created_date: Some(certificate.created_date),
+            last_modified: Some(certificate.last_modified),
+            expiry_date: Some(certificate.expiry_date),
+            name: Some(certificate.name),
+            chain: Some(certificate.chain),
+            fingerprint: Some(certificate.fingerprint),
+            state: Some(certificate.state),
+            key: certificate.key,
+            organisation_id: certificate.organisation_id,
+        }
+    }
 }
 
 pub struct CertificatesDB {
@@ -45,9 +64,10 @@ impl CertificatesDB {
             expiry_date: params.expiry_date.unwrap_or(now),
             name: unwrap_or_random(params.name),
             chain: unwrap_or_random(params.chain),
+            fingerprint: unwrap_or_random(params.fingerprint),
             state: params.state.unwrap_or(CertificateState::Active),
             key: params.key,
-            organisation: None,
+            organisation_id: params.organisation_id,
         };
 
         self.repository.create(certificate.clone()).await.unwrap();

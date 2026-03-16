@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
-use json_ld::rdf_types::{self};
+use json_ld::rdf_types;
 use sophia_api::quad::Spog;
 
-use crate::provider::credential_formatter::json_ld::canonization::TermAdapter;
+use crate::util::rdf_canonization::TermAdapter;
 
-mod base_proof;
-pub use base_proof::*;
+pub mod base_proof;
 
 mod derived_proof;
 pub use derived_proof::*;

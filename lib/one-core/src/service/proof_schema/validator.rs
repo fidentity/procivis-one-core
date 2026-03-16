@@ -2,17 +2,17 @@ use std::collections::HashSet;
 
 use itertools::Itertools;
 use shared_types::OrganisationId;
-use time::{Duration, OffsetDateTime};
 
 use super::ProofSchemaImportError;
 use super::dto::{
     CreateProofSchemaRequestDTO, ImportProofSchemaClaimSchemaDTO, ImportProofSchemaDTO,
     ProofInputSchemaRequestDTO,
 };
-use crate::common_mapper::NESTED_CLAIM_MARKER;
-use crate::config::core_config::{CoreConfig, FormatType};
+use crate::config::core_config::{ConfigExt, CoreConfig};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::NESTED_CLAIM_MARKER;
 use crate::model::claim_schema::ClaimSchema;
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaClaim};
+use crate::model::credential_schema::CredentialSchema;
 use crate::provider::credential_formatter::CredentialFormatter;
 use crate::provider::credential_formatter::model::{Features, SelectiveDisclosure};
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
@@ -29,51 +29,35 @@ pub async fn proof_schema_name_already_exists(
 ) -> Result<(), ServiceError> {
     let proof_schemas = repository
         .get_proof_schema_list(create_unique_name_check_request(name, organisation_id)?)
-        .await?;
+        .await
+        .error_while("getting proof schemas")?;
     if proof_schemas.total_items > 0 {
         return Err(BusinessLogicError::ProofSchemaAlreadyExists.into());
     }
     Ok(())
 }
 
-pub fn throw_if_validity_constraint_missing_for_lvvc(
-    credential_schemas: &Vec<CredentialSchema>,
-    request: &CreateProofSchemaRequestDTO,
-) -> Result<(), ValidationError> {
-    for credential_schema in credential_schemas {
-        let input_schema = request
-            .proof_input_schemas
-            .iter()
-            .find(|input| input.credential_schema_id == credential_schema.id)
-            .ok_or(ValidationError::ProofSchemaMissingProofInputSchemas)?;
-        if credential_schema.revocation_method == "LVVC"
-            && input_schema.validity_constraint.is_none()
-        {
-            return Err(ValidationError::ValidityConstraintMissingForLvvc);
-        }
-    }
-    Ok(())
-}
-
-pub fn throw_if_proof_schema_contains_physical_card_schema_with_other_schemas(
+pub fn throw_if_invalid_credential_combination(
     schemas: &[CredentialSchema],
-    config: &CoreConfig,
-) -> Result<(), ValidationError> {
-    let mut contains_physical_card = false;
+    formatter_provider: &dyn CredentialFormatterProvider,
+) -> Result<(), ServiceError> {
+    if schemas.len() > 1 {
+        for schema in schemas {
+            let formatter = formatter_provider
+                .get_credential_formatter(&schema.format)
+                .ok_or(MissingProviderError::Formatter(schema.format.to_string()))?;
 
-    for schema in schemas {
-        let format = config
-            .format
-            .get_if_enabled(schema.format.as_str())
-            .map_err(|_| ValidationError::InvalidFormatter(schema.format.to_owned()))?;
-        if format.r#type == FormatType::PhysicalCard {
-            contains_physical_card = true;
-            break;
+            if !formatter
+                .get_capabilities()
+                .features
+                .contains(&Features::SupportsCombinedPresentation)
+            {
+                return Err(ValidationError::ProofSchemaInvalidCredentialCombination {
+                    credential_format: schema.format.to_string(),
+                }
+                .into());
+            }
         }
-    }
-
-    if contains_physical_card && schemas.len() > 1 {
-        return Err(ValidationError::OnlyOnePhysicalCardSchemaAllowedPerProof);
     }
 
     Ok(())
@@ -105,8 +89,6 @@ pub fn validate_create_request(
         {
             return Err(ValidationError::ProofSchemaDuplicitClaim);
         }
-
-        check_if_validity_constraint_is_correct(proof_input)?;
     }
 
     Ok(())
@@ -126,7 +108,7 @@ pub fn extract_claims_from_credential_schema(
                 .ok_or_else(|| ServiceError::MappingError("Missing credential schema".into()))?;
 
             let formatter = formatter_provider
-                .get_formatter(&credential_schema.format.to_string())
+                .get_credential_formatter(&credential_schema.format)
                 .ok_or(MissingProviderError::Formatter(
                     credential_schema.format.to_string(),
                 ))?;
@@ -140,8 +122,8 @@ pub fn extract_claims_from_credential_schema(
             Ok::<_, ServiceError>(proof_input.claim_schemas.iter().map(move |proof_claim| {
                 claims
                     .iter()
-                    .find(|schema_claim| schema_claim.schema.id == proof_claim.id)
-                    .map(|schema_claim| schema_claim.schema.clone())
+                    .find(|schema_claim| schema_claim.id == proof_claim.id)
+                    .cloned()
                     .ok_or_else(|| {
                         ServiceError::BusinessLogic(BusinessLogicError::MissingClaimSchema {
                             claim_schema_id: proof_claim.id,
@@ -175,11 +157,11 @@ fn validate_proof_schema_claim_not_in_array(
     }
 }
 
-fn collect_lists(claims: &[CredentialSchemaClaim]) -> HashSet<String> {
+fn collect_lists(claims: &[ClaimSchema]) -> HashSet<String> {
     claims
         .iter()
-        .filter_map(|c| match c.schema.array {
-            true => Some(c.schema.key.to_owned()),
+        .filter_map(|c| match c.array {
+            true => Some(c.key.to_owned()),
             _ => None,
         })
         .collect()
@@ -224,7 +206,7 @@ pub(super) fn validate_imported_proof_schema(
         config
             .format
             .get_if_enabled(format)
-            .map_err(|_| ProofSchemaImportError::UnsupportedFormat(format.to_owned()))?;
+            .map_err(|_| ProofSchemaImportError::UnsupportedFormat(format.to_string()))?;
 
         validate_imported_proof_schema_data_types(&schema.claim_schemas, config)?;
     }
@@ -244,26 +226,6 @@ fn validate_imported_proof_schema_data_types(
             .map_err(|_| ProofSchemaImportError::UnsupportedDatatype(datatype.to_owned()))?;
 
         validate_imported_proof_schema_data_types(&claim_schema.claims, config)?;
-    }
-
-    Ok(())
-}
-
-fn check_if_validity_constraint_is_correct(
-    input_schema: &ProofInputSchemaRequestDTO,
-) -> Result<(), ValidationError> {
-    let now = OffsetDateTime::now_utc();
-
-    if let Some(validity_constraint) = input_schema.validity_constraint.as_ref() {
-        if now
-            .checked_sub(Duration::seconds(*validity_constraint))
-            .is_none()
-            || now
-                .checked_add(Duration::seconds(*validity_constraint))
-                .is_none()
-        {
-            return Err(ValidationError::ValidityConstraintOutOfRange);
-        }
     }
 
     Ok(())

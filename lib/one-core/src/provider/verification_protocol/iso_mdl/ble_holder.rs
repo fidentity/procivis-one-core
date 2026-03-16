@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use shared_types::{OrganisationId, ProofId};
 use tokio::sync::oneshot;
@@ -14,31 +15,37 @@ use super::common::{
 };
 use super::device_engagement::DeviceEngagement;
 use super::session::{Command, SessionData, SessionEstablishment, StatusCode};
+use crate::config::core_config::VerificationEngagement;
+use crate::error::ErrorCode::BR_0000;
+use crate::error::{ContextWithErrorCode, ErrorCodeMixin, ErrorCodeMixinExt};
 use crate::model::history::HistoryErrorMetadata;
 use crate::model::interaction::Interaction;
 use crate::model::proof::{ProofStateEnum, UpdateProofRequest};
-use crate::provider::bluetooth_low_energy::low_level::ble_peripheral::BlePeripheral;
-use crate::provider::bluetooth_low_energy::low_level::dto::{
+use crate::proto::bluetooth_low_energy::ble_resource::{BleWaiter, OnConflict, ScheduleResult};
+use crate::proto::bluetooth_low_energy::low_level::ble_peripheral::TrackingBlePeripheral;
+use crate::proto::bluetooth_low_energy::low_level::dto::{
     CharacteristicPermissions, CharacteristicProperties, ConnectionEvent,
     CreateCharacteristicOptions, DeviceAddress, DeviceInfo, ServiceDescription,
 };
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{
-    Bstr, DeviceResponse, EmbeddedCbor,
-};
+use crate::proto::nfc::hce::NfcHce;
+use crate::proto::nfc::static_handover_handler::NfcStaticHandoverHandler;
+use crate::provider::credential_formatter::mdoc_formatter::util::{Bstr, EmbeddedCbor};
+use crate::provider::presentation_formatter::mso_mdoc::model::DeviceResponse;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::Handover;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::nfc::NFCHandover;
 use crate::provider::verification_protocol::{
     VerificationProtocolError, deserialize_interaction_data,
 };
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::repository::proof_repository::ProofRepository;
-use crate::service::error::ErrorCode::BR_0000;
-use crate::service::error::{ErrorCodeMixin, ServiceError};
-use crate::util::ble_resource::{BleWaiter, OnConflict, ScheduleResult};
+use crate::service::error::ServiceError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MdocBleHolderInteractionData {
     // known from the beginning
     pub organisation_id: OrganisationId,
     pub service_uuid: Uuid,
+    pub engagement: HashSet<VerificationEngagement>,
 
     // currently latest scheduled task identifier
     pub continuation_task_id: Uuid,
@@ -84,9 +91,7 @@ pub(crate) async fn start_mdl_server(ble: &BleWaiter) -> Result<ServerInfo, Serv
                     )
                     .await
             },
-            |_, peripheral| async move {
-                stop_ble_peripheral(&*peripheral).await;
-            },
+            |_, _| async move {},
             OnConflict::ReplaceIfSameFlow,
             true,
         )
@@ -96,7 +101,7 @@ pub(crate) async fn start_mdl_server(ble: &BleWaiter) -> Result<ServerInfo, Serv
 
     let mac_address = result
         .ok_or(ServiceError::Other("flow was aborted".into()))?
-        .map_err(|err| ServiceError::Other(format!("ble error: {err}")))?;
+        .error_while("starting BLE server")?;
 
     Ok(ServerInfo {
         task_id,
@@ -105,33 +110,55 @@ pub(crate) async fn start_mdl_server(ble: &BleWaiter) -> Result<ServerInfo, Serv
     })
 }
 
+pub(crate) struct NfcHceSession {
+    pub handler: Arc<NfcStaticHandoverHandler>,
+    pub hce: Arc<dyn NfcHce>,
+    pub select_message: Vec<u8>,
+    pub device_engagement: EmbeddedCbor<DeviceEngagement>,
+}
+
 /// Waits for verifier connection + reads device request
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn receive_mdl_request(
     ble: &BleWaiter,
-    device_engagement: EmbeddedCbor<DeviceEngagement>,
     key_pair: KeyAgreement<EDeviceKey>,
     interaction_repository: Arc<dyn InteractionRepository>,
     mut interaction: Interaction,
     proof_repository: Arc<dyn ProofRepository>,
     proof_id: ProofId,
+    qr_engagement: Option<EmbeddedCbor<DeviceEngagement>>,
+    nfc_engagement: Option<NfcHceSession>,
 ) -> Result<(), ServiceError> {
     let (tx, rx) = oneshot::channel();
     let proof_repository_clone = proof_repository.clone();
 
     let interaction_data: MdocBleHolderInteractionData =
-        deserialize_interaction_data(interaction.data.as_ref())?;
+        deserialize_interaction_data(interaction.data.as_ref())
+            .error_while("parsing interaction data")?;
 
     let ScheduleResult::Scheduled { .. } = ble
         .schedule_continuation(
             interaction_data.continuation_task_id,
             |task_id, _, peripheral| async move {
-                let info = wait_for_device(&*peripheral, interaction_data.service_uuid).await;
+                let result = wait_to_finish_engagement(
+                    &peripheral,
+                    interaction_data.service_uuid,
+                    &qr_engagement,
+                    &nfc_engagement,
+                )
+                .await;
 
-                if info.is_err() {
-                    stop_ble_peripheral(&*peripheral).await;
-                }
-
-                let info = info?;
+                let info = match result {
+                    Ok(info) => info,
+                    Err(err) => {
+                        let error_metadata = HistoryErrorMetadata {
+                            error_code: err.error_code(),
+                            message: err.to_string(),
+                        };
+                        set_proof_error(&*proof_repository, &proof_id, error_metadata).await;
+                        return Err(err);
+                    }
+                };
 
                 let result = tx.send(info.clone());
                 if let Err(device_info) = result {
@@ -139,12 +166,52 @@ pub(crate) async fn receive_mdl_request(
                 }
 
                 let result = async {
+                    let (engagement_type, handover, device_engagement) = match nfc_engagement {
+                        None => {
+                            // NFC not used, the engagement must have been via QR-code
+                            (VerificationEngagement::QrCode, None, qr_engagement)
+                        }
+                        Some(NfcHceSession {
+                            handler,
+                            hce,
+                            select_message,
+                            device_engagement,
+                        }) => {
+                            if handler
+                                .message_read()
+                                .error_while("checking message read")?
+                            {
+                                // the NFC select message was read by a remote device, continue as NFC engaged
+                                (
+                                    VerificationEngagement::NFC,
+                                    Some(Handover::Nfc(NFCHandover {
+                                        select_message: Bstr(select_message),
+                                        request_message: None,
+                                    })),
+                                    Some(device_engagement),
+                                )
+                            } else {
+                                // no NFC contact, the engagement must have been via QR-code
+                                hce.stop_hosting(true)
+                                    .await
+                                    .error_while("stopping NFC hosting")?;
+
+                                (VerificationEngagement::QrCode, None, qr_engagement)
+                            }
+                        }
+                    };
+
+                    let device_engagement = device_engagement.ok_or(
+                        VerificationProtocolError::Failed("Missing device engagement".to_string()),
+                    )?;
+
                     let session_establishment =
-                        read_request(&*peripheral, &info, interaction_data.service_uuid).await?;
+                        read_request(&peripheral, &info, interaction_data.service_uuid).await?;
 
                     let session_transcript_bytes = create_session_transcript_bytes(
-                        device_engagement.clone(),
+                        device_engagement,
                         session_establishment.e_reader_key.clone(),
+                        handover,
                     )?;
 
                     let (sk_device, sk_reader) = key_pair
@@ -160,51 +227,44 @@ pub(crate) async fn receive_mdl_request(
                         .map_err(VerificationProtocolError::Other)?;
 
                     let device_request: DeviceRequest =
-                        ciborium::from_reader(device_request_bytes.as_slice())
-                            .context("device request deserialization error")
-                            .map_err(VerificationProtocolError::Other)?;
+                        ciborium::from_reader(device_request_bytes.as_slice())?;
 
                     if device_request.version != "1.0" {
-                        return Err(VerificationProtocolError::Other(anyhow!(
-                            "unsupported request version"
-                        )));
+                        return Err(VerificationProtocolError::Failed(
+                            "unsupported request version".to_string(),
+                        ));
                     }
 
-                    interaction.data = Some(
-                        serde_json::to_vec(&MdocBleHolderInteractionData {
-                            continuation_task_id: task_id,
-                            session: Some(MdocBleHolderInteractionSessionData {
-                                sk_device,
-                                sk_reader,
-                                device_address: info.address.clone(),
-                                device_request_bytes,
-                                mtu: info.mtu(),
-                                session_transcript_bytes: session_transcript_bytes.into_bytes(),
-                            }),
-                            ..interaction_data
-                        })
-                        .context("interaction serialization error")
-                        .map_err(VerificationProtocolError::Other)?,
-                    );
+                    interaction.data = Some(serde_json::to_vec(&MdocBleHolderInteractionData {
+                        continuation_task_id: task_id,
+                        session: Some(MdocBleHolderInteractionSessionData {
+                            sk_device,
+                            sk_reader,
+                            device_address: info.address.clone(),
+                            device_request_bytes,
+                            mtu: info.mtu(),
+                            session_transcript_bytes: session_transcript_bytes.into_bytes(),
+                        }),
+                        ..interaction_data
+                    })?);
 
                     interaction_repository
-                        .update_interaction(interaction.into())
+                        .update_interaction(interaction.id, interaction.into())
                         .await
-                        .context("failed to save interaction")
-                        .map_err(VerificationProtocolError::Other)?;
+                        .error_while("updating interaction")?;
 
                     proof_repository
                         .update_proof(
                             &proof_id,
                             UpdateProofRequest {
                                 state: Some(ProofStateEnum::Requested),
+                                engagement: Some(Some(engagement_type.to_string())),
                                 ..Default::default()
                             },
                             None,
                         )
                         .await
-                        .context("failed to update proof state")
-                        .map_err(VerificationProtocolError::Other)?;
+                        .error_while("updating proof")?;
 
                     Ok::<_, VerificationProtocolError>(())
                 }
@@ -216,7 +276,7 @@ pub(crate) async fn receive_mdl_request(
                         message: err.to_string(),
                     };
                     set_proof_error(&*proof_repository, &proof_id, error_metadata).await;
-                    abort(&*peripheral, Some(&info), interaction_data.service_uuid).await;
+                    notify_end(&peripheral, Some(&info), interaction_data.service_uuid).await;
                 }
 
                 result
@@ -227,8 +287,8 @@ pub(crate) async fn receive_mdl_request(
                     message: "Propose proof was cancelled".to_string(),
                 };
                 set_proof_error(&*proof_repository_clone, &proof_id, error_metadata).await;
-                abort(
-                    &*peripheral,
+                notify_end(
+                    &peripheral,
                     rx.await.ok().as_ref(),
                     interaction_data.service_uuid,
                 )
@@ -261,7 +321,7 @@ pub(crate) async fn send_mdl_response(
     let encrypted_device_response = interaction_session_data
         .sk_device
         .encrypt(&device_response_bytes)
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+        .map_err(VerificationProtocolError::Other)?;
 
     let session_data = SessionData {
         data: Some(Bstr(encrypted_device_response)),
@@ -270,7 +330,7 @@ pub(crate) async fn send_mdl_response(
     let session_data_bytes = to_cbor(&session_data)?;
 
     let chunks = split_into_chunks(session_data_bytes, interaction_session_data.mtu as _)
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+        .map_err(VerificationProtocolError::Other)?;
 
     let (_, result) = ble
         .schedule_continuation(
@@ -285,11 +345,7 @@ pub(crate) async fn send_mdl_response(
                             &chunk,
                         )
                         .await
-                        .map_err(|e| {
-                            VerificationProtocolError::Failed(format!(
-                                "Unable to send response: {e}"
-                            ))
-                        })?;
+                        .error_while("notifying Server2Client data")?;
                 }
 
                 // End command signal not necessary, since we signal SessionTermination via SessionData status
@@ -297,15 +353,9 @@ pub(crate) async fn send_mdl_response(
                 // Wait for device disconnection here (but this means blocking UI)
                 tokio::time::sleep(Duration::from_millis(200)).await;
 
-                peripheral.stop_server().await.map_err(|e| {
-                    VerificationProtocolError::Failed(format!("Unable to stop server: {e}"))
-                })?;
-
                 Ok::<_, VerificationProtocolError>(())
             },
-            move |_, peripheral| async move {
-                stop_ble_peripheral(&*peripheral).await;
-            },
+            move |_, _| async move {},
             false,
         )
         .await
@@ -321,67 +371,115 @@ pub(crate) async fn send_mdl_response(
     Ok(())
 }
 
-async fn wait_for_device(
-    peripheral: &dyn BlePeripheral,
+async fn wait_to_finish_engagement(
+    peripheral: &TrackingBlePeripheral,
     service_uuid: Uuid,
+    qr_engagement: &Option<EmbeddedCbor<DeviceEngagement>>,
+    nfc_engagement: &Option<NfcHceSession>,
 ) -> Result<DeviceInfo, VerificationProtocolError> {
-    let info = loop {
-        if let Some(info) = peripheral
-            .get_connection_change_events()
-            .await
-            .context("failed to get connection change events")
-            .map_err(VerificationProtocolError::Transport)?
-            .into_iter()
-            .filter_map(|info| match info {
-                ConnectionEvent::Connected { device_info } => Some(device_info),
-                ConnectionEvent::Disconnected { .. } => None,
-            })
-            .next()
-        {
-            break info;
+    let connected_device_future = wait_for_active_device(peripheral, service_uuid);
+
+    let info = match (qr_engagement, nfc_engagement) {
+        (None, None) => Err(VerificationProtocolError::Failed(
+            "No engagement".to_string(),
+        )),
+        // if running only NFC engagement, failure of NFC session means failure of the whole proof flow
+        (None, Some(nfc_only)) => {
+            let session_failure_future =
+                nfc_only
+                    .handler
+                    .session_failure()
+                    .ok_or(VerificationProtocolError::Failed(
+                        "NFC session failure receiver not available".to_string(),
+                    ))?;
+            tokio::select! {
+                connected_device = connected_device_future => connected_device,
+                failure_reason = session_failure_future => {
+                    Err(match failure_reason {
+                        Ok(nfc_error) => nfc_error.error_while("NFC engagement").into(),
+                        Err(rcv_error) => VerificationProtocolError::Failed(format!("NFC session failure: {rcv_error}")),
+                    })
+                }
+            }
         }
-    };
+        // if running QR engagement, then we can ignore NFC failure since QR-code engagement is still possible
+        (Some(_qr), _) => connected_device_future.await,
+    }?;
 
     peripheral
         .stop_advertisement()
         .await
-        .context("failed to stop advertisement")
-        .map_err(VerificationProtocolError::Transport)?;
-
-    wait_for_start(peripheral, &info, service_uuid).await?;
+        .error_while("stopping BLE advertisement")?;
 
     Ok(info)
 }
 
+async fn wait_for_active_device(
+    peripheral: &TrackingBlePeripheral,
+    service_uuid: Uuid,
+) -> Result<DeviceInfo, VerificationProtocolError> {
+    loop {
+        let connected_devices = peripheral
+            .get_connection_change_events()
+            .await
+            .error_while("waiting for BLE connection event")?
+            .into_iter()
+            .filter_map(|info| match info {
+                ConnectionEvent::Connected { device_info } => Some(device_info),
+                ConnectionEvent::Disconnected { .. } => None,
+            });
+
+        for connected_device in connected_devices {
+            tracing::debug!("device connected: {connected_device:?}");
+
+            if wait_for_start(peripheral, &connected_device, service_uuid).await? {
+                return Ok(connected_device);
+            }
+        }
+    }
+}
+
+/// Wait for Start command according to ISO 18013-5 (8.3.3.1.1.6 Data retrieval)
+///
+/// - returns `true` if Start command was written
+/// - returns `false` if no command was written and reconnection should happen
 async fn wait_for_start(
-    peripheral: &dyn BlePeripheral,
+    peripheral: &TrackingBlePeripheral,
     info: &DeviceInfo,
     service_uuid: Uuid,
-) -> Result<(), VerificationProtocolError> {
-    let command: Command = peripheral
+) -> Result<bool, VerificationProtocolError> {
+    let command_written = match peripheral
         .get_characteristic_writes(
             info.address.clone(),
             service_uuid.to_string(),
             STATE.to_string(),
         )
         .await
-        .context("failed to read client state")
-        .map_err(VerificationProtocolError::Transport)?
-        .concat()
+    {
+        Ok(writes) => writes.concat(),
+        Err(err) => {
+            tracing::warn!("Failed to receive State command: {err}");
+            // according to ISO 18013-5 (8.3.3.1.1.8 Connection re-establishment),
+            // re-connection in this phase is allowed
+            return Ok(false);
+        }
+    };
+
+    let command: Command = command_written
         .try_into()
-        .map_err(VerificationProtocolError::Transport)?;
+        .map_err(VerificationProtocolError::Other)?;
 
     if command == Command::Start {
-        Ok(())
+        Ok(true)
     } else {
-        Err(VerificationProtocolError::Transport(anyhow!(
-            "invalid command"
-        )))
+        Err(VerificationProtocolError::Failed(
+            "invalid command".to_string(),
+        ))
     }
 }
 
 async fn read_request(
-    peripheral: &dyn BlePeripheral,
+    peripheral: &TrackingBlePeripheral,
     info: &DeviceInfo,
     service_uuid: Uuid,
 ) -> Result<SessionEstablishment, VerificationProtocolError> {
@@ -395,29 +493,24 @@ async fn read_request(
                 CLIENT_2_SERVER.into(),
             )
             .await
-            .context("failed to read request")
-            .map_err(VerificationProtocolError::Transport)?;
+            .error_while("waiting for Client2Server characteristic write")?;
 
         for msg in data {
-            let chunk: Chunk = msg
-                .try_into()
-                .map_err(VerificationProtocolError::Transport)?;
+            let chunk: Chunk = msg.try_into().map_err(VerificationProtocolError::Other)?;
             match chunk {
                 Chunk::Next(payload) => result.extend(payload),
                 Chunk::Last(payload) => {
                     result.extend(payload);
 
-                    return ciborium::from_reader(result.as_slice())
-                        .context("deserialization error")
-                        .map_err(VerificationProtocolError::Other);
+                    return Ok(ciborium::from_reader(result.as_slice())?);
                 }
             }
         }
     }
 }
 
-pub(crate) async fn abort(
-    peripheral: &dyn BlePeripheral,
+pub(crate) async fn notify_end(
+    peripheral: &TrackingBlePeripheral,
     device_info: Option<&DeviceInfo>,
     service_uuid: Uuid,
 ) {
@@ -434,13 +527,6 @@ pub(crate) async fn abort(
             tracing::warn!("Failed to notify characteristic data: {err}");
         }
     }
-    stop_ble_peripheral(peripheral).await;
-}
-
-async fn stop_ble_peripheral(peripheral: &dyn BlePeripheral) {
-    if let Err(err) = peripheral.stop_server().await {
-        tracing::warn!("failed to stop BLE peripheral: {err}");
-    }
 }
 
 pub(crate) async fn set_proof_error(
@@ -448,6 +534,7 @@ pub(crate) async fn set_proof_error(
     proof_id: &ProofId,
     error_metadata: HistoryErrorMetadata,
 ) {
+    tracing::debug!("set_proof_error: {proof_id}, metadata: {error_metadata:?}");
     if let Err(err) = proof_repository
         .update_proof(
             proof_id,

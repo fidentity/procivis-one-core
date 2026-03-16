@@ -7,42 +7,43 @@ use one_crypto::Hasher;
 use one_crypto::hasher::sha256::SHA256;
 use secrecy::ExposeSecret;
 use serde_json::json;
-use shared_types::DidId;
+use shared_types::{CredentialFormat, DidId, InteractionId};
+use similar_asserts::assert_eq;
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::OID4VCIDraft13Service;
 use crate::config::core_config::{CoreConfig, KeyAlgorithmType};
+use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaRelations, CredentialSchemaType,
-    LayoutType, WalletStorageTypeEnum,
-};
-use crate::model::did::{Did, DidType};
-use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
-use crate::model::interaction::Interaction;
-use crate::model::key::{PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::credential_schema::{CredentialSchema, CredentialSchemaRelations, LayoutType};
+use crate::model::did::Did;
+use crate::model::identifier::{Identifier, IdentifierType};
+use crate::model::interaction::{Interaction, InteractionType};
 use crate::model::organisation::{Organisation, OrganisationRelations};
+use crate::proto::certificate_validator::MockCertificateValidator;
+use crate::proto::identifier_creator::{MockIdentifierCreator, RemoteIdentifierRelation};
+use crate::proto::transaction_manager::NoTransactionManager;
 use crate::provider::credential_formatter::MockCredentialFormatter;
 use crate::provider::credential_formatter::model::FormatterCapabilities;
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
 use crate::provider::did_method::model::{DidDocument, DidVerificationMethod};
 use crate::provider::did_method::provider::MockDidMethodProvider;
 use crate::provider::issuance_protocol::MockIssuanceProtocol;
-use crate::provider::issuance_protocol::error::IssuanceProtocolError;
-use crate::provider::issuance_protocol::openid4vci_draft13::error::{
-    OpenID4VCIError, OpenIDIssuanceError,
+use crate::provider::issuance_protocol::error::{
+    IssuanceProtocolError, OpenID4VCIError, OpenIDIssuanceError,
 };
+use crate::provider::issuance_protocol::model::SubmitIssuerResponse;
 use crate::provider::issuance_protocol::openid4vci_draft13::model::*;
 use crate::provider::issuance_protocol::provider::MockIssuanceProtocolProvider;
 use crate::provider::key_algorithm::MockKeyAlgorithm;
 use crate::provider::key_algorithm::eddsa::Eddsa;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
+use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
-use crate::repository::did_repository::MockDidRepository;
-use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::interaction_repository::MockInteractionRepository;
 use crate::service::error::ServiceError;
 use crate::service::test_utilities::*;
@@ -54,14 +55,14 @@ struct Mocks {
     pub interaction_repository: MockInteractionRepository,
     pub config: CoreConfig,
     pub exchange_provider: MockIssuanceProtocolProvider,
-    pub did_repository: MockDidRepository,
-    pub identifier_repository: MockIdentifierRepository,
     pub did_method_provider: MockDidMethodProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
     pub formatter_provider: MockCredentialFormatterProvider,
+    pub revocation_method_provider: MockRevocationMethodProvider,
+    pub certificate_validator: MockCertificateValidator,
+    pub identifier_creator: MockIdentifierCreator,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn setup_service(mocks: Mocks) -> OID4VCIDraft13Service {
     OID4VCIDraft13Service::new(
         Some("http://127.0.0.1:3000".to_string()),
@@ -70,11 +71,13 @@ fn setup_service(mocks: Mocks) -> OID4VCIDraft13Service {
         Arc::new(mocks.interaction_repository),
         Arc::new(mocks.config),
         Arc::new(mocks.exchange_provider),
-        Arc::new(mocks.did_repository),
-        Arc::new(mocks.identifier_repository),
         Arc::new(mocks.did_method_provider),
         Arc::new(mocks.key_algorithm_provider),
         Arc::new(mocks.formatter_provider),
+        Arc::new(mocks.revocation_method_provider),
+        Arc::new(mocks.certificate_validator),
+        Arc::new(mocks.identifier_creator),
+        Arc::new(NoTransactionManager),
     )
 }
 
@@ -85,6 +88,9 @@ fn generic_organisation() -> Organisation {
         name: "organisation name".to_string(),
         created_date: now,
         last_modified: now,
+        deactivated_at: None,
+        wallet_provider: None,
+        wallet_provider_issuer: None,
     }
 }
 
@@ -97,32 +103,31 @@ fn generic_credential_schema() -> CredentialSchema {
         created_date: now,
         last_modified: now,
         name: "SchemaName".to_string(),
-        wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-        format: "JWT".to_string(),
-        external_schema: false,
-        revocation_method: "".to_string(),
-        claim_schemas: Some(vec![CredentialSchemaClaim {
+        key_storage_security: None,
+        format: "JWT".into(),
+        revocation_method: None,
+        claim_schemas: Some(vec![ClaimSchema {
+            array: false,
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            data_type: "STRING".to_string(),
+            key: "key".to_string(),
+            id: Uuid::new_v4().into(),
+            metadata: false,
             required: true,
-            schema: ClaimSchema {
-                array: false,
-                created_date: get_dummy_date(),
-                last_modified: get_dummy_date(),
-                data_type: "STRING".to_string(),
-                key: "key".to_string(),
-                id: Uuid::new_v4().into(),
-            },
         }]),
         organisation: None,
         layout_type: LayoutType::Card,
         layout_properties: None,
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         schema_id: "CredentialSchemaId".to_owned(),
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     }
 }
 
 fn dummy_interaction(
-    id: Option<Uuid>,
+    id: Option<InteractionId>,
     pre_authorized_code: bool,
     access_token_expires_at: Option<&str>,
     refresh_token: Option<&str>,
@@ -149,12 +154,14 @@ fn dummy_interaction(
     }
 
     Interaction {
-        id: id.unwrap_or(Uuid::new_v4()),
+        id: id.unwrap_or(Uuid::new_v4().into()),
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        host: Some("http://host-base-url".parse().unwrap()),
         data: Some(data.to_string().into_bytes()),
         organisation: None,
+        nonce_id: None,
+        interaction_type: InteractionType::Issuance,
+        expires_at: None,
     }
 }
 
@@ -167,17 +174,17 @@ fn dummy_credential(
     Credential {
         id: Uuid::new_v4().into(),
         created_date: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
+        issuance_date: None,
         last_modified: OffsetDateTime::now_utc(),
         deleted_at: None,
-        credential: b"credential".to_vec(),
-        exchange: protocol.to_string(),
+        protocol: protocol.to_string(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state,
         suspend_end_date: None,
         claims: None,
         issuer_identifier: None,
+        issuer_certificate: None,
         holder_identifier: None,
         schema,
         interaction: Some(dummy_interaction(
@@ -187,8 +194,12 @@ fn dummy_credential(
             None,
             None,
         )),
-        revocation_list: None,
         key: None,
+        profile: None,
+        credential_blob_id: Some(Uuid::new_v4().into()),
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
     }
 }
 
@@ -218,13 +229,14 @@ async fn test_get_issuer_metadata_jwt() {
         .expect_get_capabilities()
         .return_once(|| FormatterCapabilities {
             signing_key_algorithms: vec![KeyAlgorithmType::Ecdsa],
+            holder_identifier_types: vec![IdentifierType::Did.into()],
             ..Default::default()
         });
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
-        .with(eq("JWT"))
+        .expect_get_credential_formatter()
+        .with(eq(CredentialFormat::from("JWT")))
         .return_once(move |_| Some(Arc::new(formatter)));
 
     let mut repository = MockCredentialSchemaRepository::default();
@@ -258,7 +270,7 @@ async fn test_get_issuer_metadata_jwt() {
     assert_eq!(schema.name, credential.display.unwrap()[0].name);
     assert_eq!(
         credential.cryptographic_binding_methods_supported.unwrap(),
-        vec!["did:key".to_string(), "jwk".to_string()]
+        vec!["did:key".to_string()]
     );
     assert_eq!(
         credential
@@ -320,18 +332,19 @@ async fn test_get_issuer_metadata_sd_jwt() {
         .expect_get_capabilities()
         .return_once(|| FormatterCapabilities {
             signing_key_algorithms: vec![KeyAlgorithmType::Ecdsa],
+            holder_identifier_types: vec![IdentifierType::Did.into(), IdentifierType::Key.into()],
             ..Default::default()
         });
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
-        .with(eq("SD_JWT"))
+        .expect_get_credential_formatter()
+        .with(eq(CredentialFormat::from("SD_JWT")))
         .return_once(move |_| Some(Arc::new(formatter)));
 
     let mut schema = generic_credential_schema();
     schema.organisation = Some(generic_organisation());
-    schema.format = "SD_JWT".to_string();
+    schema.format = "SD_JWT".into();
     let relations = CredentialSchemaRelations {
         claim_schemas: Some(ClaimSchemaRelations::default()),
         organisation: Some(OrganisationRelations::default()),
@@ -359,7 +372,7 @@ async fn test_get_issuer_metadata_sd_jwt() {
     assert!(credential.claims.is_none()); // This is present of mdoc only
     assert_eq!(
         credential.cryptographic_binding_methods_supported.unwrap(),
-        vec!["did:key".to_string(), "jwk".to_string()]
+        vec!["jwk".to_string(), "did:key".to_string()]
     );
     assert_eq!(
         credential
@@ -420,40 +433,39 @@ async fn test_get_issuer_metadata_mdoc() {
         .expect_get_capabilities()
         .return_once(|| FormatterCapabilities {
             signing_key_algorithms: vec![KeyAlgorithmType::Ecdsa],
+            holder_identifier_types: vec![IdentifierType::Did.into(), IdentifierType::Key.into()],
             ..Default::default()
         });
 
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
-        .with(eq("MDOC"))
+        .expect_get_credential_formatter()
+        .with(eq(CredentialFormat::from("MDOC")))
         .return_once(move |_| Some(Arc::new(formatter)));
 
     let mut schema = generic_credential_schema();
-    schema.format = "MDOC".to_string();
+    schema.format = "MDOC".into();
     schema.organisation = Some(generic_organisation());
     let now = OffsetDateTime::now_utc();
     schema.claim_schemas = Some(vec![
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "location".to_string(),
-                data_type: "OBJECT".to_string(),
-                created_date: now,
-                last_modified: now,
-                array: false,
-            },
+        ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "location".to_string(),
+            data_type: "OBJECT".to_string(),
+            created_date: now,
+            last_modified: now,
+            array: false,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "location/X".to_string(),
-                data_type: "STRING".to_string(),
-                created_date: now,
-                last_modified: now,
-                array: false,
-            },
+        ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "location/X".to_string(),
+            data_type: "STRING".to_string(),
+            created_date: now,
+            last_modified: now,
+            array: false,
+            metadata: false,
             required: true,
         },
     ]);
@@ -484,7 +496,7 @@ async fn test_get_issuer_metadata_mdoc() {
     assert_eq!(schema.name, credential.display.unwrap()[0].name);
     assert_eq!(
         credential.cryptographic_binding_methods_supported.unwrap(),
-        vec!["did:key".to_string(), "jwk".to_string()]
+        vec!["jwk".to_string(), "did:key".to_string()]
     );
     assert_eq!(
         credential
@@ -572,6 +584,7 @@ async fn test_create_token() {
         Some(schema.clone()),
     );
     let interaction_id = credential.interaction.as_ref().unwrap().id;
+    let interaction = credential.interaction.clone().unwrap();
     credential_repository
         .expect_get_credentials_by_interaction_id()
         .once()
@@ -583,9 +596,14 @@ async fn test_create_token() {
         .return_once(|_, _| Ok(()));
 
     interaction_repository
+        .expect_get_interaction()
+        .once()
+        .return_once(|_, _, _| Ok(Some(interaction)));
+
+    interaction_repository
         .expect_update_interaction()
         .once()
-        .return_once(|_| Ok(()));
+        .return_once(|_, _| Ok(()));
 
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
@@ -664,33 +682,38 @@ async fn test_create_token_empty_pre_authorized_code() {
 async fn test_create_token_pre_authorized_code_used() {
     let mut repository = MockCredentialSchemaRepository::default();
     let mut credential_repository = MockCredentialRepository::default();
-    let interaction_repository = MockInteractionRepository::default();
+    let mut interaction_repository = MockInteractionRepository::default();
 
     let schema = generic_credential_schema();
-    {
-        let clone = schema.clone();
-        repository
-            .expect_get_credential_schema()
-            .times(1)
-            .with(
-                eq(schema.id.to_owned()),
-                eq(CredentialSchemaRelations::default()),
-            )
-            .returning(move |_, _| Ok(Some(clone.clone())));
 
-        let clone = schema.clone();
-        credential_repository
-            .expect_get_credentials_by_interaction_id()
-            .once()
-            .return_once(move |_, _| {
-                Ok(vec![dummy_credential(
-                    "OPENID4VCI_DRAFT13",
-                    CredentialStateEnum::Pending,
-                    true,
-                    Some(clone),
-                )])
-            });
-    }
+    let clone = schema.clone();
+    repository
+        .expect_get_credential_schema()
+        .times(1)
+        .with(
+            eq(schema.id.to_owned()),
+            eq(CredentialSchemaRelations::default()),
+        )
+        .returning(move |_, _| Ok(Some(clone.clone())));
+
+    let clone = schema.clone();
+    let credential = dummy_credential(
+        "OPENID4VCI_DRAFT13",
+        CredentialStateEnum::Pending,
+        true,
+        Some(clone),
+    );
+    let interaction = credential.interaction.clone().unwrap();
+    credential_repository
+        .expect_get_credentials_by_interaction_id()
+        .once()
+        .return_once(move |_, _| Ok(vec![credential]));
+
+    interaction_repository
+        .expect_get_interaction()
+        .once()
+        .return_once(|_, _, _| Ok(Some(interaction)));
+
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
         credential_repository,
@@ -721,33 +744,38 @@ async fn test_create_token_pre_authorized_code_used() {
 async fn test_create_token_wrong_credential_state() {
     let mut repository = MockCredentialSchemaRepository::default();
     let mut credential_repository = MockCredentialRepository::default();
-    let interaction_repository = MockInteractionRepository::default();
+    let mut interaction_repository = MockInteractionRepository::default();
 
     let schema = generic_credential_schema();
-    {
-        let clone = schema.clone();
-        repository
-            .expect_get_credential_schema()
-            .times(1)
-            .with(
-                eq(schema.id.to_owned()),
-                eq(CredentialSchemaRelations::default()),
-            )
-            .returning(move |_, _| Ok(Some(clone.clone())));
 
-        let clone = schema.clone();
-        credential_repository
-            .expect_get_credentials_by_interaction_id()
-            .once()
-            .return_once(move |_, _| {
-                Ok(vec![dummy_credential(
-                    "OPENID4VCI_DRAFT13",
-                    CredentialStateEnum::Offered,
-                    false,
-                    Some(clone),
-                )])
-            });
-    }
+    let clone = schema.clone();
+    repository
+        .expect_get_credential_schema()
+        .times(1)
+        .with(
+            eq(schema.id.to_owned()),
+            eq(CredentialSchemaRelations::default()),
+        )
+        .returning(move |_, _| Ok(Some(clone.clone())));
+
+    let clone = schema.clone();
+    let credential = dummy_credential(
+        "OPENID4VCI_DRAFT13",
+        CredentialStateEnum::Offered,
+        false,
+        Some(clone),
+    );
+    let interaction = credential.interaction.clone().unwrap();
+    credential_repository
+        .expect_get_credentials_by_interaction_id()
+        .once()
+        .return_once(move |_, _| Ok(vec![credential]));
+
+    interaction_repository
+        .expect_get_interaction()
+        .once()
+        .return_once(|_, _, _| Ok(Some(interaction)));
+
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
         credential_repository,
@@ -780,9 +808,6 @@ async fn test_create_credential_success() {
     let mut credential_repository = MockCredentialRepository::default();
     let mut interaction_repository = MockInteractionRepository::default();
     let mut exchange_provider = MockIssuanceProtocolProvider::default();
-    let mut did_repository = MockDidRepository::default();
-    let mut identifier_repository = MockIdentifierRepository::default();
-    let now = OffsetDateTime::now_utc();
 
     let schema = generic_credential_schema();
     let credential = dummy_credential(
@@ -806,12 +831,15 @@ async fn test_create_credential_success() {
             .once()
             .return_once(move |_, _| Ok(vec![clone]));
 
+        let interaction_id = Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+            .unwrap()
+            .into();
         interaction_repository
             .expect_get_interaction()
-            .once()
-            .return_once(|_, _| {
+            .times(2)
+            .returning(move |_, _, _| {
                 Ok(Some(dummy_interaction(
-                    Some(Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap()),
+                    Some(interaction_id),
                     true,
                     None,
                     None,
@@ -819,59 +847,27 @@ async fn test_create_credential_success() {
                 )))
             });
 
+        interaction_repository
+            .expect_update_interaction()
+            .once()
+            .withf(move |id, _| *id == interaction_id)
+            .returning(|_, _| Ok(()));
+
         let mut issuance_protocol = MockIssuanceProtocol::default();
         issuance_protocol
             .expect_issuer_issue_credential()
             .once()
-            .return_once(|_, _, _, _| {
+            .return_once(|_, _, _| {
                 Ok(SubmitIssuerResponse {
                     credential: "xyz".to_string(),
                     redirect_uri: None,
+                    notification_id: Some("notification".to_string()),
                 })
             });
         exchange_provider
             .expect_get_protocol()
             .once()
             .return_once(move |_| Some(Arc::new(issuance_protocol)));
-
-        did_repository
-            .expect_get_did_by_value()
-            .times(1)
-            .returning(move |did_value, _, _| {
-                Ok(Some(Did {
-                    id: holder_did_id,
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    did: did_value.clone(),
-                    did_type: DidType::Remote,
-                    did_method: "KEY".to_string(),
-                    organisation: None,
-                    keys: None,
-                    deactivated: false,
-                    log: None,
-                }))
-            });
-
-        identifier_repository
-            .expect_get_from_did_id()
-            .once()
-            .returning(move |did_id, _| {
-                Ok(Some(Identifier {
-                    id: Uuid::from(did_id).into(),
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    organisation: None,
-                    did: None,
-                    key: None,
-                    certificates: None,
-                    r#type: IdentifierType::Did,
-                    is_remote: true,
-                    state: IdentifierState::Active,
-                    deleted_at: None,
-                }))
-            });
 
         credential_repository
             .expect_update_credential()
@@ -914,7 +910,8 @@ async fn test_create_credential_success() {
                     r#type: "".to_string(),
                     controller: did_value.to_string(),
                     // proof.jwt did key
-                    public_key_jwk: PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                    public_key_jwk: PublicJwk::Okp(PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Ed25519".to_string(),
@@ -932,16 +929,33 @@ async fn test_create_credential_success() {
             })
         });
 
+    let mut identifier_creator = MockIdentifierCreator::new();
+    identifier_creator
+        .expect_get_or_create_remote_identifier()
+        .once()
+        .returning(move |_, _, _| {
+            Ok((
+                Identifier {
+                    id: Uuid::from(holder_did_id).into(),
+                    r#type: IdentifierType::Did,
+                    ..dummy_identifier()
+                },
+                RemoteIdentifierRelation::Did(Did {
+                    id: holder_did_id,
+                    ..dummy_did()
+                }),
+            ))
+        });
+
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
         credential_repository,
         interaction_repository,
         config: generic_config().core,
         exchange_provider,
-        did_repository,
-        identifier_repository,
         key_algorithm_provider,
         did_method_provider,
+        identifier_creator,
         ..Default::default()
     });
 
@@ -975,12 +989,9 @@ async fn test_create_credential_success_sd_jwt_vc() {
     let mut credential_repository = MockCredentialRepository::default();
     let mut interaction_repository = MockInteractionRepository::default();
     let mut exchange_provider = MockIssuanceProtocolProvider::default();
-    let mut did_repository = MockDidRepository::default();
-    let mut identifier_repository = MockIdentifierRepository::default();
-    let now = OffsetDateTime::now_utc();
 
     let mut schema = generic_credential_schema();
-    schema.format = "SD_JWT_VC".to_string();
+    schema.format = "SD_JWT_VC".into();
     let credential = dummy_credential(
         "OPENID4VCI_DRAFT13",
         CredentialStateEnum::Pending,
@@ -1004,10 +1015,14 @@ async fn test_create_credential_success_sd_jwt_vc() {
 
         interaction_repository
             .expect_get_interaction()
-            .once()
-            .return_once(|_, _| {
+            .times(2)
+            .returning(|_, _, _| {
                 Ok(Some(dummy_interaction(
-                    Some(Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap()),
+                    Some(
+                        Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+                            .unwrap()
+                            .into(),
+                    ),
                     true,
                     None,
                     None,
@@ -1019,55 +1034,17 @@ async fn test_create_credential_success_sd_jwt_vc() {
         issuance_protocol
             .expect_issuer_issue_credential()
             .once()
-            .return_once(|_, _, _, _| {
+            .return_once(|_, _, _| {
                 Ok(SubmitIssuerResponse {
                     credential: "xyz".to_string(),
                     redirect_uri: None,
+                    notification_id: None,
                 })
             });
         exchange_provider
             .expect_get_protocol()
             .once()
             .return_once(move |_| Some(Arc::new(issuance_protocol)));
-
-        did_repository
-            .expect_get_did_by_value()
-            .times(1)
-            .returning(move |did_value, _, _| {
-                Ok(Some(Did {
-                    id: holder_did_id,
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    did: did_value.clone(),
-                    did_type: DidType::Remote,
-                    did_method: "KEY".to_string(),
-                    organisation: None,
-                    keys: None,
-                    deactivated: false,
-                    log: None,
-                }))
-            });
-
-        identifier_repository
-            .expect_get_from_did_id()
-            .once()
-            .returning(move |did_id, _| {
-                Ok(Some(Identifier {
-                    id: Uuid::from(did_id).into(),
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    organisation: None,
-                    did: None,
-                    key: None,
-                    certificates: None,
-                    r#type: IdentifierType::Did,
-                    is_remote: true,
-                    state: IdentifierState::Active,
-                    deleted_at: None,
-                }))
-            });
 
         credential_repository
             .expect_update_credential()
@@ -1110,7 +1087,8 @@ async fn test_create_credential_success_sd_jwt_vc() {
                     r#type: "".to_string(),
                     controller: did_value.to_string(),
                     // proof.jwt did key
-                    public_key_jwk: PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                    public_key_jwk: PublicJwk::Okp(PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Ed25519".to_string(),
@@ -1128,16 +1106,33 @@ async fn test_create_credential_success_sd_jwt_vc() {
             })
         });
 
+    let mut identifier_creator = MockIdentifierCreator::new();
+    identifier_creator
+        .expect_get_or_create_remote_identifier()
+        .once()
+        .returning(move |_, _, _| {
+            Ok((
+                Identifier {
+                    id: Uuid::from(holder_did_id).into(),
+                    r#type: IdentifierType::Did,
+                    ..dummy_identifier()
+                },
+                RemoteIdentifierRelation::Did(Did {
+                    id: holder_did_id,
+                    ..dummy_did()
+                }),
+            ))
+        });
+
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
         credential_repository,
         interaction_repository,
         config: generic_config().core,
         exchange_provider,
-        did_repository,
-        identifier_repository,
         key_algorithm_provider,
         did_method_provider,
+        identifier_creator,
         ..Default::default()
     });
 
@@ -1169,12 +1164,9 @@ async fn test_create_credential_success_mdoc() {
     let mut credential_repository = MockCredentialRepository::default();
     let mut interaction_repository = MockInteractionRepository::default();
     let mut exchange_provider = MockIssuanceProtocolProvider::default();
-    let mut did_repository = MockDidRepository::default();
-    let mut identifier_repository = MockIdentifierRepository::default();
-    let now = OffsetDateTime::now_utc();
 
     let schema = CredentialSchema {
-        format: "MDOC".to_string(),
+        format: "MDOC".into(),
         schema_id: "test.doctype".to_owned(),
         ..generic_credential_schema()
     };
@@ -1201,10 +1193,14 @@ async fn test_create_credential_success_mdoc() {
 
         interaction_repository
             .expect_get_interaction()
-            .once()
-            .return_once(|_, _| {
+            .times(2)
+            .returning(|_, _, _| {
                 Ok(Some(dummy_interaction(
-                    Some(Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap()),
+                    Some(
+                        Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+                            .unwrap()
+                            .into(),
+                    ),
                     true,
                     None,
                     None,
@@ -1216,55 +1212,17 @@ async fn test_create_credential_success_mdoc() {
         issuance_protocol
             .expect_issuer_issue_credential()
             .once()
-            .return_once(|_, _, _, _| {
+            .return_once(|_, _, _| {
                 Ok(SubmitIssuerResponse {
                     credential: "xyz".to_string(),
                     redirect_uri: None,
+                    notification_id: None,
                 })
             });
         exchange_provider
             .expect_get_protocol()
             .once()
             .return_once(move |_| Some(Arc::new(issuance_protocol)));
-
-        did_repository
-            .expect_get_did_by_value()
-            .times(1)
-            .returning(move |did_value, _, _| {
-                Ok(Some(Did {
-                    id: holder_did_id,
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    did: did_value.clone(),
-                    did_type: DidType::Remote,
-                    did_method: "KEY".to_string(),
-                    organisation: None,
-                    keys: None,
-                    deactivated: false,
-                    log: None,
-                }))
-            });
-
-        identifier_repository
-            .expect_get_from_did_id()
-            .once()
-            .returning(move |did_id, _| {
-                Ok(Some(Identifier {
-                    id: Uuid::from(did_id).into(),
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    organisation: None,
-                    did: None,
-                    key: None,
-                    certificates: None,
-                    r#type: IdentifierType::Did,
-                    is_remote: true,
-                    state: IdentifierState::Active,
-                    deleted_at: None,
-                }))
-            });
 
         credential_repository
             .expect_update_credential()
@@ -1307,7 +1265,8 @@ async fn test_create_credential_success_mdoc() {
                     r#type: "".to_string(),
                     controller: did_value.to_string(),
                     // proof.jwt did key
-                    public_key_jwk: PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                    public_key_jwk: PublicJwk::Okp(PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Ed25519".to_string(),
@@ -1325,16 +1284,33 @@ async fn test_create_credential_success_mdoc() {
             })
         });
 
+    let mut identifier_creator = MockIdentifierCreator::new();
+    identifier_creator
+        .expect_get_or_create_remote_identifier()
+        .once()
+        .returning(move |_, _, _| {
+            Ok((
+                Identifier {
+                    id: Uuid::from(holder_did_id).into(),
+                    r#type: IdentifierType::Did,
+                    ..dummy_identifier()
+                },
+                RemoteIdentifierRelation::Did(Did {
+                    id: holder_did_id,
+                    ..dummy_did()
+                }),
+            ))
+        });
+
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
         credential_repository,
         interaction_repository,
         config: generic_config().core,
         exchange_provider,
-        did_repository,
-        identifier_repository,
         key_algorithm_provider,
         did_method_provider,
+        identifier_creator,
         ..Default::default()
     });
 
@@ -1461,7 +1437,7 @@ async fn test_create_credential_invalid_vct_for_credential_schema() {
     let mut repository = MockCredentialSchemaRepository::default();
 
     let mut schema = generic_credential_schema();
-    schema.format = "SD_JWT_VC".to_string();
+    schema.format = "SD_JWT_VC".into();
     {
         let clone = schema.clone();
         repository
@@ -1614,7 +1590,7 @@ async fn test_create_credential_pre_authorized_code_not_used() {
         interaction_repository
             .expect_get_interaction()
             .once()
-            .return_once(|_, _| Ok(Some(dummy_interaction(None, false, None, None, None))));
+            .return_once(|_, _, _| Ok(Some(dummy_interaction(None, false, None, None, None))));
     }
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
@@ -1671,7 +1647,7 @@ async fn test_create_credential_interaction_data_invalid() {
         interaction_repository
             .expect_get_interaction()
             .once()
-            .return_once(|_, _| Ok(Some(dummy_interaction(None, true, None, None, None))));
+            .return_once(|_, _, _| Ok(Some(dummy_interaction(None, true, None, None, None))));
     }
     let service = setup_service(Mocks {
         credential_schema_repository: repository,
@@ -1728,7 +1704,7 @@ async fn test_create_credential_access_token_expired() {
         interaction_repository
             .expect_get_interaction()
             .once()
-            .return_once(|_, _| {
+            .return_once(|_, _, _| {
                 Ok(Some(dummy_interaction(
                     None,
                     true,
@@ -1776,13 +1752,10 @@ async fn test_create_credential_access_token_expired() {
 
 #[tokio::test]
 async fn test_create_credential_issuer_failed() {
-    let mut repository = MockCredentialSchemaRepository::default();
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut credential_repository = MockCredentialRepository::default();
     let mut interaction_repository = MockInteractionRepository::default();
     let mut exchange_provider = MockIssuanceProtocolProvider::default();
-    let mut did_repository = MockDidRepository::default();
-    let mut identifier_repository = MockIdentifierRepository::default();
-    let now = OffsetDateTime::now_utc();
 
     let schema = generic_credential_schema();
     let credential = dummy_credential(
@@ -1794,7 +1767,7 @@ async fn test_create_credential_issuer_failed() {
     let holder_did_id: DidId = Uuid::new_v4().into();
     {
         let clone = schema.clone();
-        repository
+        credential_schema_repository
             .expect_get_credential_schema()
             .times(1)
             .with(eq(schema.id.to_owned()), always())
@@ -1808,10 +1781,14 @@ async fn test_create_credential_issuer_failed() {
 
         interaction_repository
             .expect_get_interaction()
-            .once()
-            .return_once(|_, _| {
+            .times(2)
+            .returning(|_, _, _| {
                 Ok(Some(dummy_interaction(
-                    Some(Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6").unwrap()),
+                    Some(
+                        Uuid::from_str("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+                            .unwrap()
+                            .into(),
+                    ),
                     true,
                     None,
                     None,
@@ -1823,52 +1800,13 @@ async fn test_create_credential_issuer_failed() {
         issuance_protocol
             .expect_issuer_issue_credential()
             .once()
-            .return_once(|_, _, _, _| {
+            .return_once(|_, _, _| {
                 Err(IssuanceProtocolError::Failed("issuing failed".to_string()))
             });
         exchange_provider
             .expect_get_protocol()
             .once()
             .return_once(move |_| Some(Arc::new(issuance_protocol)));
-
-        did_repository
-            .expect_get_did_by_value()
-            .times(1)
-            .returning(move |did_value, _, _| {
-                Ok(Some(Did {
-                    id: holder_did_id,
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    did: did_value.clone(),
-                    did_type: DidType::Remote,
-                    did_method: "KEY".to_string(),
-                    organisation: None,
-                    keys: None,
-                    deactivated: false,
-                    log: None,
-                }))
-            });
-
-        identifier_repository
-            .expect_get_from_did_id()
-            .once()
-            .returning(move |did_id, _| {
-                Ok(Some(Identifier {
-                    id: Uuid::from(did_id).into(),
-                    created_date: now,
-                    last_modified: now,
-                    name: "verifier".to_string(),
-                    organisation: None,
-                    did: None,
-                    key: None,
-                    certificates: None,
-                    r#type: IdentifierType::Did,
-                    is_remote: true,
-                    state: IdentifierState::Active,
-                    deleted_at: None,
-                }))
-            });
 
         credential_repository
             .expect_update_credential()
@@ -1919,7 +1857,8 @@ async fn test_create_credential_issuer_failed() {
                     r#type: "".to_string(),
                     controller: did_value.to_string(),
                     // proof.jwt did key
-                    public_key_jwk: PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                    public_key_jwk: PublicJwk::Okp(PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Ed25519".to_string(),
@@ -1937,16 +1876,33 @@ async fn test_create_credential_issuer_failed() {
             })
         });
 
+    let mut identifier_creator = MockIdentifierCreator::new();
+    identifier_creator
+        .expect_get_or_create_remote_identifier()
+        .once()
+        .returning(move |_, _, _| {
+            Ok((
+                Identifier {
+                    id: Uuid::from(holder_did_id).into(),
+                    r#type: IdentifierType::Did,
+                    ..dummy_identifier()
+                },
+                RemoteIdentifierRelation::Did(Did {
+                    id: holder_did_id,
+                    ..dummy_did()
+                }),
+            ))
+        });
+
     let service = setup_service(Mocks {
-        credential_schema_repository: repository,
+        credential_schema_repository,
         credential_repository,
         interaction_repository,
         config: generic_config().core,
         exchange_provider,
-        did_repository,
-        identifier_repository,
         key_algorithm_provider,
         did_method_provider,
+        identifier_creator,
         ..Default::default()
     });
 
@@ -1970,10 +1926,7 @@ async fn test_create_credential_issuer_failed() {
         )
         .await;
 
-    assert!(matches!(
-        result,
-        Err(ServiceError::IssuanceProtocolError(_))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0062);
 }
 
 #[tokio::test]
@@ -1983,7 +1936,7 @@ async fn test_for_mdoc_schema_pre_authorized_grant_type_creates_refresh_token() 
     let mut interaction_repository = MockInteractionRepository::default();
 
     let mut schema = generic_credential_schema();
-    schema.format = "MDOC".to_string();
+    schema.format = "MDOC".into();
 
     credential_schema_repository
         .expect_get_credential_schema()
@@ -2004,6 +1957,7 @@ async fn test_for_mdoc_schema_pre_authorized_grant_type_creates_refresh_token() 
         Some(schema.clone()),
     );
     let interaction_id = credential.interaction.as_ref().unwrap().id;
+    let interaction = credential.interaction.clone().unwrap();
     credential_repository
         .expect_get_credentials_by_interaction_id()
         .once()
@@ -2015,9 +1969,13 @@ async fn test_for_mdoc_schema_pre_authorized_grant_type_creates_refresh_token() 
         .return_once(|_, _| Ok(()));
 
     interaction_repository
+        .expect_get_interaction()
+        .once()
+        .return_once(|_, _, _| Ok(Some(interaction)));
+    interaction_repository
         .expect_update_interaction()
         .once()
-        .return_once(|_| Ok(()));
+        .return_once(|_, _| Ok(()));
 
     let service = setup_service(Mocks {
         credential_schema_repository,
@@ -2077,17 +2035,20 @@ async fn test_valid_refresh_token_grant_type_creates_refresh_and_tokens() {
             move |_, _| Ok(Some(schema))
         });
 
-    let interaction_id: Uuid = "c62f4237-3c74-42f2-a5ff-c72489e025f7".parse().unwrap();
+    let interaction_id = Uuid::parse_str("c62f4237-3c74-42f2-a5ff-c72489e025f7")
+        .unwrap()
+        .into();
     let refresh_token = "c62f4237-3c74-42f2-a5ff-c72489e025f7.AAAAA";
     let refresh_token_expires_at = "2077-10-28T07:03:38.4404734Z";
+    let interaction = dummy_interaction(
+        Some(interaction_id),
+        false,
+        None,
+        Some(refresh_token),
+        Some(refresh_token_expires_at),
+    );
     let credential = Credential {
-        interaction: Some(dummy_interaction(
-            Some(interaction_id),
-            false,
-            None,
-            Some(refresh_token),
-            Some(refresh_token_expires_at),
-        )),
+        interaction: Some(interaction.clone()),
         ..dummy_credential(
             "OPENID4VCI_DRAFT13",
             CredentialStateEnum::Accepted,
@@ -2103,9 +2064,13 @@ async fn test_valid_refresh_token_grant_type_creates_refresh_and_tokens() {
         .return_once(move |_, _| Ok(vec![credential]));
 
     interaction_repository
+        .expect_get_interaction()
+        .once()
+        .return_once(|_, _, _| Ok(Some(interaction)));
+    interaction_repository
         .expect_update_interaction()
         .once()
-        .return_once(|_| Ok(()));
+        .return_once(|_, _| Ok(()));
 
     let service = setup_service(Mocks {
         credential_schema_repository,
@@ -2148,6 +2113,7 @@ async fn test_valid_refresh_token_grant_type_creates_refresh_and_tokens() {
 async fn test_refresh_token_request_fails_if_refresh_token_is_expired() {
     let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut credential_repository = MockCredentialRepository::default();
+    let mut interaction_repository = MockInteractionRepository::default();
 
     let schema = generic_credential_schema();
 
@@ -2163,18 +2129,21 @@ async fn test_refresh_token_request_fails_if_refresh_token_is_expired() {
             move |_, _| Ok(Some(schema))
         });
 
-    let interaction_id: Uuid = "c62f4237-3c74-42f2-a5ff-c72489e025f7".parse().unwrap();
+    let interaction_id = Uuid::parse_str("c62f4237-3c74-42f2-a5ff-c72489e025f7")
+        .unwrap()
+        .into();
     let refresh_token = "c62f4237-3c74-42f2-a5ff-c72489e025f7.AAAAA";
     // expired refresh token
     let refresh_token_expires_at = "2023-10-28T07:03:38.4404734Z";
+    let interaction = dummy_interaction(
+        Some(interaction_id),
+        false,
+        None,
+        Some(refresh_token),
+        Some(refresh_token_expires_at),
+    );
     let credential = Credential {
-        interaction: Some(dummy_interaction(
-            Some(interaction_id),
-            false,
-            None,
-            Some(refresh_token),
-            Some(refresh_token_expires_at),
-        )),
+        interaction: Some(interaction.clone()),
         ..dummy_credential(
             "OPENID4VCI_DRAFT13",
             CredentialStateEnum::Accepted,
@@ -2182,6 +2151,9 @@ async fn test_refresh_token_request_fails_if_refresh_token_is_expired() {
             Some(schema.clone()),
         )
     };
+    interaction_repository
+        .expect_get_interaction()
+        .return_once(|_, _, _| Ok(Some(interaction)));
 
     credential_repository
         .expect_get_credentials_by_interaction_id()
@@ -2192,6 +2164,7 @@ async fn test_refresh_token_request_fails_if_refresh_token_is_expired() {
     let service = setup_service(Mocks {
         credential_schema_repository,
         credential_repository,
+        interaction_repository,
         config: generic_config().core,
         ..Default::default()
     });

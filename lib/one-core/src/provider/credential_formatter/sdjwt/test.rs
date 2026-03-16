@@ -1,49 +1,43 @@
 use std::collections::HashSet;
+use std::string::ToString;
 
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
-use one_crypto::MockHasher;
+use one_crypto::hasher::sha256::SHA256;
+use one_crypto::{Hasher, MockHasher};
 use serde_json::{Value, json};
 use shared_types::DidValue;
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
-use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::Jwt;
+use crate::model::did::Did;
+use crate::model::identifier::Identifier;
 use crate::provider::credential_formatter::model::{
-    CredentialData, CredentialPresentation, CredentialSchema, CredentialStatus, HolderBindingCtx,
-    Issuer, MockSignatureProvider, PublishedClaim,
+    CredentialData, CredentialPresentation, CredentialSchema, CredentialStatus, Issuer,
+    MockSignatureProvider, PublishedClaim,
 };
 use crate::provider::credential_formatter::nest_claims;
 use crate::provider::credential_formatter::sdjwt::disclosures::{
     DisclosureArray, compute_object_disclosures, parse_disclosure, select_disclosures,
 };
-use crate::provider::credential_formatter::sdjwt::model::{Disclosure, KeyBindingPayload};
+use crate::provider::credential_formatter::sdjwt::model::Disclosure;
 use crate::provider::credential_formatter::sdjwt::prepare_sd_presentation;
 use crate::provider::credential_formatter::vcdm::{
     ContextType, VcdmCredential, VcdmCredentialSubject,
 };
+use crate::service::test_utilities::{dummy_did, dummy_identifier};
+
+const W3C_USER_CLAIM_PATH: [&str; 2] = ["vc", "credentialSubject"];
 
 #[tokio::test]
 async fn test_prepare_sd_presentation() {
-    let jwt_token = "ewogICJhbGciOiAiYWxnb3JpdGhtIiwKICAidHlwIjogIlNESldUIgp9.ewogICJpYXQiOiAxNjk5MjcwMjY2LAogICJleHAiOiAxNzYyMzQyMjY2LAogICJuYmYiOiAxNjk5MjcwMjIxLAogICJpc3MiOiAiZGlkOmlzc3Vlcjp0ZXN0IiwKICAic3ViIjogImRpZDpob2xkZXI6dGVzdCIsCiAgImp0aSI6ICI5YTQxNGE2MC05ZTZiLTQ3NTctODAxMS05YWE4NzBlZjQ3ODgiLAogICJ2YyI6IHsKICAgICJAY29udGV4dCI6IFsKICAgICAgImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwKICAgICAgImh0dHBzOi8vd3d3LnRlc3Rjb250ZXh0LmNvbS92MSIKICAgIF0sCiAgICAidHlwZSI6IFsKICAgICAgIlZlcmlmaWFibGVDcmVkZW50aWFsIiwKICAgICAgIlR5cGUxIgogICAgXSwKICAgICJjcmVkZW50aWFsU3ViamVjdCI6IHsKICAgICAgIl9zZCI6IFsKICAgICAgICAiWVdKak1USXoiLAogICAgICAgICJZV0pqTVRJeiIKICAgICAgXQogICAgfSwKICAgICJjcmVkZW50aWFsU3RhdHVzIjogewogICAgICAiaWQiOiAiZGlkOnN0YXR1czppZCIsCiAgICAgICJ0eXBlIjogIlRZUEUiLAogICAgICAic3RhdHVzUHVycG9zZSI6ICJQVVJQT1NFIiwKICAgICAgIkZpZWxkMSI6ICJWYWwxIgogICAgfQogIH0sCiAgIl9zZF9hbGciOiAic2hhLTI1NiIKfQ";
+    let jwt_token = "ewogICJhbGciOiAiYWxnb3JpdGhtIiwKICAidHlwIjogIlNESldUIgp9.ew0KICAiaWF0IjogMTY5OTI3MDI2NiwNCiAgImV4cCI6IDE3NjIzNDIyNjYsDQogICJuYmYiOiAxNjk5MjcwMjIxLA0KICAiaXNzIjogImRpZDppc3N1ZXI6dGVzdCIsDQogICJzdWIiOiAiZGlkOmhvbGRlcjp0ZXN0IiwNCiAgImp0aSI6ICI5YTQxNGE2MC05ZTZiLTQ3NTctODAxMS05YWE4NzBlZjQ3ODgiLA0KICAidmMiOiB7DQogICAgIkBjb250ZXh0IjogWw0KICAgICAgImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwNCiAgICAgICJodHRwczovL3d3dy50ZXN0Y29udGV4dC5jb20vdjEiDQogICAgXSwNCiAgICAidHlwZSI6IFsNCiAgICAgICJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsDQogICAgICAiVHlwZTEiDQogICAgXSwNCiAgICAiY3JlZGVudGlhbFN1YmplY3QiOiB7DQogICAgICAiX3NkIjogWw0KICAgICAgICAiQk9UMzVNWUp3NW85S2k3RDBXcUpYdi13SjAxZHF6LWxRdE9xaHdNaXZxbyIsDQogICAgICAgICJIWm5Nc3p5Q2REZEwxakhuVnJOWmR0ZnY4YkpUdGducGtTX2xJekgyNHk4Ig0KICAgICAgXQ0KICAgIH0sDQogICAgImNyZWRlbnRpYWxTdGF0dXMiOiB7DQogICAgICAiaWQiOiAiZGlkOnN0YXR1czppZCIsDQogICAgICAidHlwZSI6ICJUWVBFIiwNCiAgICAgICJzdGF0dXNQdXJwb3NlIjogIlBVUlBPU0UiLA0KICAgICAgIkZpZWxkMSI6ICJWYWwxIg0KICAgIH0NCiAgfSwNCiAgIl9zZF9hbGciOiAic2hhLTI1NiINCn0";
     let key_name = "WyJNVEl6WVdKaiIsIm5hbWUiLCJKb2huIl0";
     let key_age = "WyJNVEl6WVdKaiIsImFnZSIsIjQyIl0";
     let key_id = "key-id";
     let key_alg = "ES256";
     let token = format!("{jwt_token}.QUJD~{key_name}~{key_age}~");
-    let audience = "some-aud";
-    let nonce = "nonce";
-    let hash = "test-hash";
-    let holder_binding_ctx = HolderBindingCtx {
-        nonce: nonce.to_string(),
-        audience: audience.to_string(),
-    };
-
-    let mut hasher = MockHasher::default();
-    hasher
-        .expect_hash_base64_url()
-        .returning(|_| Ok(hash.to_string()));
 
     let mut signer = MockSignatureProvider::default();
     signer
@@ -62,9 +56,11 @@ async fn test_prepare_sd_presentation() {
 
     let result = prepare_sd_presentation(
         presentation,
-        &hasher,
-        Some(holder_binding_ctx),
-        Some(Box::new(signer)),
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
     )
     .await
     .unwrap();
@@ -78,9 +74,16 @@ async fn test_prepare_sd_presentation() {
         disclosed_keys: vec!["name".to_string()],
     };
 
-    let result = prepare_sd_presentation(presentation, &hasher, None, None)
-        .await
-        .unwrap();
+    let result = prepare_sd_presentation(
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap();
     assert!(result.contains(key_name) && !result.contains(key_age));
     assert!(result.ends_with('~')); // no key binding token appended, if context / authn_fn is missing
 
@@ -90,7 +93,15 @@ async fn test_prepare_sd_presentation() {
         disclosed_keys: vec!["age".to_string()],
     };
 
-    let result = prepare_sd_presentation(presentation, &hasher, None, None).await;
+    let result = prepare_sd_presentation(
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .await;
     assert!(result.is_ok_and(|token| !token.contains(key_name) && token.contains(key_age)));
 
     // Take none
@@ -99,30 +110,29 @@ async fn test_prepare_sd_presentation() {
         disclosed_keys: vec![],
     };
 
-    let result = prepare_sd_presentation(presentation, &hasher, None, None).await;
+    let result = prepare_sd_presentation(
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .await;
     assert!(result.is_ok_and(|token| !token.contains(key_name) && !token.contains(key_age)));
 }
 
+/// Tests compatibility with malformed legacy SD-JWT credentials.
+/// ONE-6254: Remove when compatibility with legacy SD-JWT credentials is no longer needed
 #[tokio::test]
-async fn test_prepare_sd_presentation_with_kb() {
-    let jwt_token = "ewogICJhbGciOiAiYWxnb3JpdGhtIiwKICAidHlwIjogIlNESldUIgp9.eyJpYXQiOjE2OTkyNzAyNjYsImV4cCI6MTc2MjM0MjI2NiwibmJmIjoxNjk5MjcwMjIxLCJpc3MiOiJkaWQ6aXNzdWVyOnRlc3QiLCJzdWIiOiJkaWQ6aG9sZGVyOnRlc3QiLCJqdGkiOiI5YTQxNGE2MC05ZTZiLTQ3NTctODAxMS05YWE4NzBlZjQ3ODgiLCJjbmYiOnsiandrIjp7Imt0eSI6IkVDIiwidXNlIjoic2lnIiwiY3J2IjoiUC0yNTYiLCJ4IjoiMTh3SExlSWdXOXdWTjZWRDFUeGdwcXkyTHN6WWtNZjZKOG5qVkFpYnZoTSIsInkiOiItVjRkUzRVYUxNZ1BfNGZZNGo4aXI3Y2wxVFhsRmRBZ2N4NTVvN1RrY1NBIn19LCJ2YyI6eyJAY29udGV4dCI6WyJodHRwczovL3d3dy53My5vcmcvMjAxOC9jcmVkZW50aWFscy92MSIsImh0dHBzOi8vd3d3LnRlc3Rjb250ZXh0LmNvbS92MSJdLCJ0eXBlIjpbIlZlcmlmaWFibGVDcmVkZW50aWFsIiwiVHlwZTEiXSwiY3JlZGVudGlhbFN1YmplY3QiOnsiX3NkIjpbIllXSmpNVEl6IiwiWVdKak1USXoiXX0sImNyZWRlbnRpYWxTdGF0dXMiOnsiaWQiOiJkaWQ6c3RhdHVzOmlkIiwidHlwZSI6IlRZUEUiLCJzdGF0dXNQdXJwb3NlIjoiUFVSUE9TRSIsIkZpZWxkMSI6IlZhbDEifX0sIl9zZF9hbGciOiJzaGEtMjU2In0";
+async fn test_prepare_sd_presentation_malformed() {
+    let jwt_token = "ewogICJhbGciOiAiYWxnb3JpdGhtIiwKICAidHlwIjogIlNESldUIgp9.ew0KICAiaWF0IjogMTY5OTI3MDI2NiwNCiAgImV4cCI6IDE3NjIzNDIyNjYsDQogICJuYmYiOiAxNjk5MjcwMjIxLA0KICAiaXNzIjogImRpZDppc3N1ZXI6dGVzdCIsDQogICJzdWIiOiAiZGlkOmhvbGRlcjp0ZXN0IiwNCiAgImp0aSI6ICI5YTQxNGE2MC05ZTZiLTQ3NTctODAxMS05YWE4NzBlZjQ3ODgiLA0KICAidmMiOiB7DQogICAgIkBjb250ZXh0IjogWw0KICAgICAgImh0dHBzOi8vd3d3LnczLm9yZy8yMDE4L2NyZWRlbnRpYWxzL3YxIiwNCiAgICAgICJodHRwczovL3d3dy50ZXN0Y29udGV4dC5jb20vdjEiDQogICAgXSwNCiAgICAidHlwZSI6IFsNCiAgICAgICJWZXJpZmlhYmxlQ3JlZGVudGlhbCIsDQogICAgICAiVHlwZTEiDQogICAgXSwNCiAgICAiY3JlZGVudGlhbFN1YmplY3QiOiB7DQogICAgICAiX3NkIjogWw0KICAgICAgICAiQk9UMzVNWUp3NW85S2k3RDBXcUpYdi13SjAxZHF6LWxRdE9xaHdNaXZxbyIsDQogICAgICAgICJIWm5Nc3p5Q2REZEwxakhuVnJOWmR0ZnY4YkpUdGducGtTX2xJekgyNHk4Ig0KICAgICAgXQ0KICAgIH0sDQogICAgImNyZWRlbnRpYWxTdGF0dXMiOiB7DQogICAgICAiaWQiOiAiZGlkOnN0YXR1czppZCIsDQogICAgICAidHlwZSI6ICJUWVBFIiwNCiAgICAgICJzdGF0dXNQdXJwb3NlIjogIlBVUlBPU0UiLA0KICAgICAgIkZpZWxkMSI6ICJWYWwxIg0KICAgIH0NCiAgfSwNCiAgIl9zZF9hbGciOiAic2hhLTI1NiINCn0";
     let key_name = "WyJNVEl6WVdKaiIsIm5hbWUiLCJKb2huIl0";
     let key_age = "WyJNVEl6WVdKaiIsImFnZSIsIjQyIl0";
     let key_id = "key-id";
     let key_alg = "ES256";
-    let token = format!("{jwt_token}.QUJD~{key_name}~{key_age}~");
-    let audience = "some-aud";
-    let nonce = "nonce";
-    let hash = "test-hash";
-    let holder_binding_ctx = HolderBindingCtx {
-        nonce: nonce.to_string(),
-        audience: audience.to_string(),
-    };
-
-    let mut hasher = MockHasher::default();
-    hasher
-        .expect_hash_base64_url()
-        .returning(|_| Ok(hash.to_string()));
+    // malformed: no trailing ~
+    let token = format!("{jwt_token}.QUJD~{key_name}~{key_age}");
 
     let mut signer = MockSignatureProvider::default();
     signer
@@ -133,56 +143,78 @@ async fn test_prepare_sd_presentation_with_kb() {
         .returning(|| Some(key_alg.to_string()));
     signer.expect_sign().returning(|_| Ok(vec![0; 32]));
 
+    // Take name and age
     let presentation = CredentialPresentation {
         token: token.clone(),
         disclosed_keys: vec!["name".to_string(), "age".to_string()],
     };
 
-    // With holder binding context and signer
     let result = prepare_sd_presentation(
-        presentation.clone(),
-        &hasher,
-        Some(holder_binding_ctx.clone()),
-        Some(Box::new(signer)),
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
     )
     .await
     .unwrap();
     assert!(result.contains(key_name) && result.contains(key_age));
     let (_, kb_token) = result.rsplit_once('~').unwrap();
-    println!("{kb_token}");
-    assert!(!kb_token.is_empty());
-    assert!(kb_token.ends_with(".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")); // fake sig: vec![0;32]
-    let kb_jwt = Jwt::<KeyBindingPayload>::build_from_token(kb_token, None, None)
-        .await
-        .unwrap();
-    assert_eq!(kb_jwt.header.key_id, Some(key_id.to_string()));
-    assert_eq!(kb_jwt.header.algorithm, key_alg);
-    assert_eq!(kb_jwt.payload.audience.unwrap().first().unwrap(), audience);
-    assert_eq!(kb_jwt.payload.custom.nonce, nonce);
-    assert_eq!(kb_jwt.payload.custom.sd_hash, hash);
+    assert!(kb_token.is_empty());
 
-    // Without holder binding context and signer
+    // Take name
+    let presentation = CredentialPresentation {
+        token: token.clone(),
+        disclosed_keys: vec!["name".to_string()],
+    };
+
     let result = prepare_sd_presentation(
-        presentation.clone(),
-        &hasher,
-        None,
-        Some(Box::new(MockSignatureProvider::default())),
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap();
+    assert!(result.contains(key_name) && !result.contains(key_age));
+    assert!(result.ends_with('~')); // no key binding token appended, if context / authn_fn is missing
+
+    // Take age
+    let presentation = CredentialPresentation {
+        token: token.clone(),
+        disclosed_keys: vec!["age".to_string()],
+    };
+
+    let result = prepare_sd_presentation(
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
     )
     .await;
-    assert!(matches!(result, Err(FormatterError::Failed(_))));
+    assert!(result.is_ok_and(|token| !token.contains(key_name) && token.contains(key_age)));
 
-    // With holder binding context and no signer
+    // Take none
+    let presentation = CredentialPresentation {
+        token,
+        disclosed_keys: vec![],
+    };
+
     let result = prepare_sd_presentation(
-        presentation.clone(),
-        &hasher,
-        Some(holder_binding_ctx),
-        None,
+        presentation,
+        &SHA256,
+        &W3C_USER_CLAIM_PATH
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
     )
     .await;
-    assert!(matches!(result, Err(FormatterError::Failed(_))));
-    // Without holder binding context and no signer
-    let result = prepare_sd_presentation(presentation.clone(), &hasher, None, None).await;
-    assert!(matches!(result, Err(FormatterError::Failed(_))));
+    assert!(result.is_ok_and(|token| !token.contains(key_name) && !token.contains(key_age)));
 }
 
 #[test]
@@ -223,7 +255,7 @@ fn test_gather_disclosures_and_objects_without_nesting() {
         "country": "DE"
     });
 
-    let (disclosures, result) = compute_object_disclosures(&test_json, &hasher).unwrap();
+    let (disclosures, result) = compute_object_disclosures(&test_json, &hasher, true).unwrap();
     let disclosures: Vec<_> = disclosures
         .iter()
         .map(|val| DisclosureArray::from_b64(val))
@@ -300,7 +332,7 @@ fn test_gather_disclosures_and_objects_with_nesting() {
         }
     });
 
-    let (disclosures, result) = compute_object_disclosures(&test_json, &hasher).unwrap();
+    let (disclosures, result) = compute_object_disclosures(&test_json, &hasher, true).unwrap();
     let disclosures: Vec<_> = disclosures
         .iter()
         .map(|val| DisclosureArray::from_b64(val))
@@ -358,7 +390,7 @@ fn test_gather_disclosures_and_objects_with_nesting() {
 fn test_parse_disclosure() {
     let mut easy_disclosure = Disclosure {
         salt: "123".to_string(),
-        key: "456".to_string(),
+        key: Some("456".to_string()),
         value: serde_json::Value::String("789".to_string()),
         disclosure_array: r#"["123","456","789"]"#.to_string(),
         disclosure: "not passed".to_string(),
@@ -394,143 +426,127 @@ fn test_parse_disclosure() {
         )
         .unwrap()
     );
+
+    let array_disclosure = Disclosure {
+        salt: "123".to_string(),
+        key: None,
+        value: serde_json::Value::String("789".to_string()),
+        disclosure_array: r#"["123","789"]"#.to_string(),
+        disclosure: "not passed".to_string(),
+    };
+    let array_disclosure_str = r#"["123","789"]"#;
+    assert_eq!(
+        array_disclosure,
+        parse_disclosure(array_disclosure_str.to_owned(), "not passed".to_owned()).unwrap()
+    );
 }
 
-fn generic_disclosures() -> Vec<Disclosure> {
-    vec![
-        Disclosure {
-            salt: "cTgNF-AtESuivLBdhN0t8A".to_string(),
-            key: "str".to_string(),
-            value: serde_json::Value::String("stronk".to_string()),
-            disclosure_array: "[\"cTgNF-AtESuivLBdhN0t8A\",\"str\",\"stronk\"]".to_string(),
-            disclosure: "WyJjVGdORi1BdEVTdWl2TEJkaE4wdDhBIiwic3RyIiwic3Ryb25rIl0".to_string()
-        },
-        Disclosure {
-            salt: "nEP135SkAyOTnMA67CNTAA".to_string(),
-            key: "another".to_string(),
-            value: serde_json::Value::String("week".to_string()),
-            disclosure_array: "[\"nEP135SkAyOTnMA67CNTAA\",\"another\",\"week\"]".to_string(),
-            disclosure: "WyJuRVAxMzVTa0F5T1RuTUE2N0NOVEFBIiwiYW5vdGhlciIsIndlZWsiXQ".to_string()
-        },
-        Disclosure {
-            salt: "xtyBeqglpTfvXrqQzsXMFw".to_string(),
-            key: "obj".to_string(),
-            value: json!({
+fn generic_disclosures() -> (Value, Vec<Disclosure>) {
+    (json!({
+        "_sd": [SHA256
+            .hash_base64_url("WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqIix7Il9zZCI6WyJoTm02aU9WLS1pMzNsQXZUZXVIX3JZUUJ3eDhnX210RFE5VDdRTE5kSDhzIiwiZ1hzQmpDSTVWNktmUXJqbURsS1h0dHdENXYtSG9Sd0hIX0JXX3VXc3U2VSJdfV0".as_bytes())
+            .unwrap()],
+    }),
+     vec![
+         Disclosure {
+             salt: "cTgNF-AtESuivLBdhN0t8A".to_string(),
+             key: Some("str".to_string()),
+             value: serde_json::Value::String("stronk".to_string()),
+             disclosure_array: "[\"cTgNF-AtESuivLBdhN0t8A\",\"str\",\"stronk\"]".to_string(),
+             disclosure: "WyJjVGdORi1BdEVTdWl2TEJkaE4wdDhBIiwic3RyIiwic3Ryb25rIl0".to_string()
+         },
+         Disclosure {
+             salt: "nEP135SkAyOTnMA67CNTAA".to_string(),
+             key: Some("another".to_string()),
+             value: serde_json::Value::String("week".to_string()),
+             disclosure_array: "[\"nEP135SkAyOTnMA67CNTAA\",\"another\",\"week\"]".to_string(),
+             disclosure: "WyJuRVAxMzVTa0F5T1RuTUE2N0NOVEFBIiwiYW5vdGhlciIsIndlZWsiXQ".to_string()
+         },
+         Disclosure {
+             salt: "xtyBeqglpTfvXrqQzsXMFw".to_string(),
+             key: Some("obj".to_string()),
+             value: json!({
               "_sd": [
                 "54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA",
                 "9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8"
               ]
             }),
-            disclosure_array: "[\"xtyBeqglpTfvXrqQzsXMFw\",\"obj\",{\"_sd\":[\"hNm6iOV--i33lAvTeuH_rYQBwx8g_mtDQ9T7QLNdH8s\",\"gXsBjCI5V6KfQrjmDlKXttwD5v-HoRwHH_BW_uWsu6U\"]}]".to_string(),
-            disclosure:"WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqIix7Il9zZCI6WyJoTm02aU9WLS1pMzNsQXZUZXVIX3JZUUJ3eDhnX210RFE5VDdRTE5kSDhzIiwiZ1hzQmpDSTVWNktmUXJqbURsS1h0dHdENXYtSG9Sd0hIX0JXX3VXc3U2VSJdfV0".to_string(),
-        }
-    ]
+             disclosure_array: "[\"xtyBeqglpTfvXrqQzsXMFw\",\"obj\",{\"_sd\":[\"hNm6iOV--i33lAvTeuH_rYQBwx8g_mtDQ9T7QLNdH8s\",\"gXsBjCI5V6KfQrjmDlKXttwD5v-HoRwHH_BW_uWsu6U\"]}]".to_string(),
+             disclosure: "WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqIix7Il9zZCI6WyJoTm02aU9WLS1pMzNsQXZUZXVIX3JZUUJ3eDhnX210RFE5VDdRTE5kSDhzIiwiZ1hzQmpDSTVWNktmUXJqbURsS1h0dHdENXYtSG9Sd0hIX0JXX3VXc3U2VSJdfV0".to_string(),
+         }
+     ])
 }
 
 #[test]
 fn test_select_disclosures_nested() {
-    let disclosures = generic_disclosures();
+    let (payload, disclosures) = generic_disclosures();
     let expected = HashSet::<String>::from_iter([
         disclosures[0].disclosure.to_string(),
         disclosures[2].disclosure.to_string(),
     ]);
-
-    let mut hasher = MockHasher::default();
-    hasher.expect_hash_base64_url().returning({
-        let disclosures = disclosures.clone();
-        move |input| {
-            let input = if let Ok(input) = Base64UrlSafeNoPadding::decode_to_vec(input, None) {
-                input
-            } else {
-                return Ok("".to_string());
-            };
-
-            let input = DisclosureArray::from(std::str::from_utf8(&input).unwrap());
-            if input.key.eq(&disclosures[0].key) {
-                Ok("54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA".to_string())
-            } else if input.key.eq(&disclosures[1].key) {
-                Ok("9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8".to_string())
-            } else {
-                Ok("".to_string())
-            }
-        }
-    });
-
-    let result = select_disclosures(vec!["obj/str".into()], disclosures, &hasher).unwrap();
-
+    let result =
+        select_disclosures(vec!["obj/str".into()], &payload, disclosures, &SHA256).unwrap();
     assert_eq!(expected, HashSet::from_iter(result));
 }
 
 #[test]
 fn test_select_disclosures_root() {
-    let disclosures = generic_disclosures();
+    let (payload, disclosures) = generic_disclosures();
     let expected =
         HashSet::<String>::from_iter(disclosures.iter().map(|d| d.disclosure.to_string()));
 
-    let mut hasher = MockHasher::default();
-    hasher.expect_hash_base64_url().returning({
-        let disclosures = disclosures.clone();
-        move |input| {
-            let input = if let Ok(input) = Base64UrlSafeNoPadding::decode_to_vec(input, None) {
-                input
-            } else {
-                return Ok("".to_string());
-            };
-
-            let input = DisclosureArray::from(std::str::from_utf8(&input).unwrap());
-            if input.key.eq(&disclosures[0].key) {
-                Ok("54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA".to_string())
-            } else if input.key.eq(&disclosures[1].key) {
-                Ok("9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8".to_string())
-            } else {
-                Ok("".to_string())
-            }
-        }
-    });
-
-    let result = select_disclosures(vec!["obj".into()], disclosures, &hasher).unwrap();
-
+    let result = select_disclosures(vec!["obj".into()], &payload, disclosures, &SHA256).unwrap();
     assert_eq!(expected, HashSet::from_iter(result));
 }
 
 #[test]
 fn test_select_disclosures_nested_structure_with_similar_nodes() {
+    let payload = json!({
+        "_sd": [
+            SHA256
+            .hash_base64_url("WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqMSIseyJfc2QiOlsiaF8xNjhQSFpwVDg4bUo0Mkl6cFJZMEpyMWdXb1FDTUxHUVRENDNQeGxRayJdfV0".as_bytes())
+            .unwrap(),
+            SHA256
+            .hash_base64_url("WyJwZ2dWYll6enU2b09HWHJtTlZHUEhQIiwib2JqMiIseyJfc2QiOlsiT1lyLUUydzYwWWt1R21UcWZ4WjFrclljelZQUW5ONEQyWnJXQk5RNzNlNCJdfV0".as_bytes())
+            .unwrap()
+        ]
+    });
     let disclosures = vec![
         Disclosure {
             salt: "cTgNF-AtESuivLBdhN0t8A".to_string(),
-            key: "value".to_string(),
-            value: serde_json::Value::String("x".to_string()),
+            key: Some("value".to_string()),
+            value: Value::String("x".to_string()),
             disclosure_array: "[\"cTgNF-AtESuivLBdhN0t8A\",\"value\",\"x\"]".to_string(),
             disclosure: "WyJjVGdORi1BdEVTdWl2TEJkaE4wdDhBIiwidmFsdWUiLCJ4Il0".to_string()
         },
         Disclosure {
             salt: "xtyBeqglpTfvXrqQzsXMFw".to_string(),
-            key: "obj1".to_string(),
+            key: Some("obj1".to_string()),
             value: json!({
               "_sd": [
-                "54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA",
+                "h_168PHZpT88mJ42IzpRY0Jr1gWoQCMLGQTD43PxlQk",
               ]
             }),
-            disclosure_array: "[\"xtyBeqglpTfvXrqQzsXMFw\",\"obj1\",{\"_sd\":[\"54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA\"]}]".to_string(),
-            disclosure:"WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqMSIseyJfc2QiOlsiNTRuUjZkYVhzbF9MRGN6U2FaYzQ4Y29MLVVIUjcyV3lJcHp6NkFrRFV5QSJdfV0".to_string(),
+            disclosure_array: "[\"xtyBeqglpTfvXrqQzsXMFw\",\"obj1\",{\"_sd\":[\"h_168PHZpT88mJ42IzpRY0Jr1gWoQCMLGQTD43PxlQk\"]}]".to_string(),
+            disclosure: "WyJ4dHlCZXFnbHBUZnZYcnFRenNYTUZ3Iiwib2JqMSIseyJfc2QiOlsiaF8xNjhQSFpwVDg4bUo0Mkl6cFJZMEpyMWdXb1FDTUxHUVRENDNQeGxRayJdfV0".to_string(),
         },
         Disclosure {
             salt: "nEP135SkAyOTnMA67CNTAA".to_string(),
-            key: "value".to_string(),
-            value: serde_json::Value::String("y".to_string()),
+            key: Some("value".to_string()),
+            value: Value::String("y".to_string()),
             disclosure_array: "[\"nEP135SkAyOTnMA67CNTAA\",\"value\",\"y\"]".to_string(),
             disclosure: "WyJuRVAxMzVTa0F5T1RuTUE2N0NOVEFBIiwidmFsdWUiLCJ5Il0".to_string()
         },
         Disclosure {
             salt: "pggVbYzzu6oOGXrmNVGPHP".to_string(),
-            key: "obj2".to_string(),
+            key: Some("obj2".to_string()),
             value: json!({
               "_sd": [
-                "9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8"
+                "OYr-E2w60YkuGmTqfxZ1krYczVPQnN4D2ZrWBNQ73e4"
               ]
             }),
-            disclosure_array: "[\"pggVbYzzu6oOGXrmNVGPHP\",\"obj2\",{\"_sd\":[\"9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8\"]}]".to_string(),
-            disclosure:"WyJwZ2dWYll6enU2b09HWHJtTlZHUEhQIiwib2JqMiIseyJfc2QiOlsiOVJ6YVhhSkYzQkNEaXRtTVJOaEhxemJSSVJjNnBiZlMtN1liTV9QT2JrOCJdfV0".to_string(),
+            disclosure_array: "[\"pggVbYzzu6oOGXrmNVGPHP\",\"obj2\",{\"_sd\":[\"OYr-E2w60YkuGmTqfxZ1krYczVPQnN4D2ZrWBNQ73e4\"]}]".to_string(),
+            disclosure: "WyJwZ2dWYll6enU2b09HWHJtTlZHUEhQIiwib2JqMiIseyJfc2QiOlsiT1lyLUUydzYwWWt1R21UcWZ4WjFrclljelZQUW5ONEQyWnJXQk5RNzNlNCJdfV0".to_string(),
         }
     ];
     let expected = HashSet::<String>::from_iter([
@@ -538,42 +554,94 @@ fn test_select_disclosures_nested_structure_with_similar_nodes() {
         disclosures[1].disclosure.to_string(),
     ]);
 
-    let mut hasher = MockHasher::default();
-    hasher.expect_hash_base64_url().returning({
-        let disclosures = disclosures.clone();
-        move |input| {
-            let input = if let Ok(input) = Base64UrlSafeNoPadding::decode_to_vec(input, None) {
-                input
-            } else {
-                return Ok("".to_string());
-            };
-
-            let input = DisclosureArray::from(std::str::from_utf8(&input).unwrap());
-            if input.salt.eq(&disclosures[0].salt) {
-                Ok("54nR6daXsl_LDczSaZc48coL-UHR72WyIpzz6AkDUyA".to_string())
-            } else if input.salt.eq(&disclosures[2].salt) {
-                Ok("9RzaXaJF3BCDitmMRNhHqzbRIRc6pbfS-7YbM_PObk8".to_string())
-            } else {
-                Ok("".to_string())
-            }
-        }
-    });
-
-    let result = select_disclosures(vec!["obj1/value".into()], disclosures, &hasher).unwrap();
+    let result =
+        select_disclosures(vec!["obj1/value".into()], &payload, disclosures, &SHA256).unwrap();
 
     assert_eq!(expected, HashSet::from_iter(result));
 }
 
 #[test]
-fn test_select_disclosures_returns_error_when_disclosed_key_not_found_in_disclosures() {
-    let disclosures = generic_disclosures();
+fn test_select_disclosures_array_single_element() {
+    let payload = json!({
+        "_sd": [
+            SHA256
+            .hash_base64_url("WyJIeDRIOWRVY0kxeWF5ZTNVaHpKRFB3IiwiZmFtaWx5X25hbWUiLCJoZWxsbyJd".as_bytes())
+            .unwrap(),
+            SHA256
+            .hash_base64_url("WyJVa1U5bzFYUndPWFpHd0ZGNG01ZDN3IiwiZ2l2ZW5fbmFtZSIsIndvcmxkIl0".as_bytes())
+            .unwrap(),
+            SHA256
+            .hash_base64_url("WyJwZ2dWYll6enU2b09HWHJtTlZHUEhQIiwib2JqMiIseyJfc2QiOlsiT1lyLUUydzYwWWt1R21UcWZ4WjFrclljelZQUW5ONEQyWnJXQk5RNzNlNCJdfV0".as_bytes())
+            .unwrap()
+        ]
+    });
+    let disclosures = vec![
+        Disclosure {
+            salt: "Hx4H9dUcI1yaye3UhzJDPw".to_string(),
+            key: Some("family_name".to_string()),
+            value: Value::String("hello".to_string()),
+            disclosure_array: "[\"Hx4H9dUcI1yaye3UhzJDPw\",\"family_name\",\"hello\"]".to_string(),
+            disclosure: "WyJIeDRIOWRVY0kxeWF5ZTNVaHpKRFB3IiwiZmFtaWx5X25hbWUiLCJoZWxsbyJd".to_string()
+        },
+        Disclosure {
+            salt: "UkU9o1XRwOXZGwFF4m5d3w".to_string(),
+            key: Some("given_name".to_string()),
+            value: Value::String("world".to_string()),
+            disclosure_array: "[\"UkU9o1XRwOXZGwFF4m5d3w\",\"given_name\",\"world\"]".to_string(),
+            disclosure: "WyJVa1U5bzFYUndPWFpHd0ZGNG01ZDN3IiwiZ2l2ZW5fbmFtZSIsIndvcmxkIl0".to_string(),
+        },
+        Disclosure {
+            salt: "mom2J1prRcgzVHkHRyakUg".to_string(),
+            key: Some("nationalities".to_string()),
+            value: json!([{"...":"XI314_y7Hz4fKiEf8bUtJLUUWDB03kMZeoulLMCX7YA"},{"...":"oj0XASw1WO8_i3_owTiTxXWdZftGKtC607Jvgu9VNuA"},{"...":"2R_-JsPI71SPzQqxbLHZ3kU_ySD7VgGb5EI_WTFPYWE"}]),
+            disclosure_array: "[\"mom2J1prRcgzVHkHRyakUg\",\"nationalities\",[{\"...\":\"XI314_y7Hz4fKiEf8bUtJLUUWDB03kMZeoulLMCX7YA\"},{\"...\":\"oj0XASw1WO8_i3_owTiTxXWdZftGKtC607Jvgu9VNuA\"},{\"...\":\"2R_-JsPI71SPzQqxbLHZ3kU_ySD7VgGb5EI_WTFPYWE\"}]]".to_string(),
+            disclosure: "WyJwZ2dWYll6enU2b09HWHJtTlZHUEhQIiwib2JqMiIseyJfc2QiOlsiT1lyLUUydzYwWWt1R21UcWZ4WjFrclljelZQUW5ONEQyWnJXQk5RNzNlNCJdfV0".to_string()
+        },
+        Disclosure {
+            salt: "-jeyFyo1aSTutQtmYqlaEw".to_string(),
+            key: None,
+            value: Value::String("CH".to_string()),
+            disclosure_array: "[\"-jeyFyo1aSTutQtmYqlaEw\",\"CH\"]".to_string(),
+            disclosure: "WyItamV5RnlvMWFTVHV0UXRtWXFsYUV3IiwiQ0giXQ".to_string(),
+        },
+        Disclosure {
+            salt: "ES_SJMWR7rBpvw4Xo5yxyQ".to_string(),
+            key: None,
+            value: Value::String("IT".to_string()),
+            disclosure_array: "[\"ES_SJMWR7rBpvw4Xo5yxyQ\",\"IT\"]".to_string(),
+            disclosure: "WyJFU19TSk1XUjdyQnB2dzRYbzV5eHlRIiwiSVQiXQ".to_string(),
+        },
+        Disclosure {
+            salt: "FzQhCdY-3kbCiL52L394YA".to_string(),
+            key: None,
+            value: Value::String("FR".to_string()),
+            disclosure_array: "[\"FzQhCdY-3kbCiL52L394YA\",\"FR\"]".to_string(),
+            disclosure: "WyJGelFoQ2RZLTNrYkNpTDUyTDM5NFlBIiwiRlIiXQ".to_string(),
+        }
+    ];
+    let expected = HashSet::<String>::from_iter([
+        disclosures[2].disclosure.to_string(),
+        disclosures[4].disclosure.to_string(),
+    ]);
 
-    let mut hasher = MockHasher::default();
-    hasher
-        .expect_hash_base64_url()
-        .returning(|_| Ok("".to_string()));
+    let result = select_disclosures(
+        vec!["nationalities".into(), "nationalities/1".into()],
+        &payload,
+        disclosures,
+        &SHA256,
+    )
+    .unwrap();
 
-    assert!(select_disclosures(vec!["abcd".into()], disclosures, &hasher).is_err())
+    assert_eq!(HashSet::from_iter(result), expected);
+}
+
+#[test]
+fn test_select_disclosures_returns_empty_when_disclosed_key_not_found_in_disclosures() {
+    let (payload, disclosures) = generic_disclosures();
+
+    let disclosures =
+        select_disclosures(vec!["abcd".into()], &payload, disclosures, &SHA256).unwrap();
+    assert!(disclosures.is_empty());
 }
 
 pub fn get_credential_data(status: CredentialStatus, core_base_url: &str) -> CredentialData {
@@ -607,7 +675,8 @@ pub fn get_credential_data(status: CredentialStatus, core_base_url: &str) -> Cre
         },
     ];
     let issuer_did = Issuer::Url("did:issuer:test".parse().unwrap());
-    let credential_subject = VcdmCredentialSubject::new(nest_claims(claims.clone()).unwrap());
+    let credential_subject =
+        VcdmCredentialSubject::new(nest_claims(claims.clone()).unwrap()).unwrap();
     let vcdm = VcdmCredential::new_v2(issuer_did, credential_subject)
         .add_context(schema_context)
         .add_credential_schema(schema)
@@ -615,10 +684,19 @@ pub fn get_credential_data(status: CredentialStatus, core_base_url: &str) -> Cre
         .with_valid_from(issuance_date)
         .with_valid_until(issuance_date + valid_for);
 
+    let holder_identifier = Identifier {
+        did: Some(Did {
+            did: holder_did,
+            ..dummy_did()
+        }),
+        ..dummy_identifier()
+    };
+
     CredentialData {
         vcdm,
         claims,
-        holder_did: Some(holder_did),
+        holder_identifier: Some(holder_identifier),
         holder_key_id: Some("did-vm-id".to_string()),
+        issuer_certificate: None,
     }
 }

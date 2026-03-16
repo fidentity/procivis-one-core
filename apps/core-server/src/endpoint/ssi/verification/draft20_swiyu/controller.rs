@@ -3,16 +3,15 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use axum_extra::extract::WithRejection;
+use one_core::error::{ErrorCode, ErrorCodeMixin};
 use one_core::provider::verification_protocol::openid4vp::error::OpenID4VCError;
 use one_core::provider::verification_protocol::openid4vp::model::OpenID4VPDirectPostRequestDTO;
 use one_core::service::error::{BusinessLogicError, ServiceError};
-use uuid::Uuid;
+use shared_types::InteractionId;
 
 use super::super::super::dto::{OpenID4VCIErrorResponseRestDTO, OpenID4VCIErrorRestEnum};
+use super::super::dto::{OpenID4VPDirectPostRequestRestDTO, OpenID4VPDirectPostResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::endpoint::ssi::verification::draft20::dto::{
-    OpenID4VPDirectPostRequestRestDTO, OpenID4VPDirectPostResponseRestDTO,
-};
 use crate::router::AppState;
 
 #[utoipa::path(
@@ -21,7 +20,7 @@ use crate::router::AppState;
     request_body(content = OpenID4VPDirectPostRequestRestDTO, description = "Verifier request", content_type = "application/x-www-form-urlencoded"
     ),
     params(
-        ("id" = Uuid, Path, description = "Interaction id")
+        ("id" = InteractionId, Path, description = "Interaction id")
     ),
     responses(
         (status = 200, description = "OK", body = OpenID4VPDirectPostResponseRestDTO),
@@ -38,7 +37,7 @@ use crate::router::AppState;
 )]
 pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
     state: State<AppState>,
-    WithRejection(Path(id), _): WithRejection<Path<Uuid>, ErrorResponseRestDTO>,
+    WithRejection(Path(id), _): WithRejection<Path<InteractionId>, ErrorResponseRestDTO>,
     WithRejection(Form(request), _): WithRejection<
         Form<OpenID4VPDirectPostRequestRestDTO>,
         ErrorResponseRestDTO,
@@ -74,7 +73,7 @@ pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
             )
                 .into_response()
         }
-        Err(ServiceError::ConfigValidationError(error)) => {
+        Err(error) if error.error_code() == ErrorCode::BR_0089 => {
             tracing::error!("Config validation error: {error}");
             StatusCode::NOT_FOUND.into_response()
         }

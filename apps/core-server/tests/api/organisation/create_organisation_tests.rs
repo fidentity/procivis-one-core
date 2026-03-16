@@ -1,4 +1,5 @@
 use one_core::model::history::HistoryAction;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
@@ -19,7 +20,9 @@ async fn test_create_organisation_success_id_set() {
 
     // THEN
     assert_eq!(resp.status(), 201);
-    resp.json_value().await["id"].assert_eq(&organisation_id);
+    let resp = resp.json_value().await;
+    resp["id"].assert_eq(&organisation_id);
+
     let history = context
         .db
         .histories

@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use serde_json::json;
 use shared_types::DidValue;
+use standardized_types::jwk::PublicJwk;
 
 use super::DidKeys;
 use super::error::DidMethodError;
 use super::model::DidVerificationMethod;
-use crate::model::key::{Key, PublicKeyJwk};
+use crate::model::key::Key;
 
 pub const ENC: &str = "enc";
 pub const SIG: &str = "sig";
@@ -21,7 +22,7 @@ pub fn jwk_context() -> serde_json::Value {
 pub fn jwk_verification_method(
     id: String,
     did: &DidValue,
-    jwk: PublicKeyJwk,
+    jwk: PublicJwk,
 ) -> DidVerificationMethod {
     DidVerificationMethod {
         id,
@@ -55,14 +56,14 @@ pub fn expect_one_key(keys: &DidKeys) -> Result<&Key, DidMethodError> {
     .filter(|key| seen.insert(key.id));
 
     let Some(key) = unique_keys.next() else {
-        return Err(DidMethodError::CouldNotCreate(
+        return Err(DidMethodError::CreationError(
             "No keys provided for any role".to_string(),
         ));
     };
 
     let remaining_keys_count = unique_keys.count();
     if remaining_keys_count > 0 {
-        return Err(DidMethodError::CouldNotCreate(format!(
+        return Err(DidMethodError::CreationError(format!(
             "Too many keys provided, expected exactly one, got {remaining_keys_count}"
         )));
     }

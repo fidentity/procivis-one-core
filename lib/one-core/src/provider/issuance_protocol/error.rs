@@ -1,33 +1,61 @@
 use thiserror::Error;
 
+use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
+use crate::model::credential::CredentialStateEnum;
+
 #[derive(Debug, Error)]
 pub enum IssuanceProtocolError {
     #[error("Issuance protocol failure: `{0}`")]
     Failed(String),
-    #[error("Issuance protocol disabled: `{0}`")]
-    Disabled(String),
-    #[error("Transport error: `{0}`")]
-    Transport(anyhow::Error),
-    #[error("JSON error: `{0}`")]
-    JsonError(serde_json::Error),
-    #[error("Operation not supported")]
-    OperationNotSupported,
-    #[error("Base url is unknown")]
-    MissingBaseUrl,
     #[error("Invalid request: `{0}`")]
     InvalidRequest(String),
+    #[error("Failed to autogenerate binding: `{0}`")]
+    BindingAutogenerationFailure(String),
     #[error("Incorrect credential schema type")]
     IncorrectCredentialSchemaType,
     #[error(transparent)]
-    Other(anyhow::Error),
-    #[error(transparent)]
     StorageAccessError(anyhow::Error),
-    #[error(transparent)]
-    TxCode(TxCodeError),
     #[error("Credential offer issuer did does not match credential issuer did")]
     DidMismatch,
+    #[error("Credential offer issuer certificate does not match credential issuer certificate")]
+    CertificateMismatch,
+    #[error("Credential offer issuer key does not match credential issuer certificate")]
+    KeyMismatch,
     #[error("Credential signature verification failed: `{0}`")]
     CredentialVerificationFailed(anyhow::Error),
+    #[error("Credential is suspended")]
+    Suspended,
+    #[error("Credential refresh is not yet possible")]
+    RefreshTooSoon,
+
+    #[error("JSON error: `{0}`")]
+    Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    OpenIDIssuanceError(#[from] OpenIDIssuanceError),
+
+    #[error(transparent)]
+    Nested(#[from] NestedError),
+}
+
+impl ErrorCodeMixin for IssuanceProtocolError {
+    fn error_code(&self) -> ErrorCode {
+        match self {
+            Self::IncorrectCredentialSchemaType => ErrorCode::BR_0087,
+            Self::InvalidRequest(_) => ErrorCode::BR_0085,
+            Self::Failed(_)
+            | Self::Json(_)
+            | Self::StorageAccessError(_)
+            | Self::OpenIDIssuanceError(_) => ErrorCode::BR_0062,
+            Self::DidMismatch
+            | Self::KeyMismatch
+            | Self::CertificateMismatch
+            | Self::CredentialVerificationFailed(_) => ErrorCode::BR_0173,
+            Self::BindingAutogenerationFailure(_) => ErrorCode::BR_0217,
+            Self::Suspended | Self::RefreshTooSoon => ErrorCode::BR_0238,
+            Self::Nested(nested) => nested.error_code(),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -36,4 +64,53 @@ pub enum TxCodeError {
     IncorrectCode,
     #[error("Invalid use of tx_code")]
     InvalidCodeUse,
+}
+
+impl ErrorCodeMixin for TxCodeError {
+    fn error_code(&self) -> ErrorCode {
+        match self {
+            Self::IncorrectCode => ErrorCode::BR_0169,
+            Self::InvalidCodeUse => ErrorCode::BR_0170,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Error)]
+pub enum OpenID4VCIError {
+    #[error("unsupported_grant_type")]
+    UnsupportedGrantType,
+    #[error("invalid_grant")]
+    InvalidGrant,
+    #[error("invalid_request")]
+    InvalidRequest,
+    #[error("invalid_token")]
+    InvalidToken,
+    #[error("invalid_nonce")]
+    InvalidNonce,
+    #[error("invalid_or_missing_proof")]
+    InvalidOrMissingProof,
+    #[error("unsupported_credential_format")]
+    UnsupportedCredentialFormat,
+    #[error("unsupported_credential_type")]
+    UnsupportedCredentialType,
+    #[error("credential_request_denied")]
+    CredentialRequestDenied,
+    #[error("invalid_notification_id")]
+    InvalidNotificationId,
+    #[error("invalid_notification_request")]
+    InvalidNotificationRequest,
+    #[error("oidc runtime error: `{0}`")]
+    RuntimeError(String),
+}
+
+#[derive(Debug, Error)]
+pub enum OpenIDIssuanceError {
+    #[error("Invalid credential state: `{state}`")]
+    InvalidCredentialState { state: CredentialStateEnum },
+
+    #[error("Validation error: `{0}`")]
+    ValidationError(String),
+
+    #[error("OpenID4VCI error: `{0}`")]
+    OpenID4VCI(#[from] OpenID4VCIError),
 }

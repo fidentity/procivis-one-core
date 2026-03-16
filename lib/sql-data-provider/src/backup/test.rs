@@ -5,6 +5,7 @@ use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Iterable, Set};
 use shared_types::{
     CertificateId, CredentialId, CredentialSchemaId, DidId, IdentifierId, KeyId, OrganisationId,
 };
+use similar_asserts::assert_eq;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -12,6 +13,7 @@ use super::BackupProvider;
 use crate::db_conn;
 use crate::entity::certificate::{self, CertificateState};
 use crate::entity::credential::{self, CredentialRole, CredentialState};
+use crate::entity::credential_schema::KeyStorageSecurity;
 use crate::entity::did::{self, DidType};
 use crate::entity::identifier::{self, IdentifierState, IdentifierType};
 use crate::entity::key;
@@ -21,6 +23,7 @@ use crate::test_utilities::{
     insert_credential_schema_to_database, insert_key_did, insert_many_claims_schema_to_database,
     insert_many_claims_to_database, insert_organisation_to_database,
 };
+use crate::transaction_context::TransactionManagerImpl;
 
 async fn insert_key_to_database(
     database: &DatabaseConnection,
@@ -34,7 +37,7 @@ async fn insert_key_to_database(
         last_modified: Set(get_dummy_date()),
         name: Set(Uuid::new_v4().to_string()),
         public_key: Set(vec![]),
-        key_reference: Set(vec![]),
+        key_reference: Set(None),
         storage_type: Set(storage_type.into()),
         key_type: Set("".into()),
         organisation_id: Set(organisation_id),
@@ -61,7 +64,7 @@ async fn insert_credential_to_database(
         credential_schema_id: Set(schema_id),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        issuance_date: Set(get_dummy_date()),
+        issuance_date: Set(None),
         state: Set(CredentialState::Created),
         suspend_end_date: Set(None),
         deleted_at: if deleted {
@@ -69,15 +72,19 @@ async fn insert_credential_to_database(
         } else {
             NotSet
         },
-        exchange: Set("exchange".to_owned()),
+        protocol: Set("protocol".to_owned()),
         redirect_uri: Set(None),
-        credential: Set(vec![]),
         role: Set(CredentialRole::Holder),
         issuer_identifier_id: Set(None),
+        issuer_certificate_id: Set(None),
         holder_identifier_id: Set(None),
         interaction_id: Set(None),
-        revocation_list_id: Set(None),
         key_id: Set(Some(key_id)),
+        profile: Set(None),
+        credential_blob_id: Set(None),
+        wallet_unit_attestation_blob_id: Set(None),
+        wallet_instance_attestation_blob_id: Set(None),
+        webhook_url: Set(None),
     }
     .insert(database)
     .await
@@ -92,6 +99,7 @@ async fn insert_credential_to_database(
         order: 0,
         datatype: "STRING",
         array: false,
+        metadata: false,
     };
 
     let proof_input = ProofInput {
@@ -108,8 +116,9 @@ async fn insert_credential_to_database(
             Uuid::new_v4().into(),
             claim_schema_id,
             credential_id,
-            vec![255],
+            Some(vec![255]),
             "name".to_owned(),
+            false,
         )],
     )
     .await
@@ -156,6 +165,7 @@ async fn insert_did_to_database(
 async fn insert_certificate_to_database(
     database: &DatabaseConnection,
     identifier_id: IdentifierId,
+    organisation_id: Option<OrganisationId>,
     key_id: Option<KeyId>,
 ) -> CertificateId {
     certificate::ActiveModel {
@@ -167,7 +177,9 @@ async fn insert_certificate_to_database(
         key_id: Set(key_id),
         state: Set(CertificateState::Active),
         chain: Set("chain".into()),
+        fingerprint: Set(format!("fingerprint:{identifier_id}").parse().unwrap()),
         identifier_id: Set(identifier_id),
+        organisation_id: Set(organisation_id),
     }
     .insert(database)
     .await
@@ -234,7 +246,7 @@ async fn setup_empty() -> TestSetup {
     TestSetup {
         db: db.clone(),
         provider: BackupProvider {
-            db,
+            db: TransactionManagerImpl::new(db.clone()),
             exportable_storages: vec!["INTERNAL".into()],
         },
         organisation_id,
@@ -292,7 +304,20 @@ async fn add_unexportable_credentials(
         organisation_id,
         "credential schema 1",
         "JWT",
-        "NONE",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let unexportable_schema_id = insert_credential_schema_to_database(
+        db,
+        None,
+        organisation_id,
+        "credential schema 2",
+        "JWT",
+        None,
+        Some(KeyStorageSecurity::Basic),
     )
     .await
     .unwrap();
@@ -304,8 +329,16 @@ async fn add_unexportable_credentials(
         .collect::<Vec<_>>()
         .await;
 
-    let unexportable_ids = futures::stream::iter(keys_setup.unexportable_ids.iter())
+    let unexportable_by_key_ids = futures::stream::iter(keys_setup.unexportable_ids.iter())
         .then(|key_id| insert_credential_to_database(db, schema_id, (*key_id).into(), false))
+        .map(Uuid::from)
+        .collect::<Vec<_>>()
+        .await;
+
+    let unexportable_by_schema_ids = futures::stream::iter(keys_setup.exportable_ids.iter())
+        .then(|key_id| {
+            insert_credential_to_database(db, unexportable_schema_id, (*key_id).into(), false)
+        })
         .map(Uuid::from)
         .collect::<Vec<_>>()
         .await;
@@ -320,7 +353,7 @@ async fn add_unexportable_credentials(
 
     UnexportableSetup {
         exportable_ids,
-        unexportable_ids,
+        unexportable_ids: [unexportable_by_key_ids, unexportable_by_schema_ids].concat(),
         deleted_ids,
     }
 }
@@ -427,7 +460,32 @@ async fn add_identifier_with_type(
                 IdentifierType::Certificate,
             )
             .await;
-            insert_certificate_to_database(db, exportable_identifier, Some(key_id.into())).await;
+            insert_certificate_to_database(
+                db,
+                exportable_identifier,
+                Some(organisation_id),
+                Some(key_id.into()),
+            )
+            .await;
+            exportable_identifier
+        }
+        IdentifierType::CertificateAuthority => {
+            let exportable_identifier = insert_identifier_to_database(
+                db,
+                organisation_id,
+                deleted,
+                None,
+                None,
+                IdentifierType::CertificateAuthority,
+            )
+            .await;
+            insert_certificate_to_database(
+                db,
+                exportable_identifier,
+                Some(organisation_id),
+                Some(key_id.into()),
+            )
+            .await;
             exportable_identifier
         }
         IdentifierType::Key => {
@@ -496,9 +554,17 @@ async fn test_fetch_unexportable_credentials_local() {
         unexportable.credentials.len(),
         unexportable_credentials_setup.unexportable_ids.len()
     );
+
     assert_eq_unordered(
-        unexportable.credentials.into_iter().map(|item| item.id),
+        unexportable.credentials.iter().map(|item| item.id),
         unexportable_credentials_setup.unexportable_ids,
+    );
+
+    // ONE-8026: claims must contain claim schemas
+    assert!(
+        unexportable.credentials[0].claims.as_ref().unwrap()[0]
+            .schema
+            .is_some()
     );
 }
 
@@ -562,7 +628,7 @@ async fn test_fetch_unexportable_identifiers_certs_remote() {
         IdentifierType::Certificate,
     )
     .await;
-    insert_certificate_to_database(&setup.db, exportable_identifier, None).await;
+    insert_certificate_to_database(&setup.db, exportable_identifier, None, None).await;
 
     let unexportable = setup.provider.fetch_unexportable(None).await.unwrap();
 

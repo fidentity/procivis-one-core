@@ -2,30 +2,30 @@ use std::sync::Arc;
 
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential_schema::{
-    BackgroundProperties, CredentialSchema, CredentialSchemaClaim, CredentialSchemaRelations,
-    CredentialSchemaType, GetCredentialSchemaQuery, LayoutProperties, LayoutType,
-    UpdateCredentialSchemaRequest, WalletStorageTypeEnum,
+    BackgroundProperties, CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaQuery,
+    LayoutProperties, LayoutType, UpdateCredentialSchemaRequest,
 };
 use one_core::model::list_filter::ListFilterValue;
 use one_core::model::list_query::ListPagination;
 use one_core::model::organisation::{Organisation, OrganisationRelations};
-use one_core::repository::claim_schema_repository::MockClaimSchemaRepository;
 use one_core::repository::credential_schema_repository::CredentialSchemaRepository;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::organisation_repository::MockOrganisationRepository;
 use one_core::service::credential_schema::dto::CredentialSchemaFilterValue;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set, Unchanged};
-use shared_types::CredentialSchemaId;
+use shared_types::{CredentialSchemaId, RevocationMethodId};
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::CredentialSchemaProvider;
+use crate::entity::credential_schema::KeyStorageSecurity;
 use crate::entity::{credential_schema, organisation};
 use crate::test_utilities::*;
+use crate::transaction_context::TransactionManagerImpl;
 
 #[derive(Default)]
 struct Repositories {
-    pub claim_schema_repository: MockClaimSchemaRepository,
     pub organisation_repository: MockOrganisationRepository,
 }
 
@@ -51,8 +51,7 @@ async fn setup_empty(repositories: Repositories) -> TestSetup {
                 .expect("organisation not found"),
         ),
         repository: Box::new(CredentialSchemaProvider {
-            db: db.clone(),
-            claim_schema_repository: Arc::from(repositories.claim_schema_repository),
+            db: TransactionManagerImpl::new(db.clone()),
             organisation_repository: Arc::from(repositories.organisation_repository),
         }),
         db,
@@ -80,7 +79,8 @@ async fn setup_with_schema(repositories: Repositories) -> TestSetupWithCredentia
         organisation.id,
         "credential schema",
         "JWT",
-        "NONE",
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -93,6 +93,7 @@ async fn setup_with_schema(repositories: Repositories) -> TestSetupWithCredentia
             order: i as u32,
             datatype: "STRING",
             array: false,
+            metadata: false,
         })
         .collect();
 
@@ -109,26 +110,24 @@ async fn setup_with_schema(repositories: Repositories) -> TestSetupWithCredentia
         credential_schema: CredentialSchema {
             id: credential_schema_id,
             deleted_at: None,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
+            key_storage_security: None,
             imported_source_url: "CORE_URL".to_string(),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             name: "credential schema".to_string(),
-            format: "JWT".to_string(),
-            external_schema: false,
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            revocation_method: None,
             claim_schemas: Some(
                 new_claim_schemas
                     .into_iter()
-                    .map(|claim| CredentialSchemaClaim {
-                        schema: ClaimSchema {
-                            id: claim.id,
-                            created_date: get_dummy_date(),
-                            last_modified: get_dummy_date(),
-                            key: claim.key.to_owned(),
-                            data_type: claim.datatype.to_owned(),
-                            array: false,
-                        },
+                    .map(|claim| ClaimSchema {
+                        id: claim.id,
+                        created_date: get_dummy_date(),
+                        last_modified: get_dummy_date(),
+                        key: claim.key.to_owned(),
+                        data_type: claim.datatype.to_owned(),
+                        array: false,
+                        metadata: false,
                         required: claim.required,
                     })
                     .collect(),
@@ -136,9 +135,10 @@ async fn setup_with_schema(repositories: Repositories) -> TestSetupWithCredentia
             organisation: Some(organisation.clone()),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: credential_schema_id.to_string(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         },
         organisation,
         repository,
@@ -157,26 +157,24 @@ async fn test_create_credential_schema_success() {
 
     let credential_schema_id: CredentialSchemaId = Uuid::new_v4().into();
     let claim_schemas = vec![
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                created_date: get_dummy_date(),
-                last_modified: get_dummy_date(),
-                key: "key1".to_string(),
-                data_type: "STRING".to_string(),
-                array: false,
-            },
+        ClaimSchema {
+            id: Uuid::new_v4().into(),
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            key: "key1".to_string(),
+            data_type: "STRING".to_string(),
+            array: false,
+            metadata: false,
             required: true,
         },
-        CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                created_date: get_dummy_date(),
-                last_modified: get_dummy_date(),
-                key: "key2".to_string(),
-                data_type: "STRING".to_string(),
-                array: false,
-            },
+        ClaimSchema {
+            id: Uuid::new_v4().into(),
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            key: "key2".to_string(),
+            data_type: "STRING".to_string(),
+            array: false,
+            metadata: false,
             required: false,
         },
     ];
@@ -187,19 +185,19 @@ async fn test_create_credential_schema_success() {
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             deleted_at: None,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
+            key_storage_security: Some(KeyStorageSecurity::Basic.into()),
             imported_source_url: "CORE_URL".to_string(),
             name: "schema".to_string(),
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            revocation_method: None,
             claim_schemas: Some(claim_schemas),
             organisation: Some(organisation),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
 
@@ -213,14 +211,6 @@ async fn test_create_credential_schema_success() {
             .unwrap()
             .len(),
         1
-    );
-    assert_eq!(
-        crate::entity::credential_schema_claim_schema::Entity::find()
-            .all(&db)
-            .await
-            .unwrap()
-            .len(),
-        2
     );
     assert_eq!(
         crate::entity::claim_schema::Entity::find()
@@ -317,25 +307,6 @@ async fn test_get_credential_schema_list_deleted_schema() {
 
 #[tokio::test]
 async fn test_get_credential_schema_success() {
-    let mut claim_schema_repository = MockClaimSchemaRepository::default();
-    claim_schema_repository
-        .expect_get_claim_schema_list()
-        .times(1)
-        .withf(|ids, _| ids.len() == 2)
-        .returning(|ids, _| {
-            Ok(ids
-                .into_iter()
-                .map(|id| ClaimSchema {
-                    id,
-                    created_date: get_dummy_date(),
-                    last_modified: get_dummy_date(),
-                    key: format!("key{id}"),
-                    data_type: "STRING".to_string(),
-                    array: false,
-                })
-                .collect())
-        });
-
     let mut organisation_repository = MockOrganisationRepository::default();
     organisation_repository
         .expect_get_organisation()
@@ -348,7 +319,6 @@ async fn test_get_credential_schema_success() {
         organisation,
         ..
     } = setup_with_schema(Repositories {
-        claim_schema_repository,
         organisation_repository,
     })
     .await;
@@ -378,24 +348,6 @@ async fn test_get_credential_schema_success() {
 
 #[tokio::test]
 async fn test_get_credential_schema_deleted() {
-    let mut claim_schema_repository = MockClaimSchemaRepository::default();
-    claim_schema_repository
-        .expect_get_claim_schema_list()
-        .times(1)
-        .returning(|ids, _| {
-            Ok(ids
-                .into_iter()
-                .map(|id| ClaimSchema {
-                    id,
-                    created_date: get_dummy_date(),
-                    last_modified: get_dummy_date(),
-                    key: format!("key{id}"),
-                    data_type: "STRING".to_string(),
-                    array: false,
-                })
-                .collect())
-        });
-
     let mut organisation_repository = MockOrganisationRepository::default();
     organisation_repository
         .expect_get_organisation()
@@ -408,7 +360,6 @@ async fn test_get_credential_schema_deleted() {
         db,
         ..
     } = setup_with_schema(Repositories {
-        claim_schema_repository,
         organisation_repository,
     })
     .await;
@@ -485,18 +436,18 @@ async fn test_delete_credential_schema_not_found() {
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
             name: "Test".to_string(),
-            format: "MDOC".to_string(),
-            revocation_method: "NONE".to_string(),
-            wallet_storage_type: None,
+            format: "MDOC".into(),
+            revocation_method: None,
+            key_storage_security: None,
             layout_type: LayoutType::Document,
             layout_properties: None,
             schema_id: "Test_schema_id".to_string(),
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             imported_source_url: "".to_string(),
             allow_suspension: false,
-            external_schema: false,
+            requires_wallet_instance_attestation: false,
             claim_schemas: None,
             organisation: None,
+            transaction_code: None,
         })
         .await;
     assert!(matches!(result, Err(DataLayerError::RecordNotUpdated)));
@@ -511,13 +462,13 @@ async fn test_update_credential_schema_success() {
         ..
     } = setup_with_schema(Repositories::default()).await;
 
-    let new_revocation_method = "new-method";
+    let new_revocation_method: RevocationMethodId = "new-method".into();
     let new_format = "new-format";
     let result = repository
         .update_credential_schema(UpdateCredentialSchemaRequest {
             id: credential_schema.id,
-            revocation_method: Some(new_revocation_method.to_string()),
-            format: Some(new_format.to_string()),
+            revocation_method: Some(Some(new_revocation_method.clone())),
+            format: Some(new_format.into()),
             claim_schemas: None,
             layout_properties: Some(LayoutProperties {
                 background: Some(BackgroundProperties {
@@ -536,8 +487,8 @@ async fn test_update_credential_schema_success() {
         .await
         .unwrap();
     assert_eq!(db_schemas.len(), 1);
-    assert_eq!(db_schemas[0].revocation_method, new_revocation_method);
-    assert_eq!(db_schemas[0].format, new_format);
+    assert_eq!(db_schemas[0].revocation_method, Some(new_revocation_method));
+    assert_eq!(db_schemas[0].format.as_ref(), new_format);
     assert_eq!(db_schemas[0].layout_type, LayoutType::Document.into());
     assert_eq!(
         &db_schemas[0]
@@ -563,7 +514,6 @@ async fn test_get_by_schema_id_and_organisation() {
     let res = repository
         .get_by_schema_id_and_organisation(
             &credential_schema.schema_id,
-            credential_schema.schema_type.clone(),
             credential_schema.organisation.as_ref().unwrap().id,
             &CredentialSchemaRelations {
                 claim_schemas: Some(Default::default()),

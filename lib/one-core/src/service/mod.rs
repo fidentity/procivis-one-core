@@ -1,6 +1,7 @@
 pub mod backup;
 pub mod cache;
 pub mod certificate;
+pub mod common_dto;
 mod common_mapper;
 pub mod config;
 pub mod credential;
@@ -11,23 +12,29 @@ pub mod history;
 pub mod identifier;
 pub mod jsonld;
 pub mod key;
+pub mod nfc;
 pub mod oid4vci_draft13;
 pub mod oid4vci_draft13_swiyu;
+pub mod oid4vci_final1_0;
 pub mod oid4vp_draft20;
 pub mod oid4vp_draft25;
+pub mod oid4vp_final1_0;
 pub mod organisation;
 pub mod proof;
 pub mod proof_schema;
 pub mod revocation_list;
+pub mod signature;
 pub mod ssi_holder;
 pub mod ssi_issuer;
 mod ssi_validator;
+pub mod statistics;
 pub mod storage_proxy;
 pub mod task;
 pub mod trust_anchor;
 pub mod trust_entity;
 pub mod vc_api;
+pub mod wallet_provider;
+pub mod wallet_unit;
 
-mod common_dto;
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
 pub mod test_utilities;

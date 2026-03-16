@@ -1,13 +1,17 @@
-use shared_types::DidValue;
+use shared_types::{RevocationListEntryId, RevocationListId};
 
 use super::model::CredentialRevocationInfo;
+use crate::model::certificate::Certificate;
 use crate::model::credential::Credential;
-use crate::provider::credential_formatter::model::CredentialStatus;
+use crate::model::identifier::Identifier;
+use crate::model::wallet_unit_attested_key::{
+    WalletUnitAttestedKey, WalletUnitAttestedKeyRevocationInfo,
+};
+use crate::provider::credential_formatter::model::{CredentialStatus, IdentifierDetails};
 use crate::provider::revocation::RevocationMethod;
 use crate::provider::revocation::error::RevocationError;
 use crate::provider::revocation::model::{
-    CredentialAdditionalData, CredentialDataByRole, CredentialRevocationState, JsonLdContext,
-    RevocationMethodCapabilities, RevocationUpdate,
+    CredentialDataByRole, RevocationMethodCapabilities, RevocationState,
 };
 
 pub struct NoneRevocation {}
@@ -21,18 +25,16 @@ impl RevocationMethod for NoneRevocation {
     async fn add_issued_credential(
         &self,
         _credential: &Credential,
-        _additional_data: Option<CredentialAdditionalData>,
-    ) -> Result<(Option<RevocationUpdate>, Vec<CredentialRevocationInfo>), RevocationError> {
-        Ok((None, vec![]))
+    ) -> Result<Vec<CredentialRevocationInfo>, RevocationError> {
+        Ok(vec![])
     }
 
     async fn mark_credential_as(
         &self,
         _credential: &Credential,
-        _new_state: CredentialRevocationState,
-        _additional_data: Option<CredentialAdditionalData>,
-    ) -> Result<RevocationUpdate, RevocationError> {
-        Err(RevocationError::ValidationError(
+        _new_state: RevocationState,
+    ) -> Result<(), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
             "Credential cannot be revoked, reactivated or suspended".to_string(),
         ))
     }
@@ -40,24 +42,73 @@ impl RevocationMethod for NoneRevocation {
     async fn check_credential_revocation_status(
         &self,
         _credential_status: &CredentialStatus,
-        _issuer_did: &DidValue,
+        _issuer_details: &IdentifierDetails,
         _additional_credential_data: Option<CredentialDataByRole>,
         _force_refresh: bool,
-    ) -> Result<CredentialRevocationState, RevocationError> {
-        Err(RevocationError::ValidationError(
+    ) -> Result<RevocationState, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
             "Credential cannot be revoked - status invalid".to_string(),
+        ))
+    }
+
+    async fn add_issued_attestation(
+        &self,
+        _attestation: &WalletUnitAttestedKey,
+    ) -> Result<CredentialRevocationInfo, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn get_attestation_revocation_info(
+        &self,
+        _key_info: &WalletUnitAttestedKeyRevocationInfo,
+    ) -> Result<CredentialRevocationInfo, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn update_attestation_entries(
+        &self,
+        _keys: Vec<WalletUnitAttestedKeyRevocationInfo>,
+        _new_state: RevocationState,
+    ) -> Result<(), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn add_signature<'a>(
+        &self,
+        _signature_type: String,
+        _issuer: &'a Identifier,
+        _certificate: Option<&'a Certificate>,
+    ) -> Result<(RevocationListEntryId, CredentialRevocationInfo), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Signatures not supported".to_string(),
+        ))
+    }
+
+    async fn revoke_signature(
+        &self,
+        _signature_id: RevocationListEntryId,
+    ) -> Result<(), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Signatures not supported".to_string(),
+        ))
+    }
+
+    async fn get_updated_list(
+        &self,
+        _list_id: RevocationListId,
+    ) -> Result<Vec<u8>, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "List not supported".to_string(),
         ))
     }
 
     fn get_capabilities(&self) -> RevocationMethodCapabilities {
         RevocationMethodCapabilities { operations: vec![] }
-    }
-
-    fn get_json_ld_context(&self) -> Result<JsonLdContext, RevocationError> {
-        Ok(JsonLdContext::default())
-    }
-
-    fn get_params(&self) -> Result<serde_json::Value, RevocationError> {
-        Ok(serde_json::json!({}))
     }
 }

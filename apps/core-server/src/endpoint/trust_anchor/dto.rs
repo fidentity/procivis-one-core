@@ -8,13 +8,14 @@ use shared_types::TrustAnchorId;
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
+use crate::deserialize::deserialize_timestamp;
 use crate::dto::common::{Boolean, ListQueryParamsRest};
 use crate::serialize::front_time;
 
 #[derive(Clone, Debug, Deserialize, ToSchema, Into)]
 #[into(CreateTrustAnchorRequestDTO)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateTrustAnchorRequestRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateTrustAnchorRequestRestDTO {
     /// Must be unique.
     pub name: String,
     /// Specify the type of trust management anchor to publish or subscribe
@@ -23,8 +24,8 @@ pub struct CreateTrustAnchorRequestRestDTO {
     #[schema(example = "SIMPLE_TRUST_LIST")]
     pub r#type: String,
     /// If true the created trust anchor will be published. If subscribing
-    /// to an existing trust anchor, omit or set to false. The remote anchor has
-    /// to be specified via `publisherReference`.
+    /// to an existing trust anchor, omit or set to false. The remote anchor must
+    /// be specified via `publisherReference`.
     #[schema(nullable = false)]
     pub is_publisher: Option<bool>,
     /// URL of the remote trust anchor to subscribe to.
@@ -33,18 +34,18 @@ pub struct CreateTrustAnchorRequestRestDTO {
     pub publisher_reference: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, From)]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[from(GetTrustAnchorDetailResponseDTO)]
 #[serde(rename_all = "camelCase")]
-pub struct GetTrustAnchorResponseRestDTO {
+pub(crate) struct GetTrustAnchorResponseRestDTO {
     pub id: TrustAnchorId,
     pub name: String,
 
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
 
     pub r#type: String,
@@ -55,15 +56,15 @@ pub struct GetTrustAnchorResponseRestDTO {
 #[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(TrustAnchorsListItemResponseDTO)]
-pub struct ListTrustAnchorsResponseItemRestDTO {
+pub(crate) struct ListTrustAnchorsResponseItemRestDTO {
     pub id: TrustAnchorId,
     pub name: String,
 
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
 
     pub r#type: String,
@@ -74,14 +75,14 @@ pub struct ListTrustAnchorsResponseItemRestDTO {
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum ExactTrustAnchorFilterColumnRestEnum {
+pub(crate) enum ExactTrustAnchorFilterColumnRestEnum {
     Name,
     Type,
 }
 
 #[derive(Clone, Debug, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct TrustAnchorsFilterQueryParamsRest {
+#[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside ListTrustAnchorsQuery
+pub(crate) struct TrustAnchorsFilterQueryParamsRest {
     /// Return only trust anchors with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
@@ -96,31 +97,52 @@ pub struct TrustAnchorsFilterQueryParamsRest {
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactTrustAnchorFilterColumnRestEnum>>,
+
+    /// Return only trust anchors created after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_after: Option<OffsetDateTime>,
+    /// Return only trust anchors created before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_before: Option<OffsetDateTime>,
+    /// Return only trust anchors last modified after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_after: Option<OffsetDateTime>,
+    /// Return only trust anchors last modified before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_before: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
 #[into(SortableTrustAnchorColumn)]
-pub enum SortableTrustAnchorColumnRestEnum {
+pub(crate) enum SortableTrustAnchorColumnRestEnum {
     Name,
     CreatedDate,
     Type,
 }
 
-pub type ListTrustAnchorsQuery =
+pub(crate) type ListTrustAnchorsQuery =
     ListQueryParamsRest<TrustAnchorsFilterQueryParamsRest, SortableTrustAnchorColumnRestEnum>;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, ToSchema, From, Into)]
+#[derive(Debug, Clone, Serialize, PartialEq, ToSchema, From, Into)]
 #[from(GetTrustAnchorDetailResponseDTO)]
 #[into(GetTrustAnchorDetailResponseDTO)]
 #[serde(rename_all = "camelCase")]
-pub struct GetTrustAnchorDetailResponseRestDTO {
+pub(crate) struct GetTrustAnchorDetailResponseRestDTO {
     pub id: TrustAnchorId,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub r#type: String,

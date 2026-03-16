@@ -1,32 +1,35 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use mockall::predicate;
+use mockall::predicate::{self, eq};
 use secrecy::SecretSlice;
 use serde_json::json;
 use shared_types::DidId;
+use similar_asserts::assert_eq;
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::KeyDidMethod;
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::{Key, PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::key::Key;
 use crate::provider::did_method::model::{AmountOfKeys, DidDocument, DidVerificationMethod};
 use crate::provider::did_method::{DidKeys, DidMethod};
+use crate::provider::key_algorithm::MockKeyAlgorithm;
 use crate::provider::key_algorithm::key::{
     KeyHandle, MockSignaturePublicKeyHandle, SignatureKeyHandle,
 };
-use crate::provider::key_algorithm::provider::KeyAlgorithmProviderImpl;
-use crate::provider::key_algorithm::{KeyAlgorithm, MockKeyAlgorithm};
+use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 
 fn setup_key_did_method(
     key_algorithm: MockKeyAlgorithm,
     algorithm_id: KeyAlgorithmType,
 ) -> KeyDidMethod {
-    let mut key_algorithms: HashMap<KeyAlgorithmType, Arc<dyn KeyAlgorithm>> = HashMap::new();
-    key_algorithms.insert(algorithm_id, Arc::new(key_algorithm));
-
-    let key_algorithm_provider = KeyAlgorithmProviderImpl::new(key_algorithms);
+    let alg = Arc::new(key_algorithm);
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider
+        .expect_key_algorithm_from_type()
+        .with(eq(algorithm_id))
+        .returning(move |_| Some(alg.clone()));
 
     KeyDidMethod::new(Arc::new(key_algorithm_provider))
 }
@@ -47,7 +50,8 @@ async fn test_did_key_resolve_details_eddsa() {
         .return_once(|_, _, _| {
             let mut key_handle = MockSignaturePublicKeyHandle::default();
             key_handle.expect_as_jwk().return_once(|| {
-                Ok(PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                Ok(PublicJwk::Okp(PublicJwkEc {
+                    alg: None,
                     r#use: None,
                     kid: None,
                     crv: "Ed25519".to_owned(),
@@ -84,8 +88,9 @@ async fn test_did_key_resolve_details_eddsa() {
                 id: "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp#z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp".to_owned(),
                 r#type: "JsonWebKey2020".to_owned(),
                 controller: "did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp".to_owned(),
-                public_key_jwk: PublicKeyJwk::Okp(
-                    PublicKeyJwkEllipticData {
+                public_key_jwk: PublicJwk::Okp(
+                    PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Ed25519".to_owned(),
@@ -142,7 +147,8 @@ async fn test_did_key_resolve_details_ecdsa() {
         .return_once(|_, _, _| {
             let mut key_handle = MockSignaturePublicKeyHandle::default();
             key_handle.expect_as_jwk().return_once(|| {
-                Ok(PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
+                Ok(PublicJwk::Ec(PublicJwkEc {
+                    alg: None,
                     r#use: None,
                     kid: None,
                     crv: "P-256".to_string(),
@@ -179,8 +185,9 @@ async fn test_did_key_resolve_details_ecdsa() {
                 id: "did:key:zDnaerx9CtbPJ1q36T5Ln5wYt3MQYeGRG5ehnPAmxcf5mDZpv#zDnaerx9CtbPJ1q36T5Ln5wYt3MQYeGRG5ehnPAmxcf5mDZpv".to_owned(),
                 r#type: "JsonWebKey2020".to_owned(),
                 controller: "did:key:zDnaerx9CtbPJ1q36T5Ln5wYt3MQYeGRG5ehnPAmxcf5mDZpv".to_owned(),
-                public_key_jwk: PublicKeyJwk::Ec(
-                    PublicKeyJwkEllipticData {
+                public_key_jwk: PublicJwk::Ec(
+                    PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "P-256".to_owned(),
@@ -241,7 +248,8 @@ async fn test_did_key_resolve_details_bbs() {
             let mut key_handle = MockSignaturePublicKeyHandle::default();
             key_handle
                 .expect_as_jwk()
-                .return_once(||  Ok(PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+                .return_once(||  Ok(PublicJwk::Okp(PublicJwkEc {
+                alg: None,
                 r#use: None,
                 kid: None,
                 crv: "Bls12381G2".to_string(),
@@ -274,8 +282,9 @@ async fn test_did_key_resolve_details_bbs() {
                 id: "did:key:zUC71hWmiaLNZL97NxPkesvV6jV5UuxT2UUMo9fMGfsh5nV5NLU2HVFdX2DcDn8dQDKvur2U1tMjy34nnjEFF3dfdJgYRCBi5Sxup75PNNZrtJTrqrM23m9tUZ7KX9TM9dT38mo#zUC71hWmiaLNZL97NxPkesvV6jV5UuxT2UUMo9fMGfsh5nV5NLU2HVFdX2DcDn8dQDKvur2U1tMjy34nnjEFF3dfdJgYRCBi5Sxup75PNNZrtJTrqrM23m9tUZ7KX9TM9dT38mo".to_owned(),
                 r#type: "JsonWebKey2020".to_owned(),
                 controller: "did:key:zUC71hWmiaLNZL97NxPkesvV6jV5UuxT2UUMo9fMGfsh5nV5NLU2HVFdX2DcDn8dQDKvur2U1tMjy34nnjEFF3dfdJgYRCBi5Sxup75PNNZrtJTrqrM23m9tUZ7KX9TM9dT38mo".to_owned(),
-                public_key_jwk: PublicKeyJwk::Okp(
-                    PublicKeyJwkEllipticData {
+                public_key_jwk: PublicJwk::Okp(
+                    PublicJwkEc {
+                        alg: None,
                         r#use: None,
                         kid: None,
                         crv: "Bls12381G2".to_string(),
@@ -325,7 +334,7 @@ async fn test_create_did_success() {
         last_modified: OffsetDateTime::now_utc(),
         public_key: vec![],
         name: "".to_string(),
-        key_reference: vec![],
+        key_reference: None,
         storage_type: "INTERNAL".to_string(),
         key_type: "EDDSA".to_string(),
         organisation: None,

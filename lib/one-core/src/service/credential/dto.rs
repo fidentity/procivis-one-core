@@ -2,71 +2,89 @@ use one_dto_mapper::{From, Into};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use shared_types::{
-    ClaimSchemaId, CredentialId, CredentialSchemaId, DidId, IdentifierId, KeyId, OrganisationId,
+    CertificateId, ClaimSchemaId, CredentialFormat, CredentialId, CredentialSchemaId, DidId,
+    IdentifierId, KeyId, OrganisationId, RevocationMethodId,
 };
-use strum::{AsRefStr, Display, EnumString};
+use strum::AsRefStr;
 use time::OffsetDateTime;
 
-use crate::model;
+use crate::model::blob::Blob;
 use crate::model::common::GetListResponse;
-use crate::model::credential::SortableCredentialColumn;
-use crate::model::credential_schema::{
-    CredentialFormat, LayoutType, RevocationMethod, WalletStorageTypeEnum,
+use crate::model::credential::{
+    CredentialFilterValue, CredentialListIncludeEntityTypeEnum, SortableCredentialColumn,
 };
-use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
+use crate::model::credential_schema::{
+    KeyStorageSecurity, LayoutType, TransactionCode, TransactionCodeType,
+};
 use crate::model::list_query::ListQuery;
+use crate::service::certificate::dto::CertificateResponseDTO;
 use crate::service::credential_schema::dto::{
     CredentialClaimSchemaDTO, CredentialSchemaLayoutPropertiesResponseDTO,
     CredentialSchemaListItemResponseDTO,
 };
-use crate::service::did::dto::DidListItemResponseDTO;
 use crate::service::identifier::dto::GetIdentifierListItemResponseDTO;
 
 #[derive(Clone, Debug)]
 pub struct CredentialListItemResponseDTO {
     pub id: CredentialId,
     pub created_date: OffsetDateTime,
-    pub issuance_date: OffsetDateTime,
+    pub issuance_date: Option<OffsetDateTime>,
     pub revocation_date: Option<OffsetDateTime>,
     pub state: CredentialStateEnum,
     pub last_modified: OffsetDateTime,
     pub schema: CredentialSchemaListItemResponseDTO,
-    pub issuer_did: Option<DidListItemResponseDTO>,
     pub issuer: Option<GetIdentifierListItemResponseDTO>,
-    pub credential: Vec<u8>,
     pub role: CredentialRole,
     pub suspend_end_date: Option<OffsetDateTime>,
-    pub exchange: String,
+    pub protocol: String,
+    pub profile: Option<String>,
+    pub webhook_destination_url: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CredentialDetailResponseDTO {
+pub struct CredentialDetailResponseDTO<T> {
     pub id: CredentialId,
     #[serde(with = "time::serde::rfc3339")]
     pub created_date: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub issuance_date: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub issuance_date: Option<OffsetDateTime>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub revocation_date: Option<OffsetDateTime>,
     pub state: CredentialStateEnum,
     #[serde(with = "time::serde::rfc3339")]
     pub last_modified: OffsetDateTime,
     pub schema: DetailCredentialSchemaResponseDTO,
-    pub issuer_did: Option<DidListItemResponseDTO>,
     pub issuer: Option<GetIdentifierListItemResponseDTO>,
-    pub claims: Vec<DetailCredentialClaimResponseDTO>,
+    #[serde(skip)]
+    pub issuer_certificate: Option<CertificateResponseDTO>,
+    pub claims: Vec<T>,
     pub redirect_uri: Option<String>,
     pub role: CredentialRole,
-    #[serde(with = "time::serde::rfc3339::option")]
-    pub lvvc_issuance_date: Option<OffsetDateTime>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub suspend_end_date: Option<OffsetDateTime>,
     pub mdoc_mso_validity: Option<MdocMsoValidityResponseDTO>,
-    pub holder_did: Option<DidListItemResponseDTO>,
     pub holder: Option<GetIdentifierListItemResponseDTO>,
-    pub exchange: String,
+    pub protocol: String,
+    pub profile: Option<String>,
+    pub wallet_instance_attestation: Option<WalletInstanceAttestationDTO>,
+    pub wallet_unit_attestation: Option<WalletUnitAttestationDTO>,
+    pub webhook_destination_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletInstanceAttestationDTO {
+    pub name: String,
+    pub link: String,
+    pub attestation: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletUnitAttestationDTO {
+    pub attestation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,34 +111,27 @@ pub struct DetailCredentialSchemaResponseDTO {
     pub deleted_at: Option<OffsetDateTime>,
     pub name: String,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
+    pub revocation_method: Option<RevocationMethodId>,
     pub organisation_id: OrganisationId,
-    #[serde(default)]
-    pub external_schema: bool,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
     pub imported_source_url: String,
-    pub schema_type: CredentialSchemaType,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesResponseDTO>,
     pub allow_suspension: bool,
+    pub requires_wallet_instance_attestation: bool,
+    pub transaction_code: Option<DetailCredentialSchemaTransactionCodeDTO>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, From, Into, Display)]
-#[from(model::credential_schema::CredentialSchemaType)]
-#[into(model::credential_schema::CredentialSchemaType)]
-pub enum CredentialSchemaType {
-    #[strum(serialize = "ProcivisOneSchema2024")]
-    ProcivisOneSchema2024,
-    #[strum(serialize = "FallbackSchema2024")]
-    FallbackSchema2024,
-    #[strum(serialize = "mdoc")]
-    Mdoc,
-    #[strum(serialize = "SdJwtVc")]
-    SdJwtVc,
-    #[strum(serialize = "{0}")]
-    #[serde(untagged)]
-    Other(String),
+#[skip_serializing_none]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, From, Into)]
+#[from(TransactionCode)]
+#[into(TransactionCode)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailCredentialSchemaTransactionCodeDTO {
+    pub r#type: TransactionCodeType,
+    pub length: u32,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,21 +139,22 @@ pub enum CredentialSchemaType {
 pub struct DetailCredentialClaimResponseDTO {
     pub path: String,
     pub schema: CredentialClaimSchemaDTO,
-    pub value: DetailCredentialClaimValueResponseDTO,
+    pub value: DetailCredentialClaimValueResponseDTO<Self>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum DetailCredentialClaimValueResponseDTO {
+pub enum DetailCredentialClaimValueResponseDTO<T> {
     Boolean(bool),
     Float(f64),
     Integer(i64),
     String(String),
-    Nested(Vec<DetailCredentialClaimResponseDTO>),
+    Nested(Vec<T>),
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize, From, AsRefStr)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize, From, Into, AsRefStr)]
 #[from("crate::model::credential::CredentialRole")]
+#[into("crate::model::credential::CredentialRole")]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 pub enum CredentialRole {
@@ -151,8 +163,9 @@ pub enum CredentialRole {
     Verifier,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize, From)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize, Deserialize, Into, From)]
 #[from("crate::model::credential::CredentialStateEnum")]
+#[into("crate::model::credential::CredentialStateEnum")]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CredentialStateEnum {
     Created,
@@ -163,28 +176,8 @@ pub enum CredentialStateEnum {
     Revoked,
     Suspended,
     Error,
+    InteractionExpired,
 }
-
-#[derive(Clone, Debug, Eq, PartialEq, EnumString, Display)]
-#[strum(serialize_all = "camelCase")]
-pub enum CredentialListIncludeEntityTypeEnum {
-    LayoutProperties,
-    Credential,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CredentialFilterValue {
-    ClaimName(StringMatch),
-    ClaimValue(StringMatch),
-    CredentialSchemaName(StringMatch),
-    OrganisationId(OrganisationId),
-    Role(CredentialRole),
-    CredentialIds(Vec<CredentialId>),
-    State(Vec<crate::model::credential::CredentialStateEnum>),
-    SuspendEndDate(ValueComparison<OffsetDateTime>),
-}
-
-impl ListFilterValue for CredentialFilterValue {}
 
 pub type GetCredentialListResponseDTO = GetListResponse<CredentialListItemResponseDTO>;
 pub type GetCredentialQueryDTO =
@@ -196,9 +189,12 @@ pub struct CreateCredentialRequestDTO {
     pub issuer: Option<IdentifierId>,
     pub issuer_did: Option<DidId>,
     pub issuer_key: Option<KeyId>,
-    pub exchange: String,
+    pub issuer_certificate: Option<CertificateId>,
+    pub protocol: String,
     pub claim_values: Vec<CredentialRequestClaimDTO>,
     pub redirect_uri: Option<String>,
+    pub profile: Option<String>,
+    pub webhook_destination_url: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,10 +209,24 @@ pub struct CredentialRequestClaimDTO {
     pub path: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, From)]
+#[from(crate::proto::credential_validity_manager::CredentialValidityCheckResult)]
 pub struct CredentialRevocationCheckResponseDTO {
     pub credential_id: CredentialId,
     pub status: CredentialStateEnum,
     pub success: bool,
     pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CredentialAttestationBlobs {
+    pub wallet_instance_attestation_blob: Option<Blob>,
+    pub wallet_unit_attestation_blob: Option<Blob>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShareCredentialResponseDTO {
+    pub url: String,
+    pub transaction_code: Option<String>,
+    pub expires_at: Option<OffsetDateTime>,
 }

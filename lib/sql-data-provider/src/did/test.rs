@@ -16,12 +16,14 @@ use one_core::repository::organisation_repository::MockOrganisationRepository;
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::{ActiveModelTrait, EntityTrait, Set};
 use shared_types::{DidId, DidValue};
+use similar_asserts::assert_eq;
 use time::macros::datetime;
 use uuid::Uuid;
 
 use super::DidProvider;
 use crate::entity::did;
 use crate::test_utilities::*;
+use crate::transaction_context::TransactionManagerImpl;
 
 struct TestSetup {
     pub provider: DidProvider,
@@ -58,7 +60,7 @@ async fn setup_empty(repositories: Repositories) -> TestSetup {
         provider: DidProvider {
             key_repository: Arc::new(repositories.key_repository),
             organisation_repository: Arc::new(repositories.organisation_repository),
-            db: db.clone(),
+            db: TransactionManagerImpl::new(db.clone()),
         },
         organisation: dummy_organisation(Some(organisation_id)),
         key: Key {
@@ -67,7 +69,7 @@ async fn setup_empty(repositories: Repositories) -> TestSetup {
             last_modified: get_dummy_date(),
             public_key: vec![],
             name: "test_key".to_string(),
-            key_reference: "private".to_string().bytes().collect(),
+            key_reference: Some("private".to_string().bytes().collect()),
             storage_type: "INTERNAL".to_string(),
             key_type: "ED25519".to_string(),
             organisation: None,
@@ -145,6 +147,7 @@ async fn test_create_did() {
             keys: Some(vec![RelatedKey {
                 role: KeyRole::Authentication,
                 key,
+                reference: "1".to_string(),
             }]),
             deactivated: false,
             log: None,
@@ -335,7 +338,7 @@ async fn test_get_did_existing() {
             last_modified: get_dummy_date(),
             public_key: vec![],
             name: "test_key".to_string(),
-            key_reference: "private".to_string().bytes().collect(),
+            key_reference: Some("private".to_string().bytes().collect()),
             storage_type: "INTERNAL".to_string(),
             key_type: "ED25519".to_string(),
             organisation: None,
@@ -474,9 +477,9 @@ async fn test_get_did_list_pages() {
     for i in 0..50 {
         insert_did_key(
             &db,
-            &format!("test did name {}", i),
+            &format!("test did name {i}"),
             Uuid::new_v4(),
-            format!("did:key:{}", i).parse().unwrap(),
+            format!("did:key:{i}").parse().unwrap(),
             "KEY",
             organisation.id,
         )

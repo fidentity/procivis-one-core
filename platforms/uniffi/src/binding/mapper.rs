@@ -1,43 +1,49 @@
 use one_core::model::list_filter::{
-    ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
 };
 use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::model::proof_schema::GetProofSchemaQuery;
-use one_core::provider::bluetooth_low_energy::low_level::dto::DeviceInfo;
+use one_core::proto::bluetooth_low_energy::low_level::dto::DeviceInfo;
+use one_core::provider::verification_protocol::dto::{
+    ApplicableCredentialOrFailureHintEnum, PresentationDefinitionFieldDTO,
+    PresentationDefinitionRequestedCredentialResponseDTO,
+};
 use one_core::service::credential::dto::{
-    CredentialDetailResponseDTO, CredentialListItemResponseDTO, CredentialSchemaType,
-    DetailCredentialClaimResponseDTO, DetailCredentialClaimValueResponseDTO,
-    DetailCredentialSchemaResponseDTO, MdocMsoValidityResponseDTO,
+    CredentialDetailResponseDTO, CredentialListItemResponseDTO,
+    DetailCredentialClaimValueResponseDTO, DetailCredentialSchemaResponseDTO,
+    MdocMsoValidityResponseDTO,
 };
 use one_core::service::credential_schema::dto::{
     CredentialSchemaListItemResponseDTO, ImportCredentialSchemaClaimSchemaDTO,
 };
-use one_core::service::did::dto::{
-    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidListItemResponseDTO,
-};
+use one_core::service::did::dto::{CreateDidRequestDTO, CreateDidRequestKeysDTO};
 use one_core::service::error::ServiceError;
 use one_core::service::history::dto::{HistoryMetadataResponse, HistoryResponseDTO};
 use one_core::service::identifier::dto::{
     CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO,
 };
-use one_core::service::key::dto::KeyRequestDTO;
+use one_core::service::key::dto::{
+    KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile, KeyRequestDTO,
+};
 use one_core::service::organisation::dto::{
     CreateOrganisationRequestDTO, UpsertOrganisationRequestDTO,
 };
 use one_core::service::proof::dto::{
-    GetProofQueryDTO, ProofClaimValueDTO, ProofDetailResponseDTO, ProofFilterValue,
+    CreateProofRequestDTO, GetProofQueryDTO, ProofClaimValueDTO, ProofDetailResponseDTO,
+    ProofFilterValue,
 };
 use one_core::service::proof_schema::dto::{
     ImportProofSchemaClaimSchemaDTO, ProofSchemaFilterValue,
 };
-use one_core::service::ssi_holder::dto::HandleInvitationResultDTO;
+use one_core::service::ssi_holder::dto::{HandleInvitationResultDTO, InitiateIssuanceRequestDTO};
 use one_core::service::trust_anchor::dto::{ListTrustAnchorsQueryDTO, TrustAnchorFilterValue};
 use one_core::service::trust_entity::dto::{
     ListTrustEntitiesQueryDTO, TrustEntityFilterValue, TrustListLogo,
 };
-use one_dto_mapper::{convert_inner, try_convert_inner};
+use one_dto_mapper::{convert_inner, convert_inner_of_inner, try_convert_inner};
 use serde_json::json;
-use shared_types::KeyId;
+use shared_types::{KeyId, TrustEntityKey};
 use time::OffsetDateTime;
 
 use super::ble::DeviceInfoBindingDTO;
@@ -46,21 +52,28 @@ use crate::binding::credential::{
     CredentialListItemBindingDTO, MdocMsoValidityResponseBindingDTO,
 };
 use crate::binding::credential_schema::{
-    CredentialSchemaBindingDTO, CredentialSchemaTypeBindingEnum,
-    ImportCredentialSchemaClaimSchemaBindingDTO,
+    CredentialSchemaBindingDTO, ImportCredentialSchemaClaimSchemaBindingDTO,
 };
 use crate::binding::did::{DidRequestBindingDTO, DidRequestKeysBindingDTO};
 use crate::binding::history::{
     HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryMetadataBinding,
 };
-use crate::binding::identifier::CreateIdentifierDidRequestBindingDTO;
-use crate::binding::interaction::HandleInvitationResponseBindingEnum;
+use crate::binding::identifier::{
+    CreateCaCSRRequestBindingDTO, CreateIdentifierDidRequestBindingDTO,
+};
+use crate::binding::interaction::{
+    HandleInvitationResponseBindingEnum, InitiateIssuanceRequestBindingDTO,
+};
 use crate::binding::key::KeyRequestBindingDTO;
 use crate::binding::organisation::{
     CreateOrganisationRequestBindingDTO, UpsertOrganisationRequestBindingDTO,
 };
 use crate::binding::proof::{
-    ProofListQueryBindingDTO, ProofListQueryExactColumnBindingEnum, ProofResponseBindingDTO,
+    ApplicableCredentialOrFailureHintBindingEnum, CreateProofRequestBindingDTO,
+    PresentationDefinitionFieldBindingDTO, PresentationDefinitionRequestedCredentialBindingDTO,
+    PresentationDefinitionV2ClaimBindingDTO, PresentationDefinitionV2ClaimValueBindingDTO,
+    PresentationDefinitionV2CredentialDetailBindingDTO, ProofListQueryBindingDTO,
+    ProofListQueryExactColumnBindingEnum, ProofResponseBindingDTO,
 };
 use crate::binding::proof_schema::{
     ImportProofSchemaClaimSchemaBindingDTO, ListProofSchemasFiltersBindingDTO,
@@ -73,34 +86,31 @@ use crate::binding::trust_entity::{
     ExactTrustEntityFilterColumnBindings, ListTrustEntitiesFiltersBindings,
 };
 use crate::error::ErrorResponseBindingDTO;
-use crate::error_code::ErrorCode;
-use crate::utils::{TimestampFormat, into_id, into_timestamp};
+use crate::utils::{TimestampFormat, into_id, into_id_opt, into_timestamp};
 
-impl From<CredentialDetailResponseDTO> for CredentialDetailBindingDTO {
-    fn from(value: CredentialDetailResponseDTO) -> Self {
+impl<IN: Into<ClaimBindingDTO>> From<CredentialDetailResponseDTO<IN>>
+    for CredentialDetailBindingDTO
+{
+    fn from(value: CredentialDetailResponseDTO<IN>) -> Self {
         Self {
             id: value.id.to_string(),
             created_date: value.created_date.format_timestamp(),
-            issuance_date: value.issuance_date.format_timestamp(),
+            issuance_date: value.issuance_date.map(|inner| inner.format_timestamp()),
             last_modified: value.last_modified.format_timestamp(),
             revocation_date: value.revocation_date.map(|inner| inner.format_timestamp()),
-            issuer_did: value.issuer_did.map(Into::into),
             issuer: value.issuer.map(Into::into),
-            holder_did: value.holder_did.map(Into::into),
             holder: value.holder.map(Into::into),
             state: value.state.into(),
             schema: value.schema.into(),
             claims: convert_inner(value.claims),
             redirect_uri: value.redirect_uri,
             role: value.role.into(),
-            lvvc_issuance_date: value
-                .lvvc_issuance_date
-                .map(|lvvc_issuance_date| lvvc_issuance_date.format_timestamp()),
             suspend_end_date: value
                 .suspend_end_date
                 .map(|suspend_end_date| suspend_end_date.format_timestamp()),
             mdoc_mso_validity: value.mdoc_mso_validity.map(|inner| inner.into()),
-            exchange: value.exchange,
+            protocol: value.protocol,
+            profile: value.profile,
         }
     }
 }
@@ -120,10 +130,9 @@ impl From<CredentialListItemResponseDTO> for CredentialListItemBindingDTO {
         Self {
             id: value.id.to_string(),
             created_date: value.created_date.format_timestamp(),
-            issuance_date: value.issuance_date.format_timestamp(),
+            issuance_date: value.issuance_date.map(|inner| inner.format_timestamp()),
             last_modified: value.last_modified.format_timestamp(),
             revocation_date: value.revocation_date.map(|inner| inner.format_timestamp()),
-            issuer_did: optional_did_id_string(value.issuer_did),
             issuer: optional_identifier_id_string(value.issuer),
             state: value.state.into(),
             schema: value.schema.into(),
@@ -131,7 +140,8 @@ impl From<CredentialListItemResponseDTO> for CredentialListItemBindingDTO {
             suspend_end_date: value
                 .suspend_end_date
                 .map(|suspend_end_date| suspend_end_date.format_timestamp()),
-            exchange: value.exchange,
+            protocol: value.protocol,
+            profile: value.profile,
         }
     }
 }
@@ -144,12 +154,10 @@ impl From<ProofDetailResponseDTO> for ProofResponseBindingDTO {
             state: value.state.into(),
             last_modified: value.last_modified.format_timestamp(),
             proof_schema: convert_inner(value.schema),
-            verifier_did: value.verifier_did.map(Into::into),
             verifier: value.verifier.map(Into::into),
-            holder_did: value.holder_did.map(Into::into),
-            holder: value.holder.map(Into::into),
-            exchange: value.exchange,
+            protocol: value.protocol,
             transport: value.transport,
+            engagement: value.engagement,
             redirect_uri: value.redirect_uri,
             proof_inputs: convert_inner(value.proof_inputs),
             retain_until_date: value.retain_until_date.map(|date| date.format_timestamp()),
@@ -157,6 +165,7 @@ impl From<ProofDetailResponseDTO> for ProofResponseBindingDTO {
             completed_date: value.completed_date.map(|date| date.format_timestamp()),
             claims_removed_at: value.claims_removed_at.map(|date| date.format_timestamp()),
             role: value.role.into(),
+            profile: value.profile,
         }
     }
 }
@@ -168,32 +177,23 @@ impl From<DetailCredentialSchemaResponseDTO> for CredentialSchemaBindingDTO {
             created_date: value.created_date.format_timestamp(),
             last_modified: value.last_modified.format_timestamp(),
             name: value.name,
-            format: value.format,
-            revocation_method: value.revocation_method,
-            wallet_storage_type: convert_inner(value.wallet_storage_type),
+            format: value.format.to_string(),
+            revocation_method: value.revocation_method.map(|v| v.to_string()),
+            key_storage_security: convert_inner(value.key_storage_security),
             schema_id: value.schema_id,
-            schema_type: value.schema_type.into(),
             imported_source_url: value.imported_source_url,
             layout_type: convert_inner(value.layout_type),
             layout_properties: convert_inner(value.layout_properties),
+            allow_suspension: value.allow_suspension,
+            requires_wallet_instance_attestation: value.requires_wallet_instance_attestation,
         }
     }
 }
 
-impl From<DetailCredentialClaimResponseDTO> for ClaimBindingDTO {
-    fn from(value: DetailCredentialClaimResponseDTO) -> Self {
-        Self {
-            id: value.schema.id.to_string(),
-            key: value.schema.key,
-            array: value.schema.array,
-            data_type: value.schema.datatype,
-            value: value.value.into(),
-        }
-    }
-}
-
-impl From<DetailCredentialClaimValueResponseDTO> for ClaimValueBindingDTO {
-    fn from(value: DetailCredentialClaimValueResponseDTO) -> Self {
+impl<T: Into<ClaimBindingDTO>> From<DetailCredentialClaimValueResponseDTO<T>>
+    for ClaimValueBindingDTO
+{
+    fn from(value: DetailCredentialClaimValueResponseDTO<T>) -> Self {
         match value {
             DetailCredentialClaimValueResponseDTO::Boolean(value) => {
                 ClaimValueBindingDTO::Boolean { value }
@@ -218,20 +218,37 @@ impl From<HandleInvitationResultDTO> for HandleInvitationResponseBindingEnum {
     fn from(value: HandleInvitationResultDTO) -> Self {
         match value {
             HandleInvitationResultDTO::Credential {
-                credential_ids,
                 interaction_id,
                 tx_code,
+                key_storage_security_levels,
+                key_algorithms,
+                protocol,
+                requires_wallet_instance_attestation,
             } => Self::CredentialIssuance {
                 interaction_id: interaction_id.to_string(),
-                credential_ids: credential_ids.iter().map(|item| item.to_string()).collect(),
                 tx_code: convert_inner(tx_code),
+                protocol,
+                key_storage_security_levels: convert_inner_of_inner(key_storage_security_levels),
+                key_algorithms,
+                requires_wallet_instance_attestation,
+            },
+            HandleInvitationResultDTO::AuthorizationCodeFlow {
+                interaction_id,
+                authorization_code_flow_url,
+                protocol,
+            } => Self::AuthorizationCodeFlow {
+                interaction_id: interaction_id.to_string(),
+                authorization_code_flow_url,
+                protocol,
             },
             HandleInvitationResultDTO::ProofRequest {
                 interaction_id,
                 proof_id,
+                protocol,
             } => Self::ProofRequest {
                 interaction_id: interaction_id.to_string(),
                 proof_id: proof_id.to_string(),
+                protocol,
             },
         }
     }
@@ -242,10 +259,10 @@ impl TryFrom<KeyRequestBindingDTO> for KeyRequestDTO {
     fn try_from(request: KeyRequestBindingDTO) -> Result<Self, Self::Error> {
         Ok(Self {
             organisation_id: into_id(&request.organisation_id)?,
-            key_type: request.key_type.to_owned(),
+            key_type: request.key_type,
             key_params: json!(request.key_params),
-            name: request.name.to_owned(),
-            storage_type: request.storage_type.to_owned(),
+            name: request.name,
+            storage_type: request.storage_type,
             storage_params: json!(request.storage_params),
         })
     }
@@ -281,19 +298,31 @@ impl TryFrom<DidRequestKeysBindingDTO> for CreateDidRequestKeysDTO {
     }
 }
 
-impl From<HistoryMetadataResponse> for HistoryMetadataBinding {
-    fn from(value: HistoryMetadataResponse) -> Self {
-        match value {
-            HistoryMetadataResponse::UnexportableEntities(value) => Self::UnexportableEntities {
-                value: value.into(),
-            },
-            HistoryMetadataResponse::ErrorMetadata(value) => Self::ErrorMetadata {
-                value: HistoryErrorMetadataBindingDTO {
-                    error_code: ErrorCode::from(value.error_code).to_string(),
-                    message: value.message,
-                },
-            },
-        }
+fn convert_history_metadata(
+    value: Option<HistoryMetadataResponse>,
+) -> Option<HistoryMetadataBinding> {
+    match value {
+        None => None,
+        Some(value) => match value {
+            HistoryMetadataResponse::UnexportableEntities(value) => {
+                Some(HistoryMetadataBinding::UnexportableEntities {
+                    value: value.into(),
+                })
+            }
+            HistoryMetadataResponse::ErrorMetadata(value) => {
+                Some(HistoryMetadataBinding::ErrorMetadata {
+                    value: HistoryErrorMetadataBindingDTO {
+                        error_code: Into::<&'static str>::into(value.error_code).to_string(),
+                        message: value.message,
+                    },
+                })
+            }
+            HistoryMetadataResponse::WalletUnitJWT(value) => {
+                Some(HistoryMetadataBinding::WalletUnitJWT(value))
+            }
+            // external metadata only used in REST API
+            HistoryMetadataResponse::External(_) => None,
+        },
     }
 }
 
@@ -306,9 +335,10 @@ impl From<HistoryResponseDTO> for HistoryListItemBindingDTO {
             name: value.name,
             entity_id: value.entity_id.map(|id| id.to_string()),
             entity_type: value.entity_type.into(),
-            metadata: convert_inner(value.metadata),
-            organisation_id: value.organisation_id.to_string(),
+            metadata: convert_history_metadata(value.metadata),
+            organisation_id: value.organisation_id.map(|id| id.to_string()),
             target: value.target,
+            user: value.user,
         }
     }
 }
@@ -320,58 +350,15 @@ impl From<CredentialSchemaListItemResponseDTO> for CredentialSchemaBindingDTO {
             created_date: value.created_date.format_timestamp(),
             last_modified: value.last_modified.format_timestamp(),
             name: value.name,
-            format: value.format,
+            format: value.format.to_string(),
             imported_source_url: value.imported_source_url,
-            revocation_method: value.revocation_method,
-            wallet_storage_type: convert_inner(value.wallet_storage_type),
+            revocation_method: value.revocation_method.map(|v| v.to_string()),
+            key_storage_security: convert_inner(value.key_storage_security),
             schema_id: value.schema_id,
-            schema_type: value.schema_type.into(),
             layout_type: convert_inner(value.layout_type),
             layout_properties: convert_inner(value.layout_properties),
-        }
-    }
-}
-
-impl From<CredentialSchemaType> for CredentialSchemaTypeBindingEnum {
-    fn from(value: CredentialSchemaType) -> Self {
-        match value {
-            CredentialSchemaType::ProcivisOneSchema2024 => Self::ProcivisOneSchema2024 {},
-            CredentialSchemaType::FallbackSchema2024 => Self::FallbackSchema2024 {},
-            CredentialSchemaType::SdJwtVc => Self::SdJwtVc {},
-            CredentialSchemaType::Mdoc => Self::Mdoc {},
-            CredentialSchemaType::Other(value) => Self::Other { value },
-        }
-    }
-}
-
-impl From<CredentialSchemaTypeBindingEnum> for CredentialSchemaType {
-    fn from(value: CredentialSchemaTypeBindingEnum) -> Self {
-        match value {
-            CredentialSchemaTypeBindingEnum::ProcivisOneSchema2024 { .. } => {
-                CredentialSchemaType::ProcivisOneSchema2024
-            }
-            CredentialSchemaTypeBindingEnum::FallbackSchema2024 { .. } => {
-                CredentialSchemaType::FallbackSchema2024
-            }
-            CredentialSchemaTypeBindingEnum::SdJwtVc {} => CredentialSchemaType::SdJwtVc,
-            CredentialSchemaTypeBindingEnum::Mdoc { .. } => CredentialSchemaType::Mdoc,
-            CredentialSchemaTypeBindingEnum::Other { value } => CredentialSchemaType::Other(value),
-        }
-    }
-}
-
-impl From<CredentialSchemaTypeBindingEnum>
-    for one_core::model::credential_schema::CredentialSchemaType
-{
-    fn from(value: CredentialSchemaTypeBindingEnum) -> Self {
-        match value {
-            CredentialSchemaTypeBindingEnum::ProcivisOneSchema2024 { .. } => {
-                Self::ProcivisOneSchema2024
-            }
-            CredentialSchemaTypeBindingEnum::FallbackSchema2024 { .. } => Self::FallbackSchema2024,
-            CredentialSchemaTypeBindingEnum::SdJwtVc {} => Self::SdJwtVc,
-            CredentialSchemaTypeBindingEnum::Mdoc { .. } => Self::Mdoc,
-            CredentialSchemaTypeBindingEnum::Other { value } => Self::Other(value),
+            allow_suspension: value.allow_suspension,
+            requires_wallet_instance_attestation: value.requires_wallet_instance_attestation,
         }
     }
 }
@@ -405,8 +392,51 @@ impl TryFrom<ListTrustAnchorsFiltersBindings> for ListTrustAnchorsQueryDTO {
             })
         });
 
-        let filtering =
-            ListFilterCondition::<TrustAnchorFilterValue>::from(name) & is_publisher & r#type;
+        let created_date_after = value
+            .created_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let created_date_before = value
+            .created_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let last_modified_after = value
+            .last_modified_after
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let last_modified_before = value
+            .last_modified_before
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let filtering = ListFilterCondition::<TrustAnchorFilterValue>::from(name)
+            & is_publisher
+            & r#type
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before;
 
         Ok(Self {
             pagination: Some(ListPagination {
@@ -453,21 +483,74 @@ impl TryFrom<ListTrustEntitiesFiltersBindings> for ListTrustEntitiesQueryDTO {
             .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::TrustAnchor(into_id(&id)?)))
             .transpose()?;
 
-        let did_id = value
-            .did_id
-            .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::DidId(into_id(&id)?)))
-            .transpose()?;
-
         let organisation_id = value
             .organisation_id
             .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::OrganisationId(into_id(&id)?)))
             .transpose()?;
 
+        let types = value
+            .types
+            .map(convert_inner)
+            .map(TrustEntityFilterValue::Types);
+
+        let states = value
+            .states
+            .map(convert_inner)
+            .map(TrustEntityFilterValue::States);
+
+        let entity_key = value
+            .entity_key
+            .map(|k| TrustEntityFilterValue::EntityKey(TrustEntityKey::from(k)));
+
+        let created_date_after = value
+            .created_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let created_date_before = value
+            .created_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let last_modified_after = value
+            .last_modified_after
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let last_modified_before = value
+            .last_modified_before
+            .map(|date| {
+                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
         let filtering = ListFilterCondition::<TrustEntityFilterValue>::from(name)
             & role
             & trust_anchor
-            & did_id
-            & organisation_id;
+            & organisation_id
+            & types
+            & entity_key
+            & states
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before;
 
         Ok(Self {
             pagination: Some(ListPagination {
@@ -480,6 +563,27 @@ impl TryFrom<ListTrustEntitiesFiltersBindings> for ListTrustEntitiesQueryDTO {
             }),
             filtering: Some(filtering),
             include: None,
+        })
+    }
+}
+
+impl TryFrom<CreateProofRequestBindingDTO> for CreateProofRequestDTO {
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: CreateProofRequestBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            proof_schema_id: into_id(value.proof_schema_id)?,
+            verifier_did_id: into_id_opt(value.verifier_did_id)?,
+            verifier_identifier_id: into_id_opt(value.verifier_identifier_id)?,
+            protocol: value.protocol,
+            redirect_uri: value.redirect_uri,
+            verifier_key: into_id_opt(value.verifier_key)?,
+            verifier_certificate: into_id_opt(value.verifier_certificate)?,
+            iso_mdl_engagement: value.iso_mdl_engagement,
+            transport: value.transport,
+            profile: value.profile,
+            engagement: value.engagement,
+            webhook_destination_url: None,
         })
     }
 }
@@ -509,7 +613,54 @@ impl TryFrom<ListProofSchemasFiltersBindingDTO> for GetProofSchemaQuery {
             .transpose()?
             .map(ProofSchemaFilterValue::ProofSchemaIds);
 
-        let filtering = organisation_id & name & proof_schema_ids;
+        let formats = value.formats.map(ProofSchemaFilterValue::Formats);
+
+        let created_date_after = value
+            .created_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofSchemaFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let created_date_before = value
+            .created_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofSchemaFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let last_modified_after = value
+            .last_modified_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofSchemaFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let last_modified_before = value
+            .last_modified_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofSchemaFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let filtering = organisation_id
+            & name
+            & proof_schema_ids
+            & formats
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before;
 
         Ok(Self {
             pagination: Some(ListPagination {
@@ -547,11 +698,11 @@ impl TryFrom<ProofListQueryBindingDTO> for GetProofQueryDTO {
 
         let proof_states = value
             .proof_states
-            .map(|proof_states| ProofFilterValue::ProofStates(convert_inner(proof_states)));
+            .map(|proof_states| ProofFilterValue::States(convert_inner(proof_states)));
 
         let proof_roles = value
             .proof_roles
-            .map(|proof_roles| ProofFilterValue::ProofRoles(convert_inner(proof_roles)));
+            .map(|proof_roles| ProofFilterValue::Roles(convert_inner(proof_roles)));
 
         let proof_ids = value
             .ids
@@ -565,8 +716,99 @@ impl TryFrom<ProofListQueryBindingDTO> for GetProofQueryDTO {
             .transpose()?
             .map(ProofFilterValue::ProofSchemaIds);
 
-        let filtering =
-            organisation_id & name & proof_states & proof_roles & proof_schema_ids & proof_ids;
+        let profile = value.profiles.map(ProofFilterValue::Profiles);
+
+        let created_date_after = value
+            .created_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let created_date_before = value
+            .created_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::CreatedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let last_modified_after = value
+            .last_modified_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let last_modified_before = value
+            .last_modified_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::LastModified(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let requested_date_after = value
+            .requested_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::RequestedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let requested_date_before = value
+            .requested_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::RequestedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let completed_date_after = value
+            .completed_date_after
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::CompletedDate(ValueComparison {
+                    comparison: ComparisonType::GreaterThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+        let completed_date_before = value
+            .completed_date_before
+            .map(|date| {
+                Ok::<_, ServiceError>(ProofFilterValue::CompletedDate(ValueComparison {
+                    comparison: ComparisonType::LessThanOrEqual,
+                    value: deserialize_timestamp(&date)?,
+                }))
+            })
+            .transpose()?;
+
+        let filtering = organisation_id
+            & name
+            & proof_states
+            & proof_roles
+            & proof_schema_ids
+            & proof_ids
+            & profile
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+            & requested_date_after
+            & requested_date_before
+            & completed_date_after
+            & completed_date_before;
 
         Ok({
             Self {
@@ -667,15 +909,16 @@ impl TryFrom<OptionalString> for Option<TrustListLogo> {
     }
 }
 
-pub fn optional_time(value: Option<OffsetDateTime>) -> Option<String> {
+pub(crate) fn optional_time(value: Option<OffsetDateTime>) -> Option<String> {
     value.as_ref().map(TimestampFormat::format_timestamp)
 }
 
-pub fn optional_did_id_string(value: Option<DidListItemResponseDTO>) -> Option<String> {
-    value.map(|inner| inner.id.to_string())
+pub(crate) fn deserialize_timestamp(value: &str) -> Result<OffsetDateTime, ServiceError> {
+    OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map_err(|e| ServiceError::ValidationError(e.to_string()))
 }
 
-pub fn optional_identifier_id_string(
+pub(crate) fn optional_identifier_id_string(
     value: Option<GetIdentifierListItemResponseDTO>,
 ) -> Option<String> {
     value.map(|inner| inner.id.to_string())
@@ -696,9 +939,21 @@ impl TryFrom<UpsertOrganisationRequestBindingDTO> for UpsertOrganisationRequestD
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: UpsertOrganisationRequestBindingDTO) -> Result<Self, Self::Error> {
+        let wallet_provider_issuer = value
+            .wallet_provider_issuer
+            .map(|val| {
+                Option::<String>::from(val)
+                    .map(|val| into_id(&val))
+                    .transpose()
+            })
+            .transpose()?;
+
         Ok(Self {
             id: into_id(&value.id)?,
             name: value.name,
+            deactivate: value.deactivate,
+            wallet_provider: convert_inner(value.wallet_provider),
+            wallet_provider_issuer,
         })
     }
 }
@@ -713,5 +968,131 @@ impl TryFrom<CreateIdentifierDidRequestBindingDTO> for CreateIdentifierDidReques
             keys: value.keys.try_into()?,
             params: Some(json!(value.params)),
         })
+    }
+}
+
+impl From<PresentationDefinitionRequestedCredentialResponseDTO>
+    for PresentationDefinitionRequestedCredentialBindingDTO
+{
+    fn from(value: PresentationDefinitionRequestedCredentialResponseDTO) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            purpose: value.purpose,
+            multiple: value.multiple,
+            fields: convert_inner(value.fields),
+            applicable_credentials: value
+                .applicable_credentials
+                .iter()
+                .map(|item| item.to_string())
+                .collect(),
+            inapplicable_credentials: value
+                .inapplicable_credentials
+                .iter()
+                .map(|item| item.to_string())
+                .collect(),
+        }
+    }
+}
+
+impl From<PresentationDefinitionFieldDTO> for PresentationDefinitionFieldBindingDTO {
+    fn from(value: PresentationDefinitionFieldDTO) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            purpose: value.purpose,
+            required: value.required.unwrap_or(true),
+            key_map: value
+                .key_map
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value))
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<InitiateIssuanceRequestBindingDTO> for InitiateIssuanceRequestDTO {
+    type Error = ServiceError;
+    fn try_from(request: InitiateIssuanceRequestBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            organisation_id: into_id(request.organisation_id)?,
+            protocol: request.protocol,
+            issuer: request.issuer,
+            client_id: request.client_id,
+            redirect_uri: request.redirect_uri,
+            scope: request.scope,
+            authorization_details: convert_inner_of_inner(request.authorization_details),
+            issuer_state: None,
+            authorization_server: None,
+        })
+    }
+}
+
+impl<IN: Into<PresentationDefinitionV2ClaimBindingDTO>> From<CredentialDetailResponseDTO<IN>>
+    for PresentationDefinitionV2CredentialDetailBindingDTO
+{
+    fn from(value: CredentialDetailResponseDTO<IN>) -> Self {
+        Self {
+            id: value.id.to_string(),
+            created_date: value.created_date.format_timestamp(),
+            issuance_date: optional_time(value.issuance_date),
+            revocation_date: optional_time(value.revocation_date),
+            state: value.state.into(),
+            last_modified: value.last_modified.format_timestamp(),
+            schema: value.schema.into(),
+            issuer: convert_inner(value.issuer),
+            issuer_certificate: convert_inner(value.issuer_certificate),
+            claims: convert_inner(value.claims),
+            redirect_uri: value.redirect_uri,
+            role: value.role.into(),
+            suspend_end_date: optional_time(value.suspend_end_date),
+            mdoc_mso_validity: convert_inner(value.mdoc_mso_validity),
+            holder: convert_inner(value.holder),
+            protocol: value.protocol,
+            profile: value.profile,
+        }
+    }
+}
+
+impl<T: Into<PresentationDefinitionV2ClaimBindingDTO>>
+    From<DetailCredentialClaimValueResponseDTO<T>>
+    for PresentationDefinitionV2ClaimValueBindingDTO
+{
+    fn from(value: DetailCredentialClaimValueResponseDTO<T>) -> Self {
+        match value {
+            DetailCredentialClaimValueResponseDTO::Boolean(value) => Self::Boolean { value },
+            DetailCredentialClaimValueResponseDTO::Float(value) => Self::Float { value },
+            DetailCredentialClaimValueResponseDTO::Integer(value) => Self::Integer { value },
+            DetailCredentialClaimValueResponseDTO::String(value) => Self::String { value },
+            DetailCredentialClaimValueResponseDTO::Nested(value) => Self::Nested {
+                value: value.into_iter().map(|v| v.into()).collect(),
+            },
+        }
+    }
+}
+
+impl From<ApplicableCredentialOrFailureHintEnum> for ApplicableCredentialOrFailureHintBindingEnum {
+    fn from(value: ApplicableCredentialOrFailureHintEnum) -> Self {
+        match value {
+            ApplicableCredentialOrFailureHintEnum::ApplicableCredentials {
+                applicable_credentials,
+            } => Self::ApplicableCredentials {
+                applicable_credentials: convert_inner(applicable_credentials),
+            },
+            ApplicableCredentialOrFailureHintEnum::FailureHint { failure_hint } => {
+                Self::FailureHint {
+                    failure_hint: (*failure_hint).into(),
+                }
+            }
+        }
+    }
+}
+
+impl From<CreateCaCSRRequestBindingDTO> for KeyGenerateCSRRequestDTO {
+    fn from(value: CreateCaCSRRequestBindingDTO) -> Self {
+        Self {
+            profile: KeyGenerateCSRRequestProfile::Ca,
+            subject: value.subject.into(),
+        }
     }
 }

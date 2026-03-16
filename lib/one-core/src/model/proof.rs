@@ -1,12 +1,14 @@
-use shared_types::{IdentifierId, ProofId};
+use serde::Serialize;
+use shared_types::{BlobId, IdentifierId, InteractionId, ProofId};
 use strum::Display;
 use time::OffsetDateTime;
 
+use super::certificate::{Certificate, CertificateRelations};
 use super::claim::{Claim, ClaimRelations};
 use super::common::GetListResponse;
 use super::credential::{Credential, CredentialRelations};
 use super::identifier::{Identifier, IdentifierRelations};
-use super::interaction::{Interaction, InteractionId, InteractionRelations};
+use super::interaction::{Interaction, InteractionRelations};
 use super::key::Key;
 use super::list_query::ListQuery;
 use super::proof_schema::{ProofSchema, ProofSchemaRelations};
@@ -18,25 +20,29 @@ pub struct Proof {
     pub id: ProofId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub issuance_date: OffsetDateTime,
-    pub exchange: String,
+    pub protocol: String,
     pub transport: String,
     pub redirect_uri: Option<String>,
     pub state: ProofStateEnum,
     pub role: ProofRole,
     pub requested_date: Option<OffsetDateTime>,
     pub completed_date: Option<OffsetDateTime>,
+    pub profile: Option<String>,
+    pub proof_blob_id: Option<BlobId>,
+    pub engagement: Option<String>,
+    pub webhook_url: Option<String>,
 
     // Relations
     pub schema: Option<ProofSchema>,
     pub claims: Option<Vec<ProofClaim>>,
     pub verifier_identifier: Option<Identifier>,
-    pub holder_identifier: Option<Identifier>,
+    pub verifier_certificate: Option<Certificate>,
     pub verifier_key: Option<Key>,
     pub interaction: Option<Interaction>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Display)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Display, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProofStateEnum {
     Created,
     Pending,
@@ -45,9 +51,10 @@ pub enum ProofStateEnum {
     Rejected,
     Retracted,
     Error,
+    InteractionExpired,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Display)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Display)]
 pub enum ProofRole {
     Holder,
     Verifier,
@@ -64,7 +71,7 @@ pub struct ProofClaim {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SortableProofColumn {
     SchemaName,
-    VerifierDid,
+    Verifier,
     State,
     CreatedDate,
 }
@@ -77,8 +84,8 @@ pub struct ProofRelations {
     pub schema: Option<ProofSchemaRelations>,
     pub claims: Option<ProofClaimRelations>,
     pub verifier_identifier: Option<IdentifierRelations>,
-    pub holder_identifier: Option<IdentifierRelations>,
     pub verifier_key: Option<KeyRelations>,
+    pub verifier_certificate: Option<CertificateRelations>,
     pub interaction: Option<InteractionRelations>,
 }
 
@@ -90,11 +97,12 @@ pub struct ProofClaimRelations {
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct UpdateProofRequest {
-    pub holder_identifier_id: Option<IdentifierId>,
     pub verifier_identifier_id: Option<IdentifierId>,
     pub state: Option<ProofStateEnum>,
     pub interaction: Option<Option<InteractionId>>,
     pub redirect_uri: Option<Option<String>>,
     pub transport: Option<String>,
     pub requested_date: Option<Option<OffsetDateTime>>,
+    pub proof_blob_id: Option<Option<BlobId>>,
+    pub engagement: Option<Option<String>>,
 }

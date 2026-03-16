@@ -1,23 +1,58 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Extension;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::MatchedPath;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, Response, StatusCode};
 use axum::middleware::Next;
+use axum::response::IntoResponse;
 use headers::HeaderValue;
+use http_body_util::BodyExt;
+use one_core::proto::jwt::Jwt;
+use one_core::proto::session_provider::Session;
 use sentry::{Hub, SentryFutureExt};
+use serde::Deserialize;
+use serde_json::Value;
+use shared_types::{OrganisationId, Permission};
+use uuid::Uuid;
 
 use crate::ServerConfig;
+use crate::authentication::Authentication;
+use crate::session::SESSION;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StsToken {
+    pub organisation_id: Option<OrganisationId>,
+    #[serde(default)]
+    pub permissions: Vec<Permission>,
+    pub act: Option<Act>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Act {
+    pub sub: String,
+}
 
 #[derive(Debug, Clone)]
-pub struct Authorized {}
+pub struct Authorized {
+    pub permissions: Permissions,
+}
+
+#[derive(Debug, Clone)]
+pub enum Permissions {
+    All,
+    Subset(Vec<Permission>),
+}
 
 pub struct HttpRequestContext<'a> {
     pub path: &'a str,
     pub method: &'a str,
-    pub request_id: Option<&'a str>,
+    pub request_id: Cow<'a, str>,
     pub session_id: Option<&'a str>,
 }
 
@@ -41,10 +76,7 @@ pub async fn sentry_layer(
 
         sentry::configure_scope(|scope| {
             scope.set_tag("http-request", method_path.to_owned());
-
-            if let Some(request_id) = request_id {
-                scope.set_tag("ONE-request-id", request_id);
-            }
+            scope.set_tag("ONE-request-id", request_id);
 
             if let Some(session_id) = session_id {
                 scope.set_tag("ONE-session-id", session_id);
@@ -69,42 +101,113 @@ pub async fn sentry_layer(
     .await
 }
 
-pub async fn bearer_check(
-    Extension(config): Extension<Arc<ServerConfig>>,
+pub async fn authorization_check(
+    Extension(authentication): Extension<Authentication>,
     mut request: Request<Body>,
     next: Next,
 ) -> Result<axum::response::Response, StatusCode> {
-    let auth_header = request
-        .headers()
-        .get("Authorization")
-        .and_then(|header| header.to_str().ok());
-
-    let auth_header = if let Some(auth_header) = auth_header {
-        auth_header.to_owned()
-    } else {
-        tracing::warn!("Authorization header not found.");
-        return Err(StatusCode::UNAUTHORIZED);
+    let response = match authentication {
+        Authentication::None => {
+            request.extensions_mut().insert(Authorized {
+                permissions: Permissions::All,
+            });
+            next.run(request).await
+        }
+        Authentication::Static(static_token) => {
+            let token = extract_auth_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
+            if !token.is_empty() && token == static_token {
+                request.extensions_mut().insert(Authorized {
+                    permissions: Permissions::All,
+                });
+            } else {
+                tracing::warn!(
+                    "Could not authorize request. Incorrect authorization method or token."
+                );
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+            next.run(request).await
+        }
+        Authentication::SecurityTokenService(security_token_service) => {
+            let token = extract_auth_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
+            let decomposed_token = security_token_service
+                .validate_sts_token::<StsToken>(token)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("Could not authorize request. Invalid token. Cause: {e}")
+                })
+                .map_err(|_| StatusCode::UNAUTHORIZED)?;
+            request.extensions_mut().insert(Authorized {
+                permissions: Permissions::Subset(
+                    decomposed_token.payload.custom.permissions.clone(),
+                ),
+            });
+            // Initialize session scoped to this request
+            let session = Session {
+                organisation_id: decomposed_token.payload.custom.organisation_id,
+                permissions: decomposed_token.payload.custom.permissions,
+                user_id: decomposed_token
+                    .payload
+                    .subject
+                    .ok_or(StatusCode::UNAUTHORIZED)?,
+                actor: decomposed_token.payload.custom.act.map(|act| act.sub),
+            };
+            request.extensions_mut().insert(session.clone());
+            tracing::trace!("Session initialized: {session}");
+            SESSION.scope(session, next.run(request)).await
+        }
     };
-
-    let mut split = auth_header.split(' ');
-    let auth_type = split.next().unwrap_or_default();
-    let token = split.next().unwrap_or_default();
-
-    if auth_type == "Bearer" && !token.is_empty() && token == config.auth_token {
-        request.extensions_mut().insert(Authorized {});
-    } else {
-        tracing::warn!("Could not authorize request. Incorrect authorization method or token.");
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-    Ok(next.run(request).await)
+    Ok(response)
 }
 
-pub fn get_http_request_context<T>(request: &Request<T>) -> HttpRequestContext {
+pub async fn user_init(mut request: Request<Body>, next: Next) -> axum::response::Response {
+    let Some(token) = extract_auth_token(&request) else {
+        return next.run(request).await;
+    };
+    let Some(mut jwt) = Jwt::<HashMap<String, Value>>::decompose_token(token).ok() else {
+        return next.run(request).await;
+    };
+
+    request.extensions_mut().insert(UserInfo {
+        user_id: jwt.payload.subject,
+        act: jwt
+            .payload
+            .custom
+            .remove("act")
+            .and_then(|val| val.get("sub").and_then(|s| s.as_str()).map(String::from)),
+        organisation_id: jwt.payload.custom.remove("organisationId").and_then(|o| {
+            if let Value::String(s) = o {
+                Some(s)
+            } else {
+                None
+            }
+        }),
+    });
+    next.run(request).await
+}
+
+#[derive(Debug, Clone)]
+pub struct UserInfo {
+    pub user_id: Option<String>,
+    pub act: Option<String>,
+    pub organisation_id: Option<String>,
+}
+
+fn extract_auth_token(request: &Request<Body>) -> Option<&str> {
+    request
+        .headers()
+        .get("Authorization")
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "))
+}
+
+pub fn get_http_request_context<T>(request: &Request<T>) -> HttpRequestContext<'_> {
     let headers = request.headers();
     let request_id = headers
         .get("x-request-id")
         .and_then(|header| header.to_str().ok())
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .map(Cow::Borrowed)
+        .unwrap_or(Cow::Owned(Uuid::new_v4().to_string()));
 
     let session_id = headers
         .get("x-session-id")
@@ -169,4 +272,86 @@ pub async fn add_x_content_type_options_no_sniff_header(
         HeaderValue::from_static("nosniff"),
     );
     Ok(response)
+}
+
+pub async fn log_request_and_response(
+    request: Request<Body>,
+    next: Next,
+) -> Result<axum::response::Response, axum::response::Response> {
+    const TRACING_LAYER_ERROR: &str = "!HTTP Tracing Layer Error!";
+
+    let (parts, body) = request.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{TRACING_LAYER_ERROR}: {err}"),
+            )
+                .into_response()
+        })?
+        .to_bytes();
+    let method = parts.method.clone();
+    let request_uri = parts.uri.to_string();
+    log_details(
+        "request",
+        method.as_str(),
+        &request_uri,
+        &bytes,
+        &parts.headers,
+    );
+
+    let request = Request::from_parts(parts, Body::from(bytes));
+    let response = next.run(request).await;
+
+    let (parts, body) = response.into_parts();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{TRACING_LAYER_ERROR}: {err}"),
+            )
+                .into_response()
+        })?
+        .to_bytes();
+    log_details(
+        "response",
+        method.as_str(),
+        &request_uri,
+        &bytes,
+        &parts.headers,
+    );
+
+    Ok(Response::from_parts(parts, Body::from(bytes)))
+}
+
+fn log_details(kind: &str, method: &str, url: &str, bytes: &Bytes, headers: &HeaderMap) {
+    const NONE: &str = " None";
+
+    let resp_body = if bytes.is_empty() {
+        NONE.to_string()
+    } else {
+        format!(
+            "\n{}",
+            String::from_utf8(bytes.to_vec()).unwrap_or("Unable to parse UTF-8".to_string())
+        )
+    };
+
+    let resp_headers = if headers.is_empty() {
+        NONE.to_string()
+    } else {
+        format!(
+            "\n{}\n",
+            headers
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k.as_str(), v.to_str().unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    tracing::trace!("{kind} {method} {url}\nHeaders:{resp_headers}\nBody:{resp_body}");
 }

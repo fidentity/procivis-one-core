@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use crate::provider::credential_formatter::json_ld::context::caching_loader::{
-    JsonLdCachingLoader, JsonLdResolver,
-};
-use crate::provider::http_client::HttpClient;
+use crate::proto::http_client::HttpClient;
+use crate::provider::caching_loader::json_ld_context::{JsonLdCachingLoader, JsonLdResolver};
 
 pub mod service;
 

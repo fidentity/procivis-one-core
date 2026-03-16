@@ -1,28 +1,43 @@
-# --- Build Stage ---
-FROM rust:latest AS builder
+ARG BASE_IMAGE=registry.gitlab.procivis.ch/procivis/one/one-operations/core-base:1.92.0-0.1
+ARG APP_VERSION
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential ca-certificates
+# ----------- Planner image -----------
+# Creates dependencies tree file
+FROM $BASE_IMAGE AS planner
 
-# Set working directory
 WORKDIR /app
 
-# Copy source code
 COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build the project in release mode
-RUN cargo build --release
+# ----------- Builder image -----------
+# Builds dependencies (cached in a single layer) and then the final app binary
+FROM $BASE_IMAGE AS builder
 
-# --- Runtime Stage ---
-FROM debian:12-slim
+ARG APP_VERSION
 
-# Define build args
+ENV CARGO_UNSTABLE_GC="true"
+ENV APP_VERSION=${APP_VERSION}
+
+WORKDIR /app
+
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this is the caching Docker layer
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Build the app binary
+COPY . .
+RUN cargo build --release -p core-server && \
+    cargo sweep --time 7
+
+
+# ----------- App Base image -----------
+# Basic runtime setup
+FROM debian:12-slim AS base
+
 ARG GID=1000
 ARG UID=1000
 ARG USER=rust
-
-# Create app directory and system user
-WORKDIR /app
 
 RUN apt-get update && \
     apt-get install -y ca-certificates && \
@@ -30,14 +45,17 @@ RUN apt-get update && \
     groupadd -g "$GID" "$USER" && \
     useradd -r -u "$UID" -g "$USER" "$USER"
 
-# Copy built binary and config files from builder
-COPY --from=builder --chmod=555 /app/target/release/core-server /app/core-server
-COPY --chmod=+x config /app/config
+
+# ----------- Production image -----------
+# Copies the final app binary - created in builder stage - to the base image
+FROM base
+
+WORKDIR /app
+
+COPY --from=builder --chmod=555 /app/target/release/core-server .
+COPY config /app/config
 
 EXPOSE 3000
 
-# Switch to non-root user
 USER $USER
-
-# Set entrypoint
-ENTRYPOINT ["/app/core-server", "--config", "config/config-procivis-base.yml", "--config", "config/config-local.yml"]
+ENTRYPOINT ["/app/core-server"]

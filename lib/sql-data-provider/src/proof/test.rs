@@ -9,7 +9,7 @@ use one_core::model::did::{Did, DidRelations, DidType};
 use one_core::model::identifier::{
     Identifier, IdentifierRelations, IdentifierState, IdentifierType,
 };
-use one_core::model::interaction::{Interaction, InteractionId, InteractionRelations};
+use one_core::model::interaction::{Interaction, InteractionRelations, InteractionType};
 use one_core::model::key::{Key, KeyRelations};
 use one_core::model::list_filter::ListFilterValue;
 use one_core::model::list_query::ListPagination;
@@ -17,6 +17,9 @@ use one_core::model::proof::{
     GetProofQuery, Proof, ProofClaimRelations, ProofRelations, ProofRole, ProofStateEnum,
 };
 use one_core::model::proof_schema::{ProofSchema, ProofSchemaRelations};
+use one_core::repository::certificate_repository::{
+    CertificateRepository, MockCertificateRepository,
+};
 use one_core::repository::claim_repository::{ClaimRepository, MockClaimRepository};
 use one_core::repository::credential_repository::{CredentialRepository, MockCredentialRepository};
 use one_core::repository::identifier_repository::{IdentifierRepository, MockIdentifierRepository};
@@ -31,14 +34,18 @@ use one_core::repository::proof_schema_repository::{
 use one_core::service::proof::dto::ProofFilterValue;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use shared_types::{
-    ClaimSchemaId, DidId, IdentifierId, KeyId, OrganisationId, ProofId, ProofSchemaId,
+    ClaimId, ClaimSchemaId, DidId, IdentifierId, InteractionId, KeyId, OrganisationId, ProofId,
+    ProofSchemaId,
 };
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::ProofProvider;
+use crate::entity::credential_schema::KeyStorageSecurity;
 use crate::entity::key_did::KeyRole;
-use crate::entity::{claim, credential, proof_claim};
+use crate::entity::{blob, claim, credential, interaction, proof, proof_claim};
 use crate::test_utilities::*;
+use crate::transaction_context::TransactionManagerImpl;
 
 struct TestSetup {
     pub db: DatabaseConnection,
@@ -59,6 +66,7 @@ async fn setup(
     identifier_repository: Arc<dyn IdentifierRepository>,
     interaction_repository: Arc<dyn InteractionRepository>,
     key_repository: Arc<dyn KeyRepository>,
+    certificate_repository: Arc<dyn CertificateRepository>,
 ) -> TestSetup {
     let data_layer = setup_test_data_layer_and_connection().await;
     let db = data_layer.db;
@@ -74,7 +82,8 @@ async fn setup(
         organisation_id,
         "credential schema",
         "JWT",
-        "NONE",
+        None,
+        Some(KeyStorageSecurity::Basic),
     )
     .await
     .unwrap();
@@ -87,6 +96,7 @@ async fn setup(
             order: i as u32,
             datatype: "STRING",
             array: false,
+            metadata: false,
         })
         .collect();
 
@@ -146,22 +156,26 @@ async fn setup(
     .await
     .unwrap();
 
-    let interaction_id = Uuid::parse_str(
-        &insert_interaction(&db, "host", &[1, 2, 3], organisation_id)
-            .await
-            .unwrap(),
+    let interaction_id = insert_interaction(
+        &db,
+        &[1, 2, 3],
+        organisation_id,
+        None,
+        interaction::InteractionType::Verification,
     )
+    .await
     .unwrap();
 
     TestSetup {
         repository: Box::new(ProofProvider {
-            db: db.clone(),
+            db: TransactionManagerImpl::new(db.clone()),
             proof_schema_repository,
             claim_repository,
             credential_repository,
             identifier_repository,
             interaction_repository,
             key_repository,
+            certificate_repository,
         }),
         db,
         organisation_id,
@@ -193,6 +207,7 @@ async fn setup_with_proof(
     identifier_repository: Arc<dyn IdentifierRepository>,
     interaction_repository: Arc<dyn InteractionRepository>,
     key_repository: Arc<dyn KeyRepository>,
+    certificate_repository: Arc<dyn CertificateRepository>,
 ) -> TestSetupWithProof {
     let TestSetup {
         repository,
@@ -211,16 +226,19 @@ async fn setup_with_proof(
         identifier_repository,
         interaction_repository,
         key_repository,
+        certificate_repository,
     )
     .await;
 
     let proof_id = insert_proof_request_to_database(
         &db,
         identifier_id,
-        None,
         &proof_schema_id,
         key_id,
-        Some(interaction_id.to_string()),
+        Some(interaction_id),
+        None,
+        None,
+        proof::ProofRole::Verifier,
     )
     .await
     .unwrap();
@@ -262,6 +280,10 @@ fn get_key_repository_mock() -> Arc<dyn KeyRepository> {
     Arc::from(MockKeyRepository::default())
 }
 
+fn get_certificate_repository_mock() -> Arc<dyn CertificateRepository> {
+    Arc::from(MockCertificateRepository::default())
+}
+
 #[tokio::test]
 async fn test_create_proof_success() {
     let TestSetup {
@@ -279,6 +301,7 @@ async fn test_create_proof_success() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
@@ -287,8 +310,7 @@ async fn test_create_proof_success() {
         id: proof_id,
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        issuance_date: get_dummy_date(),
-        exchange: "test".to_string(),
+        protocol: "test".to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Created,
@@ -307,18 +329,18 @@ async fn test_create_proof_success() {
             input_schemas: None,
         }),
         claims: None,
-        holder_identifier: None,
         verifier_key: Some(Key {
             id: key_id,
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             public_key: vec![],
             name: "".to_string(),
-            key_reference: vec![],
+            key_reference: None,
             storage_type: "".to_string(),
             key_type: "".to_string(),
             organisation: None,
         }),
+        verifier_certificate: None,
         verifier_identifier: Some(Identifier {
             id: identifier_id,
             created_date: get_dummy_date(),
@@ -346,6 +368,10 @@ async fn test_create_proof_success() {
             certificates: None,
         }),
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     };
 
     let result = repository.create_proof(proof).await.unwrap();
@@ -375,6 +401,7 @@ async fn test_get_proof_list() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
@@ -410,11 +437,12 @@ async fn test_get_proof_missing() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
     let result = repository
-        .get_proof(&Uuid::new_v4().into(), &ProofRelations::default())
+        .get_proof(&Uuid::new_v4().into(), &ProofRelations::default(), None)
         .await;
     assert!(matches!(result, Ok(None)));
 }
@@ -432,11 +460,12 @@ async fn test_get_proof_no_relations() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
     let proof = repository
-        .get_proof(&proof_id, &ProofRelations::default())
+        .get_proof(&proof_id, &ProofRelations::default(), None)
         .await
         .unwrap()
         .unwrap();
@@ -468,14 +497,16 @@ async fn test_get_proof_with_relations() {
     interaction_repository
         .expect_get_interaction()
         .times(1)
-        .returning(|id, _| {
+        .returning(|id, _, _| {
             Ok(Some(Interaction {
                 id: id.to_owned(),
                 created_date: get_dummy_date(),
                 last_modified: get_dummy_date(),
                 data: Some(vec![1, 2, 3]),
-                host: Some("http://www.host.co".parse().unwrap()),
                 organisation: None,
+                nonce_id: None,
+                interaction_type: InteractionType::Verification,
+                expires_at: None,
             }))
         });
 
@@ -513,7 +544,7 @@ async fn test_get_proof_with_relations() {
         });
 
     let credential_id = Uuid::new_v4().into();
-    let claim_id = Uuid::new_v4();
+    let claim_id: ClaimId = Uuid::new_v4().into();
     let mut claim_repository = MockClaimRepository::default();
     claim_repository
         .expect_get_claim_list()
@@ -525,9 +556,10 @@ async fn test_get_proof_with_relations() {
                 credential_id,
                 created_date: get_dummy_date(),
                 last_modified: get_dummy_date(),
-                value: "value".to_string(),
+                value: Some("value".to_string()),
                 path: String::new(),
                 schema: None,
+                selectively_disclosable: false,
             }])
         });
 
@@ -540,22 +572,26 @@ async fn test_get_proof_with_relations() {
             Ok(Some(Credential {
                 id: credential_id,
                 created_date: get_dummy_date(),
-                issuance_date: get_dummy_date(),
+                issuance_date: None,
                 last_modified: get_dummy_date(),
                 deleted_at: None,
-                credential: b"credential".to_vec(),
-                exchange: "protocol".to_string(),
+                protocol: "protocol".to_string(),
                 redirect_uri: None,
                 role: CredentialRole::Verifier,
                 state: CredentialStateEnum::Accepted,
                 suspend_end_date: None,
                 claims: None,
                 issuer_identifier: None,
+                issuer_certificate: None,
                 holder_identifier: None,
                 schema: None,
                 interaction: None,
-                revocation_list: None,
                 key: None,
+                profile: None,
+                credential_blob_id: Some(Uuid::new_v4().into()),
+                wallet_unit_attestation_blob_id: None,
+                wallet_instance_attestation_blob_id: None,
+                webhook_url: None,
             }))
         });
 
@@ -570,7 +606,7 @@ async fn test_get_proof_with_relations() {
                 last_modified: get_dummy_date(),
                 public_key: vec![],
                 name: "".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "".to_string(),
                 key_type: "".to_string(),
                 organisation: None,
@@ -594,6 +630,7 @@ async fn test_get_proof_with_relations() {
         Arc::from(identifier_repository),
         Arc::from(interaction_repository),
         Arc::from(key_repository),
+        get_certificate_repository_mock(),
     )
     .await;
 
@@ -603,8 +640,21 @@ async fn test_get_proof_with_relations() {
         organisation_id,
         "credential schema 1",
         "JWT",
-        "NONE",
+        None,
+        Some(KeyStorageSecurity::Basic),
     )
+    .await
+    .unwrap();
+
+    let blob_id = Uuid::new_v4().into();
+    blob::ActiveModel {
+        id: Set(blob_id),
+        created_date: Set(get_dummy_date()),
+        last_modified: Set(get_dummy_date()),
+        value: Set(vec![0, 0, 0, 0]),
+        r#type: Set(blob::BlobType::Credential),
+    }
+    .insert(&db)
     .await
     .unwrap();
 
@@ -613,16 +663,15 @@ async fn test_get_proof_with_relations() {
         credential_schema_id: Set(credential_schema_id),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        issuance_date: Set(get_dummy_date()),
+        issuance_date: Set(Some(get_dummy_date())),
         redirect_uri: Set(None),
         deleted_at: Set(None),
-        exchange: Set("OPENID4VCI_DRAFT13".to_owned()),
-        credential: Set(vec![0, 0, 0, 0]),
+        protocol: Set("OPENID4VCI_DRAFT13".to_owned()),
         role: Set(credential::CredentialRole::Issuer),
         interaction_id: Set(None),
-        revocation_list_id: Set(None),
         key_id: Set(None),
         state: Set(credential::CredentialState::Accepted),
+        credential_blob_id: Set(Some(blob_id)),
         ..Default::default()
     }
     .insert(&db)
@@ -630,20 +679,21 @@ async fn test_get_proof_with_relations() {
     .unwrap();
 
     claim::ActiveModel {
-        id: Set(claim_id.into()),
+        id: Set(claim_id),
         credential_id: Set(credential_id),
         claim_schema_id: Set(claim_schema_ids[0]),
-        value: Set("value".as_bytes().to_owned()),
+        value: Set(Some("value".into())),
+        path: Set("path".into()),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        ..Default::default()
+        selectively_disclosable: Set(false),
     }
     .insert(&db)
     .await
     .unwrap();
     proof_claim::ActiveModel {
-        claim_id: Set(claim_id.to_string()),
-        proof_id: Set(proof_id.to_string()),
+        claim_id: Set(claim_id),
+        proof_id: Set(proof_id),
     }
     .insert(&db)
     .await
@@ -662,13 +712,11 @@ async fn test_get_proof_with_relations() {
                     did: Some(DidRelations::default()),
                     ..Default::default()
                 }),
-                holder_identifier: Some(IdentifierRelations {
-                    did: Some(DidRelations::default()),
-                    ..Default::default()
-                }),
                 verifier_key: Some(KeyRelations::default()),
                 interaction: Some(InteractionRelations::default()),
+                ..Default::default()
             },
+            None,
         )
         .await
         .unwrap()
@@ -676,7 +724,6 @@ async fn test_get_proof_with_relations() {
 
     assert_eq!(proof.id, proof_id);
     assert_eq!(proof.schema.unwrap().id, proof_schema_id);
-    assert!(proof.holder_identifier.is_none());
     assert_eq!(proof.interaction.unwrap().id, interaction_id);
     assert_eq!(proof.verifier_key.unwrap().id, key_id);
 
@@ -695,11 +742,12 @@ async fn test_get_proof_by_interaction_id_missing() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
     let result = repository
-        .get_proof_by_interaction_id(&Uuid::new_v4(), &ProofRelations::default())
+        .get_proof_by_interaction_id(&Uuid::new_v4().into(), &ProofRelations::default())
         .await;
     assert!(matches!(result, Ok(None)));
 }
@@ -728,14 +776,16 @@ async fn test_get_proof_by_interaction_id_success() {
     interaction_repository
         .expect_get_interaction()
         .times(1)
-        .returning(|id, _| {
+        .returning(|id, _, _| {
             Ok(Some(Interaction {
                 id: id.to_owned(),
                 created_date: get_dummy_date(),
                 last_modified: get_dummy_date(),
                 data: Some(vec![1, 2, 3]),
-                host: Some("http://www.host.co/".parse().unwrap()),
                 organisation: None,
+                nonce_id: None,
+                interaction_type: InteractionType::Verification,
+                expires_at: None,
             }))
         });
 
@@ -750,7 +800,7 @@ async fn test_get_proof_by_interaction_id_success() {
                 last_modified: get_dummy_date(),
                 public_key: vec![],
                 name: "".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "".to_string(),
                 key_type: "".to_string(),
                 organisation: None,
@@ -769,6 +819,7 @@ async fn test_get_proof_by_interaction_id_success() {
         get_identifier_repository_mock(),
         Arc::from(interaction_repository),
         Arc::from(key_repository),
+        get_certificate_repository_mock(),
     )
     .await;
 
@@ -808,6 +859,7 @@ async fn test_set_proof_claims_success() {
         get_identifier_repository_mock(),
         get_interaction_repository_mock(),
         get_key_repository_mock(),
+        get_certificate_repository_mock(),
     )
     .await;
 
@@ -817,7 +869,8 @@ async fn test_set_proof_claims_success() {
         organisation_id,
         "credential schema 1",
         "JWT",
-        "NONE",
+        None,
+        Some(KeyStorageSecurity::Basic),
     )
     .await
     .unwrap();
@@ -830,29 +883,33 @@ async fn test_set_proof_claims_success() {
         identifier_id,
         None,
         None,
+        Uuid::new_v4().into(),
+        credential::CredentialRole::Issuer,
     )
     .await
     .unwrap();
 
     let claim = Claim {
-        id: Uuid::new_v4(),
+        id: Uuid::new_v4().into(),
         credential_id: credential.id,
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        value: "value".to_string(),
+        value: Some("value".to_string()),
         schema: None,
-        path: String::default(),
+        path: "path".to_string(),
+        selectively_disclosable: false,
     };
 
     // necessary to pass db consistency checks
     claim::ActiveModel {
-        id: Set(claim.id.into()),
+        id: Set(claim.id),
         credential_id: Set(credential.id),
         claim_schema_id: Set(claim_schema_ids[0]),
-        value: Set("value".into()),
+        value: Set(Some("value".into())),
+        path: Set("path".into()),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        ..Default::default()
+        selectively_disclosable: Set(false),
     }
     .insert(&db)
     .await

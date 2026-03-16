@@ -4,12 +4,12 @@ use bon::bon;
 use indexmap::{IndexMap, IndexSet, indexset};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{OneOrMany, serde_as, skip_serializing_none};
-use shared_types::DidValue;
 use time::OffsetDateTime;
 use url::Url;
 
 use super::error::FormatterError;
-use super::model::{CredentialSubject, DetailCredential};
+use super::model::CredentialClaim;
+use crate::provider::credential_formatter::MetadataClaimSchema;
 use crate::provider::credential_formatter::model::{
     CredentialSchema, CredentialStatus, Description, Issuer, Name,
 };
@@ -31,6 +31,8 @@ impl From<Url> for ContextType {
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+// No serde(deny_unknown_fields) here because the specification allows
+// for extending with custom context & properties. (see section 5.2)
 // https://www.w3.org/TR/vc-data-model-2.0/#verifiable-credentials
 pub struct VcdmCredential {
     #[serde(rename = "@context")]
@@ -183,6 +185,40 @@ impl VcdmCredential {
                 .for_each(|schema| schema.metadata = None)
         }
     }
+
+    pub(crate) fn get_metadata_claims(
+        &self,
+        plain_claims: &[String],
+        selectively_disclosable_claims: &[String],
+    ) -> Result<HashMap<String, CredentialClaim>, FormatterError> {
+        let value = serde_json::to_value(self)?;
+
+        let Some(obj) = value.as_object() else {
+            return Err(FormatterError::CouldNotExtractCredentials(
+                "Expected root to be an object".to_string(),
+            ));
+        };
+
+        let mut result = HashMap::new();
+        for key in plain_claims {
+            let Some(claim) = obj.get(key) else { continue };
+            let mut claim = CredentialClaim::try_from(claim.clone())?;
+            claim.set_metadata(true);
+            result.insert(key.to_string(), claim);
+        }
+
+        for key in selectively_disclosable_claims {
+            let Some(claim) = obj.get(key) else { continue };
+            let claim = CredentialClaim {
+                selectively_disclosable: true,
+                metadata: true,
+                ..CredentialClaim::try_from(claim.clone())?
+            };
+            result.insert(key.to_string(), claim);
+        }
+
+        Ok(result)
+    }
 }
 
 #[serde_as]
@@ -201,20 +237,22 @@ pub struct RefreshService {
 pub struct VcdmCredentialSubject {
     pub id: Option<Url>,
     #[serde(flatten)]
-    pub claims: IndexMap<String, serde_json::Value>,
+    pub claims: IndexMap<String, CredentialClaim>,
 }
 
 impl VcdmCredentialSubject {
     pub fn new(
         claims: impl IntoIterator<Item = (impl Into<String>, impl Into<serde_json::Value>)>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, FormatterError> {
+        Ok(Self {
             id: None,
             claims: claims
                 .into_iter()
-                .map(|(k, v)| (k.into(), v.into()))
-                .collect(),
-        }
+                .map(|(k, v)| {
+                    Ok::<_, FormatterError>((k.into(), CredentialClaim::try_from(v.into())?))
+                })
+                .collect::<Result<_, _>>()?,
+        })
     }
 
     pub fn with_id(mut self, id: impl Into<Url>) -> Self {
@@ -227,7 +265,7 @@ pub type Claims = HashMap<String, String>;
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VcdmProof {
     #[serde(rename = "@context")]
     pub context: Option<IndexSet<ContextType>>,
@@ -305,6 +343,41 @@ pub struct VcdmRelatedResource {
     #[serde(rename = "digestSRI")]
     pub digest_sri: Option<String>,
     pub digest_multibase: Option<String>,
+}
+
+pub(crate) fn vcdm_metadata_claims(parent_object_key: Option<&str>) -> Vec<MetadataClaimSchema> {
+    let mut result = vec![];
+
+    let prefix = if let Some(key) = parent_object_key {
+        result.push(MetadataClaimSchema {
+            key: key.to_string(),
+            data_type: "OBJECT".to_string(),
+            array: false,
+            required: true,
+        });
+
+        format!("{key}/")
+    } else {
+        "".to_string()
+    };
+
+    // selected vcdm claims
+    result.extend(vec![
+        MetadataClaimSchema {
+            key: format!("{prefix}type"),
+            data_type: "STRING".to_string(),
+            array: true,
+            required: true,
+        },
+        MetadataClaimSchema {
+            key: format!("{prefix}id"),
+            data_type: "STRING".to_string(),
+            array: false,
+            required: false,
+        },
+    ]);
+
+    result
 }
 
 #[skip_serializing_none]
@@ -397,66 +470,6 @@ impl From<VcdmCredential> for JwtVcdmCredential {
     }
 }
 
-impl TryFrom<VcdmCredential> for DetailCredential {
-    type Error = FormatterError;
-
-    fn try_from(mut vcdm: VcdmCredential) -> Result<Self, Self::Error> {
-        let Some(credential_subject) = vcdm.credential_subject.pop() else {
-            return Err(FormatterError::Failed(
-                "Missing credential subject".to_string(),
-            ));
-        };
-
-        if !vcdm.credential_subject.is_empty() {
-            return Err(FormatterError::Failed(
-                "We currently don't support multiple credential subjects".to_string(),
-            ));
-        }
-
-        let credential_schema = vcdm
-            .credential_schema
-            .map(|mut schemas| {
-                let Some(credential_schema) = schemas.pop() else {
-                    return Err(FormatterError::Failed(
-                        "Missing credential schema".to_string(),
-                    ));
-                };
-
-                if !schemas.is_empty() {
-                    return Err(FormatterError::Failed(
-                        "We currently don't support multiple credential schemas".to_string(),
-                    ));
-                }
-
-                Ok(credential_schema)
-            })
-            .transpose()?;
-
-        let claims = CredentialSubject {
-            id: credential_subject.id.clone(),
-            claims: HashMap::from_iter(credential_subject.claims),
-        };
-
-        // this is not always DID, for example LVVC credentials use URN schema as and id
-        let subject = credential_subject
-            .id
-            .and_then(|id| DidValue::from_did_url(id).ok());
-
-        Ok(Self {
-            id: vcdm.id.map(|url| url.to_string()),
-            valid_from: vcdm.valid_from.or(vcdm.issuance_date),
-            valid_until: vcdm.valid_until.or(vcdm.expiration_date),
-            update_at: None,
-            invalid_before: None,
-            issuer_did: Some(vcdm.issuer.to_did_value()?),
-            subject,
-            claims,
-            status: vcdm.credential_status,
-            credential_schema,
-        })
-    }
-}
-
 fn some_or_error<'de, D, R>(deserializer: D) -> Result<Option<R>, D::Error>
 where
     D: Deserializer<'de>,
@@ -473,6 +486,7 @@ where
 #[cfg(test)]
 mod test {
     use serde::Deserialize;
+    use similar_asserts::assert_eq;
 
     use super::*;
 

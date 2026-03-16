@@ -1,34 +1,40 @@
 use url::Url;
 
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{
-    OID4VPHandover, SessionTranscript,
+use crate::error::ContextWithErrorCode;
+use crate::provider::presentation_formatter::model::FormatPresentationCtx;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::iso_18013_7::OID4VPDraftHandover;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::{
+    Handover, SessionTranscript,
 };
-use crate::provider::credential_formatter::model::FormatPresentationCtx;
 use crate::provider::verification_protocol::error::VerificationProtocolError;
 use crate::provider::verification_protocol::iso_mdl::common::to_cbor;
-use crate::provider::verification_protocol::openid4vp::model::OpenID4VPHolderInteractionData;
 
-pub(crate) fn mdoc_presentation_context(
-    interaction_data: &OpenID4VPHolderInteractionData,
+pub(crate) fn mdoc_draft_handover(
+    client_id: &str,
     response_uri: &Url,
     verifier_nonce: &str,
     mdoc_generated_nonce: &str,
+) -> Result<Handover, VerificationProtocolError> {
+    Ok(Handover::Iso18013_7AnnexB(
+        OID4VPDraftHandover::compute(
+            client_id,
+            response_uri.as_str(),
+            verifier_nonce,
+            mdoc_generated_nonce,
+        )
+        .error_while("computing draft handover")?,
+    ))
+}
+
+pub(crate) fn mdoc_presentation_context(
+    handover: Handover,
 ) -> Result<FormatPresentationCtx, VerificationProtocolError> {
     Ok(FormatPresentationCtx {
-        mdoc_session_transcript: Some(
-            to_cbor(&SessionTranscript {
-                handover: OID4VPHandover::compute(
-                    interaction_data.client_id.as_str().trim_end_matches('/'),
-                    response_uri.as_str().trim_end_matches('/'),
-                    verifier_nonce,
-                    mdoc_generated_nonce,
-                )
-                .into(),
-                device_engagement_bytes: None,
-                e_reader_key_bytes: None,
-            })
-            .map_err(|err| VerificationProtocolError::Failed(err.to_string()))?,
-        ),
+        mdoc_session_transcript: Some(to_cbor(&SessionTranscript {
+            handover: Some(handover),
+            device_engagement_bytes: None,
+            e_reader_key_bytes: None,
+        })?),
         ..Default::default()
     })
 }

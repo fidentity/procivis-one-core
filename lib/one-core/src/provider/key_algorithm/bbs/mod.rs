@@ -3,12 +3,11 @@
 use std::sync::Arc;
 
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
-use one_crypto::SignerError;
 use one_crypto::signer::bbs::{BBSSigner, BbsDeriveInput, BbsProofInput};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use standardized_types::jwk::{JwkUse, PrivateJwk, PublicJwk, PublicJwkEc};
 
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::{PublicKeyJwk, PublicKeyJwkEllipticData};
 use crate::provider::key_algorithm::error::KeyAlgorithmError;
 use crate::provider::key_algorithm::key::{
     KeyHandle, KeyHandleError, MultiMessageSignatureKeyHandle,
@@ -54,7 +53,7 @@ impl KeyAlgorithm for BBS {
         &self,
         public_key: &[u8],
         private_key: Option<SecretSlice<u8>>,
-        r#use: Option<String>,
+        r#use: Option<JwkUse>,
     ) -> Result<KeyHandle, KeyAlgorithmError> {
         if let Some(private_key) = private_key {
             Ok(KeyHandle::MultiMessageSignature(
@@ -87,17 +86,15 @@ impl KeyAlgorithm for BBS {
         todo!()
     }
 
-    fn parse_jwk(&self, key: &PublicKeyJwk) -> Result<KeyHandle, KeyAlgorithmError> {
-        if let PublicKeyJwk::Okp(data) = key {
-            let x = Base64UrlSafeNoPadding::decode_to_vec(&data.x, None)
-                .map_err(|e| KeyAlgorithmError::Failed(e.to_string()))?;
+    fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
+        if let PublicJwk::Okp(data) = key {
+            let x = Base64UrlSafeNoPadding::decode_to_vec(&data.x, None)?;
             let y = Base64UrlSafeNoPadding::decode_to_vec(
                 data.y
                     .as_ref()
-                    .ok_or(KeyAlgorithmError::Failed("Y is missing".to_string()))?,
+                    .ok_or(KeyAlgorithmError::MissingParameter("Y".to_string()))?,
                 None,
-            )
-            .map_err(|e| KeyAlgorithmError::Failed(e.to_string()))?;
+            )?;
 
             let public_key = BBSSigner::parse_public_key(&x, &y, true)?;
 
@@ -108,8 +105,14 @@ impl KeyAlgorithm for BBS {
                 ))),
             ))
         } else {
-            Err(KeyAlgorithmError::Failed("invalid kty".to_string()))
+            Err(KeyAlgorithmError::InvalidKeyType)
         }
+    }
+
+    fn parse_private_jwk(&self, _jwk: PrivateJwk) -> Result<GeneratedKey, KeyAlgorithmError> {
+        Err(KeyAlgorithmError::NotSupported(
+            "private BBS keys not supported".to_string(),
+        ))
     }
 
     fn parse_multibase(&self, multibase: &str) -> Result<KeyHandle, KeyAlgorithmError> {
@@ -118,7 +121,9 @@ impl KeyAlgorithm for BBS {
     }
 
     fn parse_raw(&self, _public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
-        todo!()
+        Err(KeyAlgorithmError::NotSupported(
+            "raw BBS keys not supported".to_string(),
+        ))
     }
 }
 
@@ -138,29 +143,25 @@ impl BBSPrivateKeyHandle {
 
 struct BBSPublicKeyHandle {
     public_key: Vec<u8>,
-    r#use: Option<String>,
+    r#use: Option<JwkUse>,
 }
 
 impl BBSPublicKeyHandle {
-    fn new(public_key: Vec<u8>, r#use: Option<String>) -> Self {
+    fn new(public_key: Vec<u8>, r#use: Option<JwkUse>) -> Self {
         Self { public_key, r#use }
     }
 }
 
 impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
-    fn as_jwk(&self) -> Result<PublicKeyJwk, KeyHandleError> {
-        let (x, y) = BBSSigner::get_public_key_coordinates(&self.public_key)
-            .map_err(KeyHandleError::Signer)?;
-        Ok(PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
+    fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
+        let (x, y) = BBSSigner::get_public_key_coordinates(&self.public_key)?;
+        Ok(PublicJwk::Okp(PublicJwkEc {
+            alg: None,
             r#use: self.r#use.clone(),
             kid: None,
             crv: "Bls12381G2".to_string(),
-            x: Base64UrlSafeNoPadding::encode_to_string(x)
-                .map_err(|e| KeyHandleError::EncodingJwk(e.to_string()))?,
-            y: Some(
-                Base64UrlSafeNoPadding::encode_to_string(y)
-                    .map_err(|e| KeyHandleError::EncodingJwk(e.to_string()))?,
-            ),
+            x: Base64UrlSafeNoPadding::encode_to_string(x)?,
+            y: Some(Base64UrlSafeNoPadding::encode_to_string(y)?),
         }))
     }
 
@@ -179,8 +180,13 @@ impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
         header: Vec<u8>,
         messages: Vec<Vec<u8>>,
         signature: &[u8],
-    ) -> Result<(), SignerError> {
-        BBSSigner::verify_bbs(header, messages, signature, &self.public_key)
+    ) -> Result<(), KeyHandleError> {
+        Ok(BBSSigner::verify_bbs(
+            header,
+            messages,
+            signature,
+            &self.public_key,
+        )?)
     }
 
     fn derive_proof(
@@ -188,7 +194,7 @@ impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
         header: Vec<u8>,
         messages: Vec<(Vec<u8>, bool)>,
         signature: Vec<u8>,
-    ) -> Result<Vec<u8>, SignerError> {
+    ) -> Result<Vec<u8>, KeyHandleError> {
         let derive_input = BbsDeriveInput {
             header,
             messages,
@@ -196,7 +202,7 @@ impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
             presentation_header: None,
         };
 
-        BBSSigner::derive_proof(derive_input, &self.public_key)
+        Ok(BBSSigner::derive_proof(derive_input, &self.public_key)?)
     }
 
     fn verify_proof(
@@ -205,7 +211,7 @@ impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
         messages: Vec<(usize, Vec<u8>)>,
         presentation_header: Option<Vec<u8>>,
         proof: &[u8],
-    ) -> Result<(), SignerError> {
+    ) -> Result<(), KeyHandleError> {
         let input = BbsProofInput {
             header,
             presentation_header,
@@ -213,16 +219,21 @@ impl MultiMessageSignaturePublicKeyHandle for BBSPublicKeyHandle {
             messages,
         };
 
-        BBSSigner::verify_proof(&input, &self.public_key)
+        Ok(BBSSigner::verify_proof(&input, &self.public_key)?)
     }
 }
 
 impl MultiMessageSignaturePrivateKeyHandle for BBSPrivateKeyHandle {
-    fn sign(&self, header: Vec<u8>, messages: Vec<Vec<u8>>) -> Result<Vec<u8>, SignerError> {
-        BBSSigner::sign_bbs(header, messages, &self.private_key, &self.public_key)
+    fn sign(&self, header: Vec<u8>, messages: Vec<Vec<u8>>) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(BBSSigner::sign_bbs(
+            header,
+            messages,
+            &self.private_key,
+            &self.public_key,
+        )?)
     }
 
     fn as_jwk(&self) -> Result<SecretString, KeyHandleError> {
-        todo!()
+        Err(KeyHandleError::OperationNotSupported)
     }
 }

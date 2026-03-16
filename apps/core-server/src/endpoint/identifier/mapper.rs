@@ -1,13 +1,22 @@
 use one_core::model::identifier::IdentifierFilterValue;
 use one_core::model::list_filter::{
-    ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
 };
+use one_core::service::error::ServiceError;
+use one_core::service::key::dto::{KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile};
 use one_dto_mapper::convert_inner;
 
-use super::dto::{ExactIdentifierFilterColumnRestEnum, IdentifierFilterQueryParamsRestDTO};
+use super::dto::{
+    CreateCaCSRRequestRestDTO, ExactIdentifierFilterColumnRestEnum,
+    IdentifierFilterQueryParamsRestDTO,
+};
+use crate::dto::mapper::fallback_organisation_id_from_session;
 
-impl From<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<IdentifierFilterValue> {
-    fn from(value: IdentifierFilterQueryParamsRestDTO) -> Self {
+impl TryFrom<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<IdentifierFilterValue> {
+    type Error = ServiceError;
+
+    fn try_from(value: IdentifierFilterQueryParamsRestDTO) -> Result<Self, Self::Error> {
         let exact = value.exact.unwrap_or_default();
         let get_string_match_type = |column| {
             if exact.contains(&column) {
@@ -17,8 +26,10 @@ impl From<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<Identifier
             }
         };
 
-        let organisation_id =
-            IdentifierFilterValue::OrganisationId(value.organisation_id).condition();
+        let organisation_id = IdentifierFilterValue::OrganisationId(
+            fallback_organisation_id_from_session(value.organisation_id)?,
+        )
+        .condition();
 
         let name = value.name.map(|name| {
             IdentifierFilterValue::Name(StringMatch {
@@ -32,10 +43,12 @@ impl From<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<Identifier
             .types
             .map(|types| IdentifierFilterValue::Types(convert_inner(types)));
         let state = value
-            .state
-            .map(|state| IdentifierFilterValue::State(state.into()));
+            .states
+            .map(|states| IdentifierFilterValue::States(convert_inner(states)));
         let did_methods = value.did_methods.map(IdentifierFilterValue::DidMethods);
-        let is_remote = value.is_remote.map(IdentifierFilterValue::IsRemote);
+        let is_remote = value
+            .is_remote
+            .map(|is_remote| IdentifierFilterValue::IsRemote(is_remote.into()));
         let key_algorithms = value
             .key_algorithms
             .map(IdentifierFilterValue::KeyAlgorithms);
@@ -44,7 +57,33 @@ impl From<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<Identifier
             .map(|key_roles| IdentifierFilterValue::KeyRoles(convert_inner(key_roles)));
         let key_storages = value.key_storages.map(IdentifierFilterValue::KeyStorages);
 
-        organisation_id
+        let created_date_after = value.created_date_after.map(|date| {
+            IdentifierFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            IdentifierFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            IdentifierFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            IdentifierFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        Ok(organisation_id
             & name
             & ids
             & types
@@ -54,5 +93,18 @@ impl From<IdentifierFilterQueryParamsRestDTO> for ListFilterCondition<Identifier
             & key_algorithms
             & key_roles
             & key_storages
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before)
+    }
+}
+
+impl From<CreateCaCSRRequestRestDTO> for KeyGenerateCSRRequestDTO {
+    fn from(value: CreateCaCSRRequestRestDTO) -> Self {
+        Self {
+            profile: KeyGenerateCSRRequestProfile::Ca,
+            subject: value.subject.into(),
+        }
     }
 }

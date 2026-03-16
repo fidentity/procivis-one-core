@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use one_core::service::key::dto::KeyCheckCertificateRequestDTO;
+use one_core::service::key::dto::{
+    KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile, KeyGenerateCSRRequestSubjectDTO,
+};
 use one_dto_mapper::Into;
 
 use super::OneCoreBinding;
 use crate::error::BindingError;
-use crate::utils::into_id;
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCoreBinding {
@@ -17,29 +18,10 @@ impl OneCoreBinding {
         let core = self.use_core().await?;
         Ok(core
             .key_service
-            .generate_key(request.try_into()?)
+            .create_key(request.try_into()?)
             .await?
             .to_string())
     }
-
-    #[uniffi::method]
-    pub async fn check_certificate(
-        &self,
-        key_id: String,
-        certificate: KeyCheckCertificateRequestBindingDTO,
-    ) -> Result<(), BindingError> {
-        let core = self.use_core().await?;
-        Ok(core
-            .key_service
-            .check_certificate(&into_id(&key_id)?, certificate.into())
-            .await?)
-    }
-}
-
-#[derive(Clone, Debug, Into, uniffi::Record)]
-#[into(KeyCheckCertificateRequestDTO)]
-pub struct KeyCheckCertificateRequestBindingDTO {
-    pub certificate: String,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -50,4 +32,33 @@ pub struct KeyRequestBindingDTO {
     pub name: String,
     pub storage_type: String,
     pub storage_params: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Into, uniffi::Record)]
+#[into(KeyGenerateCSRRequestDTO)]
+pub struct KeyGenerateCSRRequestBindingDTO {
+    pub profile: KeyGenerateCSRRequestProfileBinding,
+    pub subject: KeyGenerateCSRRequestSubjectBindingDTO,
+}
+
+#[derive(Clone, Debug, Into, uniffi::Enum)]
+#[into(KeyGenerateCSRRequestProfile)]
+pub enum KeyGenerateCSRRequestProfileBinding {
+    Generic,
+    Mdl,
+    Ca,
+}
+
+#[derive(Clone, Debug, Into, uniffi::Record)]
+#[into(KeyGenerateCSRRequestSubjectDTO)]
+pub struct KeyGenerateCSRRequestSubjectBindingDTO {
+    /// Two-letter country code.
+    pub country_name: Option<String>,
+    /// Common name to include in the CSR, typically the domain name of the organization.
+    pub common_name: Option<String>,
+
+    pub state_or_province_name: Option<String>,
+    pub organisation_name: Option<String>,
+    pub locality_name: Option<String>,
+    pub serial_number: Option<String>,
 }

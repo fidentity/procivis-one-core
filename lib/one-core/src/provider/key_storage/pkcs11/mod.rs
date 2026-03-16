@@ -1,12 +1,12 @@
-use one_crypto::SignerError;
 use shared_types::KeyId;
+use standardized_types::jwk::PrivateJwk;
 
 use crate::config::core_config::KeyAlgorithmType;
 use crate::model::key::Key;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::key_storage::KeyStorage;
 use crate::provider::key_storage::error::KeyStorageError;
-use crate::provider::key_storage::model::{KeyStorageCapabilities, StorageGeneratedKey};
+use crate::provider::key_storage::model::{Features, KeyStorageCapabilities, StorageGeneratedKey};
 
 #[derive(Default)]
 pub struct PKCS11KeyProvider {}
@@ -25,8 +25,56 @@ impl KeyStorage for PKCS11KeyProvider {
         todo!()
     }
 
-    fn key_handle(&self, _key: &Key) -> Result<KeyHandle, SignerError> {
+    async fn import(
+        &self,
+        _key_id: KeyId,
+        _key_algorithm: KeyAlgorithmType,
+        _jwk: PrivateJwk,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        if !self
+            .get_capabilities()
+            .features
+            .contains(&Features::Importable)
+        {
+            return Err(KeyStorageError::UnsupportedFeature {
+                feature: Features::Importable,
+            });
+        }
+        unimplemented!("import is not supported for PKCS11KeyProvider");
+    }
+
+    fn key_handle(&self, _key: &Key) -> Result<KeyHandle, KeyStorageError> {
         todo!()
+    }
+
+    async fn generate_attestation_key(
+        &self,
+        _key_id: KeyId,
+        _nonce: Option<String>,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn generate_attestation(
+        &self,
+        _key: &Key,
+        _nonce: Option<String>,
+    ) -> Result<Vec<String>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn sign_with_attestation_key(
+        &self,
+        _key: &Key,
+        _data: &[u8],
+    ) -> Result<Vec<u8>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
     }
 }
 

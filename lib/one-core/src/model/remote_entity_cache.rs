@@ -1,5 +1,6 @@
 use one_dto_mapper::{From, Into};
 use shared_types::RemoteEntityCacheEntryId;
+use strum::EnumIter;
 use time::OffsetDateTime;
 
 use crate::provider::remote_entity_storage::RemoteEntityType;
@@ -10,19 +11,17 @@ pub struct RemoteEntityCacheEntry {
 
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
+    pub last_used: OffsetDateTime,
+    pub expiration_date: Option<OffsetDateTime>,
 
     pub key: String,
     pub value: Vec<u8>,
 
-    pub hit_counter: u32,
-
     pub r#type: CacheType,
-
     pub media_type: Option<String>,
-    pub persistent: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, From, Into)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, From, Into, EnumIter)]
 #[from(RemoteEntityType)]
 #[into(RemoteEntityType)]
 pub enum CacheType {
@@ -32,6 +31,9 @@ pub enum CacheType {
     VctMetadata,
     JsonSchema,
     TrustList,
+    X509Crl,
+    AndroidAttestationCrl,
+    OpenIDMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]

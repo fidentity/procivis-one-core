@@ -23,6 +23,8 @@ pub mod jsonld;
 pub mod key;
 pub mod key_storage;
 mod mapper;
+pub mod nfc;
+pub mod nfc_scan;
 pub mod organisation;
 pub mod proof;
 pub mod proof_schema;
@@ -31,6 +33,7 @@ pub mod task;
 pub mod trust_anchor;
 pub mod trust_entity;
 pub mod version;
+pub mod wallet_unit;
 
 type CoreBuilder = Box<
     dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<one_core::OneCore, BindingError>> + Send>>

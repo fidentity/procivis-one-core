@@ -1,10 +1,10 @@
-use sea_orm::DatabaseConnection;
+use crate::transaction_context::TransactionManagerImpl;
 
 pub mod mapper;
 pub mod repository;
 
 pub(crate) struct ClaimSchemaProvider {
-    pub db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
 }
 
 #[cfg(test)]

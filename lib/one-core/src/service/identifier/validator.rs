@@ -7,7 +7,7 @@ pub(crate) fn validate_identifier_type(
 ) -> Result<(), ValidationError> {
     config
         .get(identifier_type)
-        .filter(|cfg| cfg.enabled.unwrap_or_default())
+        .filter(|cfg| cfg.enabled)
         .map(|_| ())
         .ok_or(ValidationError::IdentifierTypeDisabled(
             identifier_type.to_string(),

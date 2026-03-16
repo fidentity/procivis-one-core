@@ -3,250 +3,306 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use futures::future::{BoxFuture, Shared};
+use anyhow::Context;
+use async_trait::async_trait;
+use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use one_crypto::utilities;
+use serde::de::DeserializeOwned;
+use shared_types::InteractionId;
 use tokio::select;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use url::Url;
 use uuid::Uuid;
 
-use super::dto::BleOpenId4VpResponse;
+use super::model::{BLEOpenID4VPInteractionDataVerifier, BLEVerifierProtocolData};
 use super::{
-    BLEParse, BLEPeer, CONTENT_SIZE_UUID, DISCONNECT_UUID, IDENTITY_UUID, IdentityRequest,
-    OIDC_BLE_FLOW, PRESENTATION_REQUEST_UUID, REQUEST_SIZE_UUID, SERVICE_UUID, SUBMIT_VC_UUID,
+    BLEParse, BLEPeer, CONTENT_SIZE_UUID, DISCONNECT_UUID, IDENTITY_UUID, OIDC_BLE_FLOW,
+    PRESENTATION_REQUEST_UUID, REQUEST_SIZE_UUID, SERVICE_UUID, SUBMIT_VC_UUID,
     TRANSFER_SUMMARY_REPORT_UUID, TRANSFER_SUMMARY_REQUEST_UUID, TransferSummaryReport,
 };
 use crate::config::core_config::TransportType;
-use crate::model::did::Did;
-use crate::model::history::HistoryErrorMetadata;
-use crate::model::interaction::InteractionId;
-use crate::model::proof::{Proof, ProofStateEnum};
-use crate::provider::bluetooth_low_energy::BleError;
-use crate::provider::bluetooth_low_energy::low_level::ble_peripheral::BlePeripheral;
-use crate::provider::bluetooth_low_energy::low_level::dto::{
+use crate::error::ContextWithErrorCode;
+use crate::proto::bluetooth_low_energy::BleError;
+use crate::proto::bluetooth_low_energy::ble_resource::{Abort, BleWaiter, OnConflict};
+use crate::proto::bluetooth_low_energy::low_level::ble_peripheral::TrackingBlePeripheral;
+use crate::proto::bluetooth_low_energy::low_level::dto::{
     CharacteristicPermissions, CharacteristicProperties, ConnectionEvent,
     CreateCharacteristicOptions, DeviceInfo, ServiceDescription,
 };
-use crate::provider::credential_formatter::model::AuthenticationFn;
-use crate::provider::verification_protocol::openid4vp::draft20::model::OpenID4VP20AuthorizationRequest;
-use crate::provider::verification_protocol::openid4vp::model::OpenID4VPPresentationDefinition;
+use crate::provider::verification_protocol::openid4vp::model::{DcqlSubmission, PexSubmission};
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::KeyAgreementKey;
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::async_verifier_flow::{
-    AsyncTransportHooks, AsyncVerifierFlowParams, FlowState, async_verifier_flow, never,
-    set_proof_state_infallible,
+    HolderResponse, HolderSubmission, ProximityVerifierTransport, SubmissionData,
 };
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::mappers::parse_identity_request;
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::model::BLEOpenID4VPInteractionData;
 use crate::provider::verification_protocol::openid4vp::proximity_draft00::dto::{
-    Chunk, ChunkExt, Chunks, MessageSize,
+    Chunk, ChunkExt, Chunks, IdentityRequest, MessageSize, ProtocolVersion, WithProtocolVersion,
 };
 use crate::provider::verification_protocol::{
     VerificationProtocolError, deserialize_interaction_data,
 };
 use crate::repository::interaction_repository::InteractionRepository;
-use crate::repository::proof_repository::ProofRepository;
-use crate::service::error::ErrorCode::BR_0000;
-use crate::util::ble_resource::{BleWaiter, OnConflict};
 
 type ConnectionEventStream = Pin<Box<dyn Stream<Item = Vec<ConnectionEvent>> + Send>>;
 
-pub(crate) struct OpenID4VCBLEVerifier {
-    ble: BleWaiter,
-    proof_repository: Arc<dyn ProofRepository>,
-    interaction_repository: Arc<dyn InteractionRepository>,
+pub(crate) struct BleVerifierTransport {
+    task_id: Uuid,
+    peripheral: TrackingBlePeripheral,
 }
 
-impl OpenID4VCBLEVerifier {
-    pub(crate) fn new(
-        ble: BleWaiter,
-        proof_repository: Arc<dyn ProofRepository>,
-        interaction_repository: Arc<dyn InteractionRepository>,
-    ) -> Result<Self, VerificationProtocolError> {
-        Ok(Self {
-            ble,
-            interaction_repository,
-            proof_repository,
+pub(crate) struct BleVerifierContext {
+    peer: BLEPeer,
+    identity_request: IdentityRequest,
+    connection_event_stream: Mutex<ConnectionEventStream>,
+}
+
+impl WithProtocolVersion for BleVerifierContext {
+    fn protocol_version(&self) -> ProtocolVersion {
+        self.identity_request.version
+    }
+}
+
+#[async_trait]
+impl ProximityVerifierTransport for BleVerifierTransport {
+    type Context = BleVerifierContext;
+
+    fn transport_type(&self) -> TransportType {
+        TransportType::Ble
+    }
+
+    async fn wallet_connect(
+        &mut self,
+        key_agreement_key: &KeyAgreementKey,
+    ) -> Result<Self::Context, VerificationProtocolError> {
+        let mut connection_event_stream =
+            get_connection_event_stream(self.peripheral.clone()).await;
+        let (wallet, identity_request) =
+            wait_for_wallet_identify_request(self.peripheral.clone(), &mut connection_event_stream)
+                .await?;
+        let (sender_key, receiver_key) = key_agreement_key
+            .derive_session_secrets(identity_request.key, identity_request.nonce)
+            .map_err(VerificationProtocolError::Other)?;
+        let peer = BLEPeer::new(wallet, sender_key, receiver_key, identity_request.nonce);
+        Ok(BleVerifierContext {
+            peer,
+            identity_request,
+            connection_event_stream: Mutex::new(connection_event_stream),
         })
     }
 
-    #[tracing::instrument(level = "debug", skip(self), err(Debug))]
-    pub(crate) async fn enabled(&self) -> Result<bool, VerificationProtocolError> {
-        self.ble
-            .is_enabled()
-            .await
-            .map(|s| s.peripheral)
-            .map_err(|err| VerificationProtocolError::Transport(err.into()))
+    async fn send_presentation_request(
+        &mut self,
+        context: &Self::Context,
+        request: String,
+    ) -> Result<(), VerificationProtocolError> {
+        write_presentation_request(&request, &context.peer, &self.peripheral).await
     }
 
-    #[tracing::instrument(level = "debug", skip_all, err(Debug))]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn share_proof(
-        self,
-        presentation_definition: OpenID4VPPresentationDefinition,
-        proof: Proof,
-        auth_fn: AuthenticationFn,
-        did: Did,
-        interaction_id: InteractionId,
-        keypair: KeyAgreementKey,
-        cancellation_token: CancellationToken,
-        on_submission_callback: Option<Shared<BoxFuture<'static, ()>>>,
-        url_scheme: &str,
-    ) -> Result<String, VerificationProtocolError> {
-        let proof_repository = self.proof_repository.clone();
-
-        // https://openid.bitbucket.io/connect/openid-4-verifiable-presentations-over-ble-1_0.html#section-5.1.1
-        // The verifier can advertise via BLE only or via BLE + QR.
-        // Depending on the use case, the advertised name is different.
-        // The name can be max 8 bytes for Android.
-        let verifier_name = utilities::generate_alphanumeric(8);
-
-        let public_key = keypair.public_key_bytes();
-        let advertising_name = verifier_name.clone();
-        let (advertising_task_id, advertising_result) = self
-            .ble
-            .schedule(
-                *OIDC_BLE_FLOW,
-                |_, _, peripheral| async move {
-                    start_advertisement(advertising_name, &*peripheral).await
-                },
-                |_, peripheral| async move {
-                    stop_server(&*peripheral).await;
-                },
-                OnConflict::ReplaceIfSameFlow,
-                true,
-            )
-            .await
-            .value_or(VerificationProtocolError::Failed("BLE is busy".to_string()))
-            .await?;
-        advertising_result
-            .ok_or(VerificationProtocolError::Failed("flow was aborted".into()))??;
-
-        let qr_url = format!(
-            "{url_scheme}://connect?name={}&key={}",
-            verifier_name,
-            hex::encode(public_key),
-        );
-
-        let interaction_repository = self.interaction_repository.clone();
-        let result = self
-            .ble
-            .schedule_continuation(
-                advertising_task_id,
-                |task_id, _, peripheral| async move {
-                    let hooks = AsyncTransportHooks {
-                        wallet_connect: wallet_connect(task_id, peripheral.clone(), keypair),
-                        wallet_disconnect,
-                        wallet_reject: never, // wallet cannot explicitly reject in BLE verifier flow
-                        send_presentation_request,
-                        receive_presentation,
-                        interaction_data_from_response,
-                    };
-
-                    let flow_params = AsyncVerifierFlowParams {
-                        proof: &proof,
-                        presentation_definition,
-                        did: &did.did,
-                        interaction_id,
-                        proof_repository: &*proof_repository,
-                        interaction_repository: &*interaction_repository,
-                        transport_type: TransportType::Ble,
-                        cancellation_token,
-                    };
-
-                    let result = async_verifier_flow(flow_params, hooks, auth_fn).await;
-                    stop_server(&*peripheral).await;
-                    match &result {
-                        Ok(FlowState::Finished) => {
-                            if let Some(callback) = on_submission_callback {
-                                callback.await;
-                            }
-                        }
-                        Err(err) => {
-                            let message = format!("BLE verifier flow failure: {err}");
-                            info!(message);
-                            let metadata = Some(HistoryErrorMetadata {
-                                error_code: BR_0000,
-                                message,
-                            });
-                            set_proof_state_infallible(
-                                &proof,
-                                ProofStateEnum::Error,
-                                metadata,
-                                &*proof_repository,
-                            )
-                            .await;
-                        }
-                        Ok(_) => {} // cancel or reject -> nothing to do
-                    }
-                    result
-                },
-                move |_, peripheral| async move {
-                    info!("cancelling proof sharing");
-                    let Ok(interaction) = self
-                        .interaction_repository
-                        .get_interaction(&interaction_id, &Default::default())
-                        .await
-                        .map_err(|err| VerificationProtocolError::Failed(err.to_string()))
-                    else {
-                        return;
-                    };
-
-                    if let Ok(interaction_data) =
-                        deserialize_interaction_data::<BLEOpenID4VPInteractionData>(
-                            interaction.as_ref().and_then(|i| i.data.as_ref()),
-                        )
-                    {
-                        let result = peripheral
-                            .notify_characteristic_data(
-                                interaction_data.peer.device_info.address,
-                                SERVICE_UUID.to_string(),
-                                DISCONNECT_UUID.to_string(),
-                                &[],
-                            )
-                            .await;
-                        if let Err(err) = result {
-                            warn!("failed to notify client about disconnect: {err}")
-                        }
-                    };
-                    stop_server(&*peripheral).await;
-                },
-                false,
-            )
-            .await;
-
-        if !result.is_scheduled() {
-            return Err(VerificationProtocolError::Failed(
-                "BLE is busy with other flow".into(),
-            ));
+    async fn receive_presentation(
+        &mut self,
+        context: &mut Self::Context,
+    ) -> Result<HolderResponse, VerificationProtocolError> {
+        let mut event_stream = context.connection_event_stream.lock().await;
+        select! {
+            biased;
+            _ = wallet_disconnect_event(&mut event_stream, &context.peer.device_info.address) => Err(VerificationProtocolError::Failed("wallet disconnected".into())),
+            response = self.read_response(context) => Ok(response?)
         }
+    }
 
-        Ok(qr_url)
+    fn interaction_data_from_submission(
+        &self,
+        context: Self::Context,
+        nonce: String,
+        data: SubmissionData,
+    ) -> Result<Vec<u8>, VerificationProtocolError> {
+        let interaction_data = match data {
+            SubmissionData::V1 {
+                request,
+                submission,
+                presentation_definition,
+            } => BLEOpenID4VPInteractionDataVerifier {
+                client_id: request.client_id.to_owned(),
+                nonce,
+                task_id: self.task_id,
+                peer: context.peer,
+                mdoc_generated_nonce: Some(hex::encode(context.identity_request.nonce)),
+                protocol_data: BLEVerifierProtocolData::V1 {
+                    request,
+                    submission: Some(submission),
+                    presentation_definition,
+                },
+            },
+            SubmissionData::V2 {
+                request,
+                submission,
+                dcql_query,
+            } => BLEOpenID4VPInteractionDataVerifier {
+                client_id: request.client_id.to_owned(),
+                nonce,
+                task_id: self.task_id,
+                peer: context.peer,
+                mdoc_generated_nonce: None,
+                protocol_data: BLEVerifierProtocolData::V2 {
+                    request,
+                    submission: Some(submission),
+                    dcql_query,
+                },
+            },
+        };
+
+        serde_json::to_vec(&interaction_data).map_err(|err| {
+            VerificationProtocolError::Failed(format!(
+                "failed to serialize presentation_submission: {err}"
+            ))
+        })
+    }
+
+    async fn clean_up(&self) {
+        if let Err(err) = self.peripheral.teardown().await {
+            warn!("Failed to clean up BLE verifier transport: {err}");
+        }
     }
 }
 
-async fn stop_server(peripheral: &dyn BlePeripheral) {
-    let result = peripheral.stop_server().await;
-    if let Err(ref err) = result {
-        warn!("failed to stop BLE peripheral server: {err}");
+impl BleVerifierTransport {
+    async fn read_response(
+        &self,
+        context: &BleVerifierContext,
+    ) -> Result<HolderResponse, VerificationProtocolError> {
+        Ok(match context.identity_request.version {
+            ProtocolVersion::V1 => {
+                let response: Option<PexSubmission> =
+                    read_presentation_submission(&context.peer, &self.peripheral).await?;
+                if let Some(submission) = response {
+                    HolderResponse::Submission(HolderSubmission::V1(submission))
+                } else {
+                    HolderResponse::Rejection
+                }
+            }
+            ProtocolVersion::V2 => {
+                let response: Option<DcqlSubmission> =
+                    read_presentation_submission(&context.peer, &self.peripheral).await?;
+                if let Some(submission) = response {
+                    HolderResponse::Submission(HolderSubmission::V2(submission))
+                } else {
+                    HolderResponse::Rejection
+                }
+            }
+        })
     }
 }
+
+#[tracing::instrument(level = "debug", skip_all, err(Debug))]
+pub(crate) async fn schedule_ble_verifier_flow(
+    ble: &BleWaiter,
+    key_agreement: &KeyAgreementKey,
+    url_scheme: &str,
+    interaction_id: InteractionId,
+    interaction_repository: Arc<dyn InteractionRepository>,
+    flow: impl FnOnce(BleVerifierTransport) -> BoxFuture<'static, ()> + Send + 'static,
+) -> Result<Url, VerificationProtocolError> {
+    // https://openid.bitbucket.io/connect/openid-4-verifiable-presentations-over-ble-1_0.html#section-5.1.1
+    // The verifier can advertise via BLE only or via BLE + QR.
+    // Depending on the use case, the advertised name is different.
+    // The name can be max 8 bytes for Android.
+    let verifier_name = utilities::generate_alphanumeric(8);
+
+    let public_key = key_agreement.public_key_bytes();
+    let advertising_name = verifier_name.clone();
+    let (advertising_task_id, advertising_result) =
+        ble
+        .schedule(
+            *OIDC_BLE_FLOW,
+            |_, _, peripheral| async move {
+                start_advertisement(advertising_name, peripheral).await
+            },
+            |_, _| async {},
+            OnConflict::ReplaceIfSameFlow,
+            true,
+        )
+        .await
+        .value_or(VerificationProtocolError::Failed("BLE is busy".to_string()))
+        .await?;
+    advertising_result.ok_or(VerificationProtocolError::Failed("flow was aborted".into()))??;
+
+    let qr_url = format!(
+        "{url_scheme}://connect?name={}&key={}",
+        verifier_name,
+        hex::encode(public_key),
+    );
+
+    let result = ble
+        .schedule_continuation(
+            advertising_task_id,
+            |task_id, _, peripheral| async move {
+                let tranport = BleVerifierTransport {
+                    task_id,
+                    peripheral: peripheral.clone(),
+                };
+                flow(tranport).await;
+                Ok(()) as Result<(), VerificationProtocolError>
+            },
+            move |_, peripheral| async move {
+                info!("cancelling proof sharing");
+                let Ok(interaction) = interaction_repository
+                    .get_interaction(&interaction_id, &Default::default(), None)
+                    .await
+                else {
+                    return;
+                };
+
+                if let Ok(interaction_data) =
+                    deserialize_interaction_data::<BLEOpenID4VPInteractionDataVerifier>(
+                        interaction.as_ref().and_then(|i| i.data.as_ref()),
+                    )
+                {
+                    let result = peripheral
+                        .notify_characteristic_data(
+                            interaction_data.peer.device_info.address,
+                            SERVICE_UUID.to_string(),
+                            DISCONNECT_UUID.to_string(),
+                            &[],
+                        )
+                        .await;
+                    if let Err(err) = result {
+                        warn!("failed to notify client about disconnect: {err}")
+                    }
+                };
+            },
+            false,
+        )
+        .await;
+
+    if !result.is_scheduled() {
+        return Err(VerificationProtocolError::Failed(
+            "BLE is busy with other flow".into(),
+        ));
+    }
+
+    Url::parse(&qr_url).map_err(|e| {
+        VerificationProtocolError::Failed(format!("failed to parse QR share url: {e}"))
+    })
+}
+
+pub(crate) async fn retract_proof_ble(ble: &BleWaiter) {
+    ble.abort(Abort::Flow(*OIDC_BLE_FLOW)).await;
+}
+
 async fn wallet_disconnect_event(
     connection_event_stream: &mut ConnectionEventStream,
     wallet_address: &str,
 ) {
     loop {
         let events = connection_event_stream.next().await;
-        if let Some(events) = events {
-            if events.iter().any(|event| {
+        if let Some(events) = events
+            && events.iter().any(|event| {
                 matches!(event, ConnectionEvent::Disconnected { device_address } if wallet_address.eq(device_address))
             }) {
                 return;
             }
-        }
     }
 }
 
@@ -307,31 +363,29 @@ fn get_advertise_data() -> ServiceDescription {
 #[tracing::instrument(level = "debug", skip(ble_peripheral), err(Debug))]
 async fn start_advertisement(
     verifier_name: String,
-    ble_peripheral: &dyn BlePeripheral,
+    ble_peripheral: TrackingBlePeripheral,
 ) -> Result<(), VerificationProtocolError> {
     if ble_peripheral
         .is_advertising()
         .await
-        .context("Failed to check BLE advertising status")
-        .map_err(VerificationProtocolError::Transport)?
+        .error_while("checking BLE advertising status")?
     {
         ble_peripheral
             .stop_advertisement()
             .await
-            .context("Failed to stop BLE advertising")
-            .map_err(VerificationProtocolError::Transport)?;
+            .error_while("stopping BLE advertisement")?;
     };
 
     ble_peripheral
         .start_advertisement(Some(verifier_name), vec![get_advertise_data()])
         .await
-        .map_err(|e| VerificationProtocolError::Transport(e.into()))?;
+        .error_while("starting BLE advertisement")?;
 
     Ok(())
 }
 
 async fn get_connection_event_stream(
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: TrackingBlePeripheral,
 ) -> ConnectionEventStream {
     futures::stream::unfold(ble_peripheral, |peripheral| async move {
         match peripheral.get_connection_change_events().await {
@@ -351,7 +405,7 @@ async fn get_connection_event_stream(
     err(Debug)
 )]
 async fn wait_for_wallet_identify_request(
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: TrackingBlePeripheral,
     connection_event_stream: &mut ConnectionEventStream,
 ) -> Result<(DeviceInfo, IdentityRequest), VerificationProtocolError> {
     let mut connected_devices: HashMap<String, DeviceInfo> = HashMap::new();
@@ -362,12 +416,12 @@ async fn wait_for_wallet_identify_request(
             Some(wallet_info) = identify_futures.next() => {
                 let wallet_info: Result<(String, Vec<u8>), VerificationProtocolError> = wallet_info;
                 if let Ok((address, data)) = wallet_info {
-                    let identity_request = parse_identity_request(data).map_err(VerificationProtocolError::Transport)?;
+                    let identity_request = IdentityRequest::parse(data).map_err(VerificationProtocolError::Other)?;
                     break (address, identity_request);
                 }
             },
             connection_events = connection_event_stream.next() => {
-                for event in connection_events.context("Failed to get BLE connection events").map_err(VerificationProtocolError::Transport)? {
+                for event in connection_events.context("Failed to get BLE connection events").map_err(VerificationProtocolError::Other)? {
                     match event {
                         ConnectionEvent::Connected { device_info } => {
                             if connected_devices.insert(device_info.address.to_owned(), device_info.to_owned()).is_none() {
@@ -375,8 +429,8 @@ async fn wait_for_wallet_identify_request(
                                     let stream = read(IDENTITY_UUID, &device_info, ble_peripheral.clone());
                                     tokio::pin!(stream);
                                     let data = stream.try_next().await
-                                        .map_err(|e| VerificationProtocolError::Transport(anyhow::anyhow!(e)))?
-                                        .ok_or(VerificationProtocolError::Transport(anyhow::anyhow!("BLE identity request: No data read")))?;
+                                        .error_while("reading Identity")?
+                                        .ok_or(VerificationProtocolError::Failed("BLE identity request: No data read".to_string()))?;
                                     Ok((device_info.address, data))
                                 });
                             }
@@ -393,8 +447,7 @@ async fn wait_for_wallet_identify_request(
     ble_peripheral
         .stop_advertisement()
         .await
-        .context("Failed to stop advertisement")
-        .map_err(VerificationProtocolError::Transport)?;
+        .error_while("stopping BLE advertisement")?;
 
     let device_info =
         connected_devices
@@ -406,15 +459,15 @@ async fn wait_for_wallet_identify_request(
     Ok((device_info, identity_request))
 }
 
-pub(crate) fn read(
+fn read(
     id: &str,
     device_info: &DeviceInfo,
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: TrackingBlePeripheral,
 ) -> impl Stream<Item = Result<Vec<u8>, BleError>> + Send + use<> {
     let address = device_info.address.clone();
 
     let stream_of_streams = futures::stream::unfold(
-        (address, id.to_string(), ble_peripheral.clone()),
+        (address, id.to_string(), ble_peripheral),
         move |(address, id, ble_peripheral)| async move {
             let result = ble_peripheral
                 .get_characteristic_writes(address.clone(), SERVICE_UUID.to_string(), id.clone())
@@ -439,53 +492,53 @@ pub(crate) fn read(
 async fn write_presentation_request(
     request: &String,
     peer: &BLEPeer,
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: &TrackingBlePeripheral,
 ) -> Result<(), VerificationProtocolError> {
     let encrypted = peer
         .encrypt(request)
         .context("Failed to encrypt presentation request")
-        .map_err(VerificationProtocolError::Transport)?;
+        .map_err(VerificationProtocolError::Other)?;
 
     let chunks = Chunks::from_bytes(encrypted.as_slice(), peer.device_info.mtu());
     let len = (chunks.len() as u16).to_be_bytes();
 
-    send(REQUEST_SIZE_UUID, &len, peer, &*ble_peripheral).await?;
+    send(REQUEST_SIZE_UUID, &len, peer, ble_peripheral).await?;
     write_chunks_with_report(chunks, peer, ble_peripheral).await
 }
 
-pub(crate) async fn send(
+async fn send(
     id: &str,
     data: &[u8],
     wallet: &BLEPeer,
-    ble_peripheral: &dyn BlePeripheral,
+    ble_peripheral: &TrackingBlePeripheral,
 ) -> Result<(), VerificationProtocolError> {
     ble_peripheral
         .set_characteristic_data(SERVICE_UUID.to_string(), id.to_string(), data)
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))
-        .await?;
+        .await
+        .error_while("sending data")?;
 
-    ble_peripheral
+    Ok(ble_peripheral
         .wait_for_characteristic_read(
             wallet.device_info.address.to_string(),
             SERVICE_UUID.to_string(),
             id.to_string(),
         )
         .await
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))
+        .error_while("waiting for data read")?)
 }
 
 #[tracing::instrument(level = "debug", skip(ble_peripheral), err(Debug))]
 async fn write_chunks_with_report(
     chunks: Chunks,
     wallet: &BLEPeer,
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: &TrackingBlePeripheral,
 ) -> Result<(), VerificationProtocolError> {
     for chunk in chunks.iter() {
         send(
             PRESENTATION_REQUEST_UUID,
             chunk.to_bytes().as_slice(),
             wallet,
-            &*ble_peripheral,
+            ble_peripheral,
         )
         .await?
     }
@@ -509,7 +562,7 @@ async fn write_chunks_with_report(
 #[tracing::instrument(level = "debug", skip(ble_peripheral), err(Debug))]
 async fn request_write_report(
     wallet: &BLEPeer,
-    ble_peripheral: Arc<dyn BlePeripheral>,
+    ble_peripheral: TrackingBlePeripheral,
 ) -> Result<Vec<u16>, VerificationProtocolError> {
     ble_peripheral
         .notify_characteristic_data(
@@ -519,7 +572,7 @@ async fn request_write_report(
             &[],
         )
         .await
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+        .error_while("notifying Summary")?;
 
     let report_bytes: TransferSummaryReport = read(
         TRANSFER_SUMMARY_REQUEST_UUID,
@@ -527,25 +580,30 @@ async fn request_write_report(
         ble_peripheral.clone(),
     )
     .parse()
-    .map_err(VerificationProtocolError::Transport)
-    .await?;
+    .await
+    .map_err(VerificationProtocolError::Other)?;
 
     Ok(report_bytes)
 }
 
 #[tracing::instrument(level = "debug", skip(ble_peripheral), err(Debug))]
-pub(crate) async fn read_presentation_submission(
+async fn read_presentation_submission<S: DeserializeOwned>(
     connected_wallet: &BLEPeer,
-    ble_peripheral: Arc<dyn BlePeripheral>,
-) -> Result<BleOpenId4VpResponse, VerificationProtocolError> {
+    ble_peripheral: &TrackingBlePeripheral,
+) -> Result<Option<S>, VerificationProtocolError> {
     let request_size: MessageSize = read(
         CONTENT_SIZE_UUID,
         &connected_wallet.device_info,
         ble_peripheral.clone(),
     )
     .parse()
-    .map_err(VerificationProtocolError::Transport)
-    .await?;
+    .await
+    .map_err(VerificationProtocolError::Other)?;
+
+    if request_size == 0 {
+        // proof rejection by holder
+        return Ok(None);
+    }
 
     let mut received_chunks: Vec<Chunk> = vec![];
     let message_stream = read(
@@ -569,7 +627,7 @@ pub(crate) async fn read_presentation_submission(
             biased;
 
             Some(chunk) = message_stream.next() => {
-                let chunk = Chunk::from_bytes(&chunk.map_err(|e| VerificationProtocolError::Transport(e.into()))?).map_err(VerificationProtocolError::Transport)?;
+                let chunk = Chunk::from_bytes(&chunk.error_while("waiting for submission chunk")?).map_err(VerificationProtocolError::Other)?;
 
                 if received_chunks.iter().any(|c| c.index == chunk.index) {
                     continue;
@@ -595,7 +653,7 @@ pub(crate) async fn read_presentation_submission(
                         &missing_chunks,
                     )
                     .await
-                    .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+                    .error_while("notifying Summary")?;
 
                 transfer_summary_dispatched = true;
 
@@ -621,96 +679,9 @@ pub(crate) async fn read_presentation_submission(
         .flat_map(|c| c.payload)
         .collect();
 
-    connected_wallet
-        .decrypt(&presentation_request)
-        .map_err(|e| {
-            VerificationProtocolError::Transport(anyhow!(
-                "Failed to decrypt presentation request: {e}"
-            ))
-        })
-}
-
-struct BleVerifierContext {
-    task_id: Uuid,
-    peer: BLEPeer,
-    identity_request: IdentityRequest,
-    peripheral: Arc<dyn BlePeripheral>,
-    connection_event_stream: Arc<Mutex<ConnectionEventStream>>,
-}
-
-fn wallet_connect(
-    task_id: Uuid,
-    peripheral: Arc<dyn BlePeripheral>,
-    keypair: KeyAgreementKey,
-) -> BoxFuture<'static, Result<BleVerifierContext, VerificationProtocolError>> {
-    async move {
-        let mut connection_event_stream = get_connection_event_stream(peripheral.clone()).await;
-        let (wallet, identity_request) =
-            wait_for_wallet_identify_request(peripheral.clone(), &mut connection_event_stream)
-                .await?;
-        let (sender_key, receiver_key) = keypair
-            .derive_session_secrets(identity_request.key, identity_request.nonce)
-            .map_err(VerificationProtocolError::Transport)?;
-        let peer = BLEPeer::new(wallet, sender_key, receiver_key, identity_request.nonce);
-        Ok(BleVerifierContext {
-            task_id,
-            peer,
-            identity_request,
-            peripheral,
-            connection_event_stream: Arc::new(Mutex::new(connection_event_stream)),
-        })
-    }
-    .boxed()
-}
-
-fn wallet_disconnect(context: Arc<BleVerifierContext>) -> BoxFuture<'static, ()> {
-    (async move {
-        wallet_disconnect_event(
-            &mut *context.connection_event_stream.lock().await,
-            &context.peer.device_info.address,
-        )
-        .await
-    })
-    .boxed()
-}
-
-fn send_presentation_request(
-    request: String,
-    context: Arc<BleVerifierContext>,
-) -> BoxFuture<'static, Result<(), VerificationProtocolError>> {
-    (async move {
-        write_presentation_request(&request, &context.peer, context.peripheral.clone()).await
-    })
-    .boxed()
-}
-
-fn receive_presentation(
-    context: Arc<BleVerifierContext>,
-) -> BoxFuture<'static, Result<BleOpenId4VpResponse, VerificationProtocolError>> {
-    async move { read_presentation_submission(&context.peer, context.peripheral.clone()).await }
-        .boxed()
-}
-
-fn interaction_data_from_response(
-    nonce: String,
-    presentation_definition: OpenID4VPPresentationDefinition,
-    openid_request: OpenID4VP20AuthorizationRequest,
-    submission: BleOpenId4VpResponse,
-    context: Arc<BleVerifierContext>,
-) -> Result<Vec<u8>, VerificationProtocolError> {
-    let interaction_data = BLEOpenID4VPInteractionData {
-        client_id: openid_request.client_id.to_owned(),
-        nonce,
-        task_id: context.task_id,
-        peer: context.peer.clone(),
-        openid_request,
-        identity_request_nonce: Some(hex::encode(context.identity_request.nonce)),
-        presentation_definition,
-        presentation_submission: Some(submission),
-    };
-    serde_json::to_vec(&interaction_data).map_err(|err| {
-        VerificationProtocolError::Failed(format!(
-            "failed to serialize presentation_submission: {err}"
-        ))
-    })
+    Ok(Some(
+        connected_wallet
+            .decrypt(&presentation_request)
+            .map_err(VerificationProtocolError::Other)?,
+    ))
 }

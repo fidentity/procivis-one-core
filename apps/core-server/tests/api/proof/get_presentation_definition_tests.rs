@@ -2,13 +2,15 @@ use one_core::model::credential::{CredentialRole, CredentialStateEnum};
 use one_core::model::credential_schema::CredentialSchema;
 use one_core::model::did::DidType;
 use one_core::model::identifier::IdentifierType;
-use one_core::model::proof::ProofStateEnum;
+use one_core::model::interaction::InteractionType;
+use one_core::model::proof::{ProofRole, ProofStateEnum};
 use serde_json::{Value, json};
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::fixtures::{
-    self, TestingCredentialParams, TestingCredentialSchemaParams, TestingDidParams,
+    self, ClaimData, TestingCredentialParams, TestingCredentialSchemaParams, TestingDidParams,
     TestingIdentifierParams,
 };
 use crate::utils;
@@ -83,19 +85,22 @@ async fn test_get_presentation_definition_openid_with_match_multiple_schemas() {
 
     let interaction = fixtures::create_interaction(
         &db_conn,
-        "http://localhost",
         &get_open_id_interaction_data(&credential_schema_1),
         &organisation,
+        InteractionType::Verification,
     )
     .await;
     let proof = fixtures::create_proof(
         &db_conn,
         &identifier,
-        Some(&identifier),
         None,
         ProofStateEnum::Requested,
+        ProofRole::Holder,
         "OPENID4VP_DRAFT20",
         Some(&interaction),
+        None,
+        None,
+        None,
     )
     .await;
 
@@ -229,7 +234,7 @@ async fn test_get_presentation_definition_open_id_vp_with_match() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let holder_did = context
@@ -283,9 +288,10 @@ async fn test_get_presentation_definition_open_id_vp_with_match() {
         .interactions
         .create(
             None,
-            "http://localhost",
             &get_open_id_interaction_data(&credential_schema),
             &organisation,
+            InteractionType::Verification,
+            None,
         )
         .await;
 
@@ -295,12 +301,13 @@ async fn test_get_presentation_definition_open_id_vp_with_match() {
         .create(
             None,
             &identifier,
-            Some(&identifier),
             None,
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            None,
+            None,
         )
         .await;
 
@@ -334,7 +341,7 @@ async fn test_get_presentation_definition_open_id_vp_with_delete_credential() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     context
@@ -358,9 +365,10 @@ async fn test_get_presentation_definition_open_id_vp_with_delete_credential() {
         .interactions
         .create(
             None,
-            "http://localhost",
             &get_open_id_interaction_data(&credential_schema),
             &organisation,
+            InteractionType::Verification,
+            None,
         )
         .await;
 
@@ -370,12 +378,13 @@ async fn test_get_presentation_definition_open_id_vp_with_delete_credential() {
         .create(
             None,
             &identifier,
-            Some(&identifier),
             None,
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            None,
+            None,
         )
         .await;
 
@@ -411,19 +420,22 @@ async fn test_get_presentation_definition_open_id_vp_no_match() {
     let credential_schema = fixtures::create_credential_schema(&db_conn, &organisation, None).await;
     let interaction = fixtures::create_interaction(
         &db_conn,
-        "http://localhost",
         &get_open_id_interaction_data(&credential_schema),
         &organisation,
+        InteractionType::Verification,
     )
     .await;
     let proof = fixtures::create_proof(
         &db_conn,
         &identifier,
-        Some(&identifier),
         None,
         ProofStateEnum::Requested,
+        ProofRole::Holder,
         "OPENID4VP_DRAFT20",
         Some(&interaction),
+        None,
+        None,
+        None,
     )
     .await;
 
@@ -548,7 +560,7 @@ async fn test_get_presentation_definition_open_id_vp_no_match_vp_formats_empty()
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let _credential = context
@@ -568,9 +580,10 @@ async fn test_get_presentation_definition_open_id_vp_no_match_vp_formats_empty()
         .interactions
         .create(
             None,
-            "http://localhost",
             &get_open_id_interaction_data_without_vp_formats(&credential_schema),
             &organisation,
+            InteractionType::Verification,
+            None,
         )
         .await;
 
@@ -580,12 +593,13 @@ async fn test_get_presentation_definition_open_id_vp_no_match_vp_formats_empty()
         .create(
             None,
             &identifier,
-            Some(&identifier),
             None,
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            None,
+            None,
         )
         .await;
 
@@ -630,7 +644,7 @@ async fn test_get_presentation_definition_open_id_vp_multiple_credentials() {
         &db_conn,
         "test1",
         &organisation,
-        "NONE",
+        None,
         &claim_schemas_1,
     )
     .await;
@@ -655,7 +669,7 @@ async fn test_get_presentation_definition_open_id_vp_multiple_credentials() {
         &db_conn,
         "test2",
         &organisation,
-        "NONE",
+        None,
         &claim_schemas_2,
     )
     .await;
@@ -674,7 +688,6 @@ async fn test_get_presentation_definition_open_id_vp_multiple_credentials() {
 
     let interaction = fixtures::create_interaction(
         &db_conn,
-        "https://core.test.one-trust-solution.com/ssi/openid4vp/draft-20/response",
         &json!({
             "response_type": "vp_token",
             "state": "30622803-c01a-4b24-9843-1aa4306510cb",
@@ -792,16 +805,20 @@ async fn test_get_presentation_definition_open_id_vp_multiple_credentials() {
         .to_string()
         .into_bytes(),
         &organisation,
+        InteractionType::Verification,
     )
     .await;
     let proof = fixtures::create_proof(
         &db_conn,
         &identifier,
-        Some(&identifier),
         None,
         ProofStateEnum::Requested,
+        ProofRole::Holder,
         "OPENID4VP_DRAFT20",
         Some(&interaction),
+        None,
+        None,
+        None,
     )
     .await;
 
@@ -892,7 +909,7 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let first_claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
@@ -908,11 +925,12 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
                 role: Some(CredentialRole::Holder),
-                claims_data: Some(vec![(
-                    first_claim_schema.schema.id.into(),
-                    &first_claim_schema.schema.key,
-                    "value",
-                )]),
+                claims_data: Some(vec![ClaimData {
+                    schema_id: first_claim_schema.id,
+                    path: first_claim_schema.key.to_owned(),
+                    value: Some("value".to_string()),
+                    selectively_disclosable: false,
+                }]),
                 ..Default::default()
             },
         )
@@ -928,16 +946,18 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
             TestingCredentialParams {
                 role: Some(CredentialRole::Holder),
                 claims_data: Some(vec![
-                    (
-                        first_claim_schema.schema.id.into(),
-                        &first_claim_schema.schema.key,
-                        "value",
-                    ),
-                    (
-                        second_claim_schema.schema.id.into(),
-                        &second_claim_schema.schema.key,
-                        "true",
-                    ),
+                    ClaimData {
+                        schema_id: first_claim_schema.id,
+                        path: first_claim_schema.key.to_owned(),
+                        value: Some("value".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: second_claim_schema.id,
+                        path: second_claim_schema.key.to_owned(),
+                        value: Some("true".to_string()),
+                        selectively_disclosable: false,
+                    },
                 ]),
                 ..Default::default()
             },
@@ -949,7 +969,6 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
         .interactions
         .create(
             None,
-            "http://localhost",
             &json!({
                 "response_type": "vp_token",
                 "state": "4ae7e7d5-2ac5-4325-858f-d93ff1fb4f8b",
@@ -1012,14 +1031,14 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
                                         }
                                     },
                                     {
-                                        "id": first_claim_schema.schema.id,
+                                        "id": first_claim_schema.id,
                                         "path": [
                                             "$.vc.credentialSubject.firstName"
                                         ],
                                         "optional": false
                                     },
-                                                                    {
-                                        "id": second_claim_schema.schema.id,
+                                    {
+                                        "id": second_claim_schema.id,
                                         "path": [
                                             "$.vc.credentialSubject.isOver18"
                                         ],
@@ -1034,6 +1053,8 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
             .to_string()
             .into_bytes(),
             &organisation,
+            InteractionType::Verification,
+            None,
         )
         .await;
 
@@ -1043,12 +1064,13 @@ async fn test_get_presentation_definition_open_id_vp_matched_only_complete_crede
         .create(
             None,
             &identifier,
-            Some(&identifier),
             None,
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             key,
+            None,
+            None,
         )
         .await;
 

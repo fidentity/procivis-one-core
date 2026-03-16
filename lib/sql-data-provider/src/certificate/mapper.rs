@@ -1,11 +1,10 @@
 use one_core::model::certificate::{
-    Certificate, CertificateFilterValue, GetCertificateList, SortableCertificateColumn,
+    Certificate, CertificateFilterValue, SortableCertificateColumn,
 };
-use one_dto_mapper::convert_inner;
+use one_core::model::list_filter::ListFilterCondition;
 use sea_orm::sea_query::{IntoCondition, SimpleExpr};
 use sea_orm::{ColumnTrait, IntoSimpleExpr, Set};
 
-use crate::common::calculate_pages_count;
 use crate::entity::certificate::{self, ActiveModel};
 use crate::list_query_generic::{
     IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_equals_condition,
@@ -24,8 +23,10 @@ impl From<Certificate> for ActiveModel {
             expiry_date: Set(certificate.expiry_date),
             name: Set(certificate.name),
             chain: Set(certificate.chain),
+            fingerprint: Set(certificate.fingerprint),
             state: Set(certificate.state.into()),
             key_id: Set(key_id),
+            organisation_id: Set(certificate.organisation_id),
         }
     }
 }
@@ -35,14 +36,15 @@ impl From<certificate::Model> for Certificate {
         Self {
             id: value.id,
             identifier_id: value.identifier_id,
+            organisation_id: value.organisation_id,
             created_date: value.created_date,
             last_modified: value.last_modified,
             expiry_date: value.expiry_date,
             name: value.name,
             chain: value.chain,
+            fingerprint: value.fingerprint,
             state: value.state.into(),
             key: None,
-            organisation: None,
         }
     }
 }
@@ -60,7 +62,7 @@ impl IntoSortingColumn for SortableCertificateColumn {
 }
 
 impl IntoFilterCondition for CertificateFilterValue {
-    fn get_condition(self) -> sea_orm::Condition {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> sea_orm::Condition {
         match self {
             Self::Ids(ids) => certificate::Column::Id.is_in(ids).into_condition(),
             Self::Name(string_match) => {
@@ -73,18 +75,12 @@ impl IntoFilterCondition for CertificateFilterValue {
             Self::ExpiryDate(date_comparison) => {
                 get_comparison_condition(certificate::Column::ExpiryDate, date_comparison)
             }
+            Self::Fingerprint(fingerprint) => {
+                get_equals_condition(certificate::Column::Fingerprint, fingerprint)
+            }
+            Self::OrganisationId(organisation_id) => {
+                get_equals_condition(certificate::Column::OrganisationId, organisation_id)
+            }
         }
-    }
-}
-
-pub(super) fn create_list_response(
-    certificates: Vec<certificate::Model>,
-    limit: Option<u64>,
-    items_count: u64,
-) -> GetCertificateList {
-    GetCertificateList {
-        values: convert_inner(certificates),
-        total_pages: calculate_pages_count(items_count, limit.unwrap_or(0)),
-        total_items: items_count,
     }
 }

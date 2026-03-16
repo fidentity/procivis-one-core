@@ -3,14 +3,14 @@ use std::sync::Arc;
 use one_core::repository::claim_schema_repository::ClaimSchemaRepository;
 use one_core::repository::credential_schema_repository::CredentialSchemaRepository;
 use one_core::repository::organisation_repository::OrganisationRepository;
-use sea_orm::DatabaseConnection;
 
-pub mod history;
+use crate::transaction_context::TransactionManagerImpl;
+
 mod mapper;
 pub mod repository;
 
 pub(crate) struct ProofSchemaProvider {
-    pub db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
     pub claim_schema_repository: Arc<dyn ClaimSchemaRepository>,
     pub organisation_repository: Arc<dyn OrganisationRepository>,
     pub credential_schema_repository: Arc<dyn CredentialSchemaRepository>,

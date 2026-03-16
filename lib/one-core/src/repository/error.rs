@@ -1,6 +1,8 @@
 use shared_types::{ClaimId, ClaimSchemaId, ProofId};
 use thiserror::Error;
 
+use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
+
 #[derive(Debug, Error)]
 pub enum DataLayerError {
     #[error("Already exists")]
@@ -14,9 +16,6 @@ pub enum DataLayerError {
 
     #[error("Response could not be mapped")]
     MappingError,
-
-    #[error("Database error: {0}")]
-    Db(#[from] anyhow::Error),
 
     #[error("Missing required relation {relation} for {id}")]
     MissingRequiredRelation { relation: &'static str, id: String },
@@ -32,10 +31,40 @@ pub enum DataLayerError {
 
     #[error("Missing proof state for proof: {proof}")]
     MissingProofState { proof: ProofId },
+
+    #[error("Transaction error: {0}")]
+    TransactionError(String),
+
+    #[error("Unsupported database backend")]
+    UnsupportedDbBackend,
+
+    #[error("Database error: {0}")]
+    Db(#[from] anyhow::Error),
+
+    #[error("UUID error: {0}")]
+    UUIDError(#[from] uuid::Error),
+
+    #[error(transparent)]
+    Nested(#[from] NestedError),
 }
 
-impl From<uuid::Error> for DataLayerError {
-    fn from(_: uuid::Error) -> Self {
-        Self::MappingError
+impl ErrorCodeMixin for DataLayerError {
+    fn error_code(&self) -> ErrorCode {
+        match self {
+            Self::Db(_) => ErrorCode::BR_0054,
+            Self::AlreadyExists => ErrorCode::BR_0357,
+            Self::IncorrectParameters
+            | Self::RecordNotUpdated
+            | Self::MappingError
+            | Self::UUIDError(_)
+            | Self::IncompleteClaimsList { .. }
+            | Self::IncompleteClaimsSchemaList { .. }
+            | Self::MissingProofState { .. }
+            | Self::MissingRequiredRelation { .. }
+            | Self::MissingClaimsSchemaForClaim(_, _)
+            | Self::TransactionError(_)
+            | Self::UnsupportedDbBackend => ErrorCode::BR_0000,
+            Self::Nested(nested) => nested.error_code(),
+        }
     }
 }

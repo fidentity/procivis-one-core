@@ -1,0 +1,168 @@
+use one_core::model::credential_schema::{TransactionCode, TransactionCodeType};
+use serde_json::json;
+use similar_asserts::assert_eq;
+use uuid::Uuid;
+
+use crate::utils::context::TestContext;
+use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
+
+#[tokio::test]
+async fn test_import_credential_schema_fails_deactivated_organisation() {
+    // GIVEN
+    let (context, organisation1) = TestContext::new_with_organisation(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "some credential schema",
+            &organisation1,
+            None,
+            Default::default(),
+        )
+        .await;
+
+    let credential_schema = {
+        let mut value = context
+            .api
+            .credential_schemas
+            .get(&credential_schema.id)
+            .await
+            .json_value()
+            .await;
+
+        let object = value.as_object_mut().unwrap();
+        object.remove("externalSchema");
+
+        value
+    };
+
+    let organisation2 = context.db.organisations.create().await;
+    context.db.organisations.deactivate(&organisation2.id).await;
+
+    // WHEN
+    let resp = context
+        .api
+        .credential_schemas
+        .import(organisation2.id, credential_schema)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+    assert_eq!("BR_0241", resp.error_code().await);
+}
+
+#[tokio::test]
+async fn test_import_credential_schema_success_with_same_name() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "some credential schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                allow_suspension: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let imported_schema_id = Uuid::new_v4();
+    let credential_schema_json = {
+        let mut value = context
+            .api
+            .credential_schemas
+            .get(&credential_schema.id)
+            .await
+            .json_value()
+            .await;
+
+        let object = value.as_object_mut().unwrap();
+        object.remove("externalSchema");
+        object.insert("id".to_owned(), json!(imported_schema_id));
+        object.insert("schemaId".to_owned(), json!(imported_schema_id));
+
+        value
+    };
+
+    // WHEN
+    let resp = context
+        .api
+        .credential_schemas
+        .import(organisation.id, credential_schema_json)
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 201);
+    let credential_schemas = context.db.credential_schemas.list().await;
+
+    let credential_schema = credential_schemas
+        .iter()
+        .find(|cs| cs.id == credential_schema.id)
+        .unwrap();
+    assert_eq!(credential_schema.name, "some credential schema");
+
+    let imported_credential_schema = credential_schemas
+        .iter()
+        .find(|cs| cs.schema_id == imported_schema_id.to_string())
+        .unwrap();
+    assert_ne!(imported_credential_schema.name, "some credential schema");
+    assert!(
+        imported_credential_schema
+            .name
+            .contains("some credential schema")
+    );
+}
+
+#[tokio::test]
+async fn test_import_credential_schema_fail_tx_code_length_too_short() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "schema",
+            &organisation,
+            None,
+            TestingCreateSchemaParams {
+                allow_suspension: Some(false),
+                transaction_code: Some(TransactionCode {
+                    r#type: TransactionCodeType::Numeric,
+                    length: 2,
+                    description: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let imported_schema_id = Uuid::new_v4();
+    let credential_schema_json = {
+        let mut value = context
+            .api
+            .credential_schemas
+            .get(&credential_schema.id)
+            .await
+            .json_value()
+            .await;
+
+        let object = value.as_object_mut().unwrap();
+        object.insert("id".to_owned(), json!(imported_schema_id));
+        object.insert("schemaId".to_owned(), json!(imported_schema_id));
+
+        value
+    };
+
+    // WHEN
+    let resp = context
+        .api
+        .credential_schemas
+        .import(organisation.id, credential_schema_json)
+        .await;
+
+    // then
+    assert_eq!(resp.status(), 400);
+    let err = resp.error_code().await;
+    assert_eq!(err, "BR_0338");
+}

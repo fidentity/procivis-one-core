@@ -11,7 +11,7 @@ use crate::metrics::encode_metrics;
 
 #[utoipa::path(
     get,
-    path = "/build-info",
+    path = "/api/build-info/v1",
     responses(
         (status = 200, description = "Ok")
     ),
@@ -61,12 +61,13 @@ pub(crate) async fn get_metrics() -> Response {
         Ok(result) => (StatusCode::OK, result).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Metrics encoding error: {:?}", error),
+            format!("Metrics encoding error: {error:?}"),
         )
             .into_response(),
     }
 }
 
+#[expect(clippy::unwrap_used)]
 pub(crate) fn get_openapi_yaml<S>(openapi: &utoipa::openapi::OpenApi) -> impl Handler<((),), S> {
     let yaml = openapi.to_yaml().unwrap();
     move || future::ready((StatusCode::OK, yaml.clone()).into_response())

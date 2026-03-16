@@ -14,28 +14,32 @@ use super::common::{
 };
 use super::device_engagement::{BleOptions, DeviceEngagement};
 use super::session::{Command, SessionData, SessionEstablishment, StatusCode};
-use crate::common_mapper::{NESTED_CLAIM_MARKER, encode_cbor_base64};
+use crate::error::ContextWithErrorCode;
+use crate::error::ErrorCode::BR_0000;
+use crate::mapper::{NESTED_CLAIM_MARKER, encode_cbor_base64};
 use crate::model::history::HistoryErrorMetadata;
 use crate::model::proof::{Proof, ProofStateEnum, UpdateProofRequest};
 use crate::model::proof_schema::{ProofInputSchema, ProofSchema};
-use crate::provider::bluetooth_low_energy::low_level::ble_central::BleCentral;
-use crate::provider::bluetooth_low_energy::low_level::dto::{
+use crate::proto::bluetooth_low_energy::ble_resource::{BleWaiter, OnConflict, ScheduleResult};
+use crate::proto::bluetooth_low_energy::low_level::ble_central::{BleCentral, TrackingBleCentral};
+use crate::proto::bluetooth_low_energy::low_level::dto::{
     CharacteristicWriteType, DeviceAddress, PeripheralDiscoveryData,
 };
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{
-    Bstr, DeviceResponse, EmbeddedCbor, SessionTranscript,
-};
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::identifier_creator::IdentifierCreator;
+use crate::provider::credential_formatter::mdoc_formatter::util::{Bstr, EmbeddedCbor};
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::presentation_formatter::mso_mdoc::model::DeviceResponse;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::{
+    Handover, SessionTranscript,
+};
+use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
 use crate::provider::verification_protocol::error::VerificationProtocolError;
 use crate::repository::credential_repository::CredentialRepository;
-use crate::repository::did_repository::DidRepository;
-use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::proof_repository::ProofRepository;
-use crate::service::error::ErrorCode::BR_0000;
 use crate::service::error::ServiceError;
-use crate::util::ble_resource::{BleWaiter, OnConflict};
 
 #[derive(Debug, Clone)]
 pub(crate) struct VerifierSession {
@@ -48,14 +52,17 @@ pub(crate) struct VerifierSession {
 pub(crate) fn setup_verifier_session(
     device_engagement: EmbeddedCbor<DeviceEngagement>,
     schema: &ProofSchema,
+    handover: Option<Handover>,
 ) -> Result<VerifierSession, VerificationProtocolError> {
     let key_pair = KeyAgreement::<EReaderKey>::new();
 
-    let reader_key = EmbeddedCbor::new(key_pair.reader_key().clone())
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+    let reader_key = EmbeddedCbor::new(key_pair.reader_key().clone())?;
 
-    let session_transcript_bytes =
-        create_session_transcript_bytes(device_engagement.to_owned(), reader_key.to_owned())?;
+    let session_transcript_bytes = create_session_transcript_bytes(
+        device_engagement.to_owned(),
+        reader_key.to_owned(),
+        handover,
+    )?;
 
     let (sk_device, sk_reader) = key_pair
         .derive_session_keys(
@@ -74,12 +81,12 @@ pub(crate) fn setup_verifier_session(
         doc_requests: schema
             .input_schemas
             .as_ref()
-            .context("missing input_schemas")
-            .map_err(VerificationProtocolError::Other)?
+            .ok_or(VerificationProtocolError::Failed(
+                "missing input_schemas".to_string(),
+            ))?
             .iter()
             .map(proof_input_schema_to_doc_request)
-            .collect::<anyhow::Result<_>>()
-            .map_err(VerificationProtocolError::Other)?,
+            .collect::<Result<_, VerificationProtocolError>>()?,
     };
 
     let device_request_bytes = to_cbor(&device_request)?;
@@ -98,73 +105,84 @@ pub(crate) fn setup_verifier_session(
 
 /// Main background task on mDL verifier
 /// All from initializing connection to handling response
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn start_client(
     ble: &BleWaiter,
     ble_options: BleOptions,
     verifier_session: VerifierSession,
     proof: Proof,
     credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     credential_repository: Arc<dyn CredentialRepository>,
-    did_repository: Arc<dyn DidRepository>,
-    identifier_repository: Arc<dyn IdentifierRepository>,
     proof_repository: Arc<dyn ProofRepository>,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    identifier_creator: Arc<dyn IdentifierCreator>,
 ) -> Result<(), ServiceError> {
     let peripheral_server_uuid = ble_options.peripheral_server_uuid.to_owned();
 
     let (sender, receiver) = oneshot::channel();
 
-    ble.schedule(
-        *ISO_MDL_FLOW,
-        move |_, central, _| async move {
-            if let Err(error) = verifier_flow(
-                ble_options,
-                verifier_session,
-                &proof,
-                &*central,
-                sender,
-                credential_formatter_provider.clone(),
-                did_method_provider.clone(),
-                key_algorithm_provider.clone(),
-                credential_repository.clone(),
-                did_repository.clone(),
-                identifier_repository.clone(),
-                proof_repository.clone(),
-            )
-            .await
-            {
-                let message = format!("mDL verifier failure: {error:#?}");
-                tracing::info!(message);
-                let error_metadata = HistoryErrorMetadata {
-                    error_code: BR_0000,
-                    message,
-                };
-                if let Err(err) =
-                    set_proof_to_error(&proof_repository, proof.id, error_metadata).await
-                {
-                    tracing::warn!("failed to set proof to error: {err}");
-                }
-            }
-        },
-        move |central, _| async move {
-            let message = "Cancelling mDL verifier flow".to_string();
-            tracing::info!(message);
-            if let Ok(true) = central.is_scanning().await {
-                if let Err(err) = central.stop_scan().await {
-                    tracing::warn!("failed to stop BLE central: {err}");
-                }
-            }
+    let schedule_result = ble
+        .schedule(
+            *ISO_MDL_FLOW,
+            move |_, central, _| async move {
+                let result = verifier_flow(
+                    ble_options,
+                    verifier_session,
+                    &proof,
+                    &central,
+                    sender,
+                    credential_formatter_provider.clone(),
+                    presentation_formatter_provider.clone(),
+                    did_method_provider.clone(),
+                    key_algorithm_provider.clone(),
+                    credential_repository.clone(),
+                    proof_repository.clone(),
+                    certificate_validator.clone(),
+                    identifier_creator.clone(),
+                )
+                .await;
 
-            if let Ok(device_info) = receiver.await {
-                send_end_and_disconnect(&device_info, &peripheral_server_uuid, &*central).await;
-            }
-        },
-        OnConflict::ReplaceIfSameFlow,
-        false,
-    )
-    .await;
+                if let Err(error) = &result {
+                    {
+                        let message = format!("mDL verifier failure: {error:#?}");
+                        tracing::info!(message);
+                        let error_metadata = HistoryErrorMetadata {
+                            error_code: BR_0000,
+                            message,
+                        };
+                        if let Err(err) =
+                            set_proof_to_error(&*proof_repository, proof.id, error_metadata).await
+                        {
+                            tracing::warn!("failed to set proof to error: {err}");
+                        }
+                    }
+                };
+
+                result
+            },
+            move |central, _| async move {
+                let message = "Cancelling mDL verifier flow".to_string();
+                tracing::info!(message);
+                if let Ok(device_info) = receiver.await {
+                    send_end(
+                        device_info.device_address.clone(),
+                        &peripheral_server_uuid,
+                        &central,
+                    )
+                    .await;
+                }
+            },
+            OnConflict::ReplaceIfSameFlow,
+            false,
+        )
+        .await;
+
+    if matches!(schedule_result, ScheduleResult::Busy) {
+        return Err(ServiceError::Other("BLE is busy".into()));
+    }
 
     Ok(())
 }
@@ -174,20 +192,21 @@ pub(crate) async fn start_client(
 ///
 /// It's split into smaller functions to simplify error handling - depending on place of failure
 /// we may need to send End command, disconnect BLE central and set proof state to error
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn verifier_flow(
     ble_options: BleOptions,
     verifier_session: VerifierSession,
     proof: &Proof,
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
     sender: oneshot::Sender<PeripheralDiscoveryData>,
     credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     credential_repository: Arc<dyn CredentialRepository>,
-    did_repository: Arc<dyn DidRepository>,
-    identifier_repository: Arc<dyn IdentifierRepository>,
     proof_repository: Arc<dyn ProofRepository>,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    identifier_creator: Arc<dyn IdentifierCreator>,
 ) -> Result<(), anyhow::Error> {
     let (device, mtu_size) =
         connect_to_server(central, ble_options.peripheral_server_uuid.to_string()).await?;
@@ -206,36 +225,43 @@ async fn verifier_flow(
         &device,
         mtu_size,
         credential_formatter_provider,
+        presentation_formatter_provider,
         did_method_provider,
         key_algorithm_provider,
         credential_repository,
-        did_repository,
-        identifier_repository,
         proof_repository,
+        certificate_validator,
+        identifier_creator,
     )
     .await;
     if let Err(_error) = &result {
-        send_end_and_disconnect(&device, &peripheral_server_uuid, central).await;
+        send_end(
+            device.device_address.clone(),
+            &peripheral_server_uuid,
+            central,
+        )
+        .await;
     }
 
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn process_proof(
     ble_options: BleOptions,
     verifier_session: VerifierSession,
     proof: &Proof,
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
     device: &PeripheralDiscoveryData,
     mtu_size: usize,
     credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     credential_repository: Arc<dyn CredentialRepository>,
-    did_repository: Arc<dyn DidRepository>,
-    identifier_repository: Arc<dyn IdentifierRepository>,
     proof_repository: Arc<dyn ProofRepository>,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    identifier_creator: Arc<dyn IdentifierCreator>,
 ) -> Result<(), anyhow::Error> {
     send_session_establishment(
         central,
@@ -299,70 +325,65 @@ async fn process_proof(
         let error_metadata = HistoryErrorMetadata {
             error_code: BR_0000,
             message: format!(
-                "Response received with documents and document errors: {:?}",
-                device_response
+                "Response received with documents and document errors: {device_response:?}"
             ),
         };
-        set_proof_to_error(&proof_repository, proof.id, error_metadata).await?;
+        set_proof_to_error(&*proof_repository, proof.id, error_metadata).await?;
         return Ok(());
     }
 
-    if empty_documents && !has_errors {
-        let error_metadata = HistoryErrorMetadata {
-            error_code: BR_0000,
-            message: "Response documents is empty but no errors are provided".to_string(),
-        };
-        set_proof_to_error(&proof_repository, proof.id, error_metadata).await?;
-        return Ok(());
-    }
-
-    let new_state = match empty_documents {
-        false => ProofStateEnum::Accepted,
-        true => ProofStateEnum::Rejected,
-    };
-    tracing::info!("mDL verification state: {new_state}");
-
-    if new_state == ProofStateEnum::Accepted {
-        if let Err(error) = fill_proof_claims_and_credentials(
-            device_response,
-            proof,
-            verifier_session.session_transcript,
-            credential_formatter_provider,
-            did_method_provider.clone(),
-            key_algorithm_provider.clone(),
-            credential_repository,
-            did_repository,
-            identifier_repository,
-            proof_repository.clone(),
-        )
-        .await
-        {
-            let message = format!("mDL proof parsing failure: {error:#?}");
-            tracing::info!(message);
+    if empty_documents {
+        if has_errors {
+            proof_repository
+                .update_proof(
+                    &proof.id,
+                    UpdateProofRequest {
+                        state: Some(ProofStateEnum::Rejected),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await?;
+        } else {
             let error_metadata = HistoryErrorMetadata {
                 error_code: BR_0000,
-                message,
+                message: "Response documents are empty but no errors are provided".to_string(),
             };
-            set_proof_to_error(&proof_repository, proof.id, error_metadata).await?;
-            return Ok(());
+            set_proof_to_error(&*proof_repository, proof.id, error_metadata).await?;
         }
+
+        return Ok(());
     }
 
-    proof_repository
-        .update_proof(
-            &proof.id,
-            UpdateProofRequest {
-                state: Some(new_state),
-                ..Default::default()
-            },
-            None,
-        )
-        .await?;
+    if let Err(error) = fill_proof_claims_and_credentials(
+        device_response,
+        proof,
+        verifier_session.session_transcript,
+        &*credential_formatter_provider,
+        &*presentation_formatter_provider,
+        did_method_provider,
+        key_algorithm_provider,
+        credential_repository,
+        &*proof_repository,
+        certificate_validator,
+        identifier_creator,
+    )
+    .await
+    {
+        let message = format!("mDL proof parsing failure: {error:#?}");
+        tracing::info!(message);
+        let error_metadata = HistoryErrorMetadata {
+            error_code: BR_0000,
+            message,
+        };
+        set_proof_to_error(&*proof_repository, proof.id, error_metadata).await?;
+    }
+
     Ok(())
 }
 
 async fn set_proof_to_error(
-    proof_repository: &Arc<dyn ProofRepository>,
+    proof_repository: &dyn ProofRepository,
     proof_id: ProofId,
     error_metadata: HistoryErrorMetadata,
 ) -> Result<(), Error> {
@@ -382,7 +403,7 @@ async fn set_proof_to_error(
 async fn send_end(
     device_address: DeviceAddress,
     peripheral_server_uuid: &Uuid,
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
 ) {
     if let Err(err) = central
         .write_data(
@@ -398,34 +419,19 @@ async fn send_end(
     }
 }
 
-async fn send_end_and_disconnect(
-    device_info: &PeripheralDiscoveryData,
-    peripheral_server_uuid: &Uuid,
-    central: &dyn BleCentral,
-) {
-    send_end(
-        device_info.device_address.clone(),
-        peripheral_server_uuid,
-        central,
-    )
-    .await;
-    if let Err(err) = central.disconnect(device_info.device_address.clone()).await {
-        tracing::warn!("failed to disconnect BLE central: {err}");
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn fill_proof_claims_and_credentials(
     device_response: DeviceResponse,
     proof: &Proof,
     session_transcript: SessionTranscript,
-    credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    credential_formatter_provider: &dyn CredentialFormatterProvider,
+    presentation_formatter_provider: &dyn PresentationFormatterProvider,
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     credential_repository: Arc<dyn CredentialRepository>,
-    did_repository: Arc<dyn DidRepository>,
-    identifier_repository: Arc<dyn IdentifierRepository>,
-    proof_repository: Arc<dyn ProofRepository>,
+    proof_repository: &dyn ProofRepository,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    identifier_creator: Arc<dyn IdentifierCreator>,
 ) -> Result<(), anyhow::Error> {
     let proof_schema = proof.schema.as_ref().ok_or(ServiceError::MappingError(
         "proof_schema is None".to_string(),
@@ -433,25 +439,24 @@ async fn fill_proof_claims_and_credentials(
 
     let encoded = encode_cbor_base64(&device_response)?;
 
-    let (holder_did, proved_claims) = super::verify_proof::validate_proof(
+    let (_holder_identifier, proved_claims) = super::verify_proof::validate_proof(
         proof_schema,
         &encoded,
         session_transcript,
-        &*credential_formatter_provider,
-        key_algorithm_provider,
+        credential_formatter_provider,
+        presentation_formatter_provider,
+        &key_algorithm_provider,
         did_method_provider.clone(),
+        certificate_validator.clone(),
     )
     .await?;
 
     super::verify_proof::accept_proof(
         proof.clone(),
         proved_claims,
-        holder_did,
-        &*did_repository,
-        &*identifier_repository,
-        &*did_method_provider,
         &*credential_repository,
-        &*proof_repository,
+        proof_repository,
+        identifier_creator,
     )
     .await?;
 
@@ -461,7 +466,7 @@ async fn fill_proof_claims_and_credentials(
 }
 
 async fn connect_to_server(
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
     service_uuid: String,
 ) -> anyhow::Result<(PeripheralDiscoveryData, usize)> {
     central.start_scan(Some(vec![service_uuid.clone()])).await?;
@@ -506,7 +511,7 @@ async fn connect_to_server(
 }
 
 async fn send_session_establishment(
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
     device: &PeripheralDiscoveryData,
     service_uuid: String,
     mtu_size: usize,
@@ -536,7 +541,7 @@ async fn send_session_establishment(
 }
 
 async fn read_response(
-    central: &dyn BleCentral,
+    central: &TrackingBleCentral,
     info: &PeripheralDiscoveryData,
     service_uuid: String,
 ) -> Result<SessionData, VerificationProtocolError> {
@@ -550,37 +555,40 @@ async fn read_response(
                 SERVER_2_CLIENT.into(),
             )
             .await
-            .context("failed to read request")
-            .map_err(VerificationProtocolError::Transport)?;
+            .error_while("waiting for Server2Client notification")?;
 
         for msg in data {
-            let chunk: Chunk = msg
-                .try_into()
-                .map_err(VerificationProtocolError::Transport)?;
+            let chunk: Chunk = msg.try_into().map_err(VerificationProtocolError::Other)?;
             match chunk {
                 Chunk::Next(payload) => result.extend(payload),
                 Chunk::Last(payload) => {
                     result.extend(payload);
 
-                    return ciborium::from_reader(result.as_slice())
-                        .context("deserialization error")
-                        .map_err(VerificationProtocolError::Other);
+                    return Ok(ciborium::from_reader(result.as_slice())?);
                 }
             }
         }
     }
 }
 
-fn proof_input_schema_to_doc_request(input: &ProofInputSchema) -> anyhow::Result<DocRequest> {
-    let proof_claim_schemas = input
-        .claim_schemas
-        .as_ref()
-        .context("claim_schemas is missing")?;
+fn proof_input_schema_to_doc_request(
+    input: &ProofInputSchema,
+) -> Result<DocRequest, VerificationProtocolError> {
+    let proof_claim_schemas =
+        input
+            .claim_schemas
+            .as_ref()
+            .ok_or(VerificationProtocolError::Failed(
+                "missing claim_schemas".to_string(),
+            ))?;
 
-    let credential_schema = input
-        .credential_schema
-        .as_ref()
-        .context("credential_schema is missing")?;
+    let credential_schema =
+        input
+            .credential_schema
+            .as_ref()
+            .ok_or(VerificationProtocolError::Failed(
+                "missing credential_schema".to_string(),
+            ))?;
 
     let mut name_spaces = HashMap::new();
     for proof_claim_schema in proof_claim_schemas {
@@ -593,9 +601,11 @@ fn proof_input_schema_to_doc_request(input: &ProofInputSchema) -> anyhow::Result
             credential_schema
                 .claim_schemas
                 .as_ref()
-                .context("claim_schemas missing in credential_schema")?
+                .ok_or(VerificationProtocolError::Failed(
+                    "missing claim_schemas".to_string(),
+                ))?
                 .iter()
-                .map(|claim_schema| &claim_schema.schema.key)
+                .map(|claim_schema| &claim_schema.key)
                 .filter(|k| k.starts_with(&format!("{key}{NESTED_CLAIM_MARKER}")))
                 .collect()
         };
@@ -603,8 +613,18 @@ fn proof_input_schema_to_doc_request(input: &ProofInputSchema) -> anyhow::Result
         for claim_key in claim_keys {
             let path: Vec<_> = claim_key.splitn(3, NESTED_CLAIM_MARKER).collect();
 
-            let namespace = path[0].to_string();
-            let element_identifier = path[1].to_string();
+            let namespace = path
+                .first()
+                .ok_or(VerificationProtocolError::Failed(
+                    "Invalid claim path".to_string(),
+                ))?
+                .to_string();
+            let element_identifier = path
+                .get(1)
+                .ok_or(VerificationProtocolError::Failed(
+                    "Invalid claim path".to_string(),
+                ))?
+                .to_string();
             name_spaces
                 .entry(namespace)
                 .or_insert_with(HashMap::new)

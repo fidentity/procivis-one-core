@@ -1,22 +1,24 @@
 use std::sync::Arc;
 
+use one_crypto::Signer;
 use one_crypto::signer::eddsa::EDDSASigner;
-use one_crypto::{Signer, SignerError};
 use shared_types::KeyId;
+use standardized_types::jwk::{PrivateJwk, PublicJwk};
 
 use super::secure_element::NativeKeyStorage;
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::{Key, PublicKeyJwk};
+use crate::error::ContextWithErrorCode;
+use crate::model::key::Key;
+use crate::provider::key_algorithm::eddsa::{
+    eddsa_public_key_as_jwk, eddsa_public_key_as_multibase,
+};
 use crate::provider::key_algorithm::key::{
     KeyHandle, KeyHandleError, SignatureKeyHandle, SignaturePrivateKeyHandle,
     SignaturePublicKeyHandle,
 };
 use crate::provider::key_storage::KeyStorage;
 use crate::provider::key_storage::error::KeyStorageError;
-use crate::provider::key_storage::model::{
-    KeySecurity, KeyStorageCapabilities, StorageGeneratedKey,
-};
-use crate::provider::key_utils::{eddsa_public_key_as_jwk, eddsa_public_key_as_multibase};
+use crate::provider::key_storage::model::{Features, KeyStorageCapabilities, StorageGeneratedKey};
 
 pub struct RemoteSecureElementKeyProvider {
     native_storage: Arc<dyn NativeKeyStorage>,
@@ -27,7 +29,6 @@ impl KeyStorage for RemoteSecureElementKeyProvider {
     fn get_capabilities(&self) -> KeyStorageCapabilities {
         KeyStorageCapabilities {
             algorithms: vec![KeyAlgorithmType::Eddsa],
-            security: vec![KeySecurity::RemoteSecureElement],
             features: vec![],
         }
     }
@@ -46,7 +47,18 @@ impl KeyStorage for RemoteSecureElementKeyProvider {
         self.native_storage.generate_key(key_id.to_string()).await
     }
 
-    fn key_handle(&self, key: &Key) -> Result<KeyHandle, SignerError> {
+    async fn import(
+        &self,
+        _key_id: KeyId,
+        _key_algorithm: KeyAlgorithmType,
+        _jwk: PrivateJwk,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Importable,
+        })
+    }
+
+    fn key_handle(&self, key: &Key) -> Result<KeyHandle, KeyStorageError> {
         let handle = RemoteSecureElementKeyHandle {
             key: key.clone(),
             native_storage: self.native_storage.clone(),
@@ -58,6 +70,36 @@ impl KeyStorage for RemoteSecureElementKeyProvider {
                 public: Arc::new(handle),
             },
         ))
+    }
+
+    async fn generate_attestation_key(
+        &self,
+        _key_id: KeyId,
+        _nonce: Option<String>,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn generate_attestation(
+        &self,
+        _key: &Key,
+        _nonce: Option<String>,
+    ) -> Result<Vec<String>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
+    }
+
+    async fn sign_with_attestation_key(
+        &self,
+        _key: &Key,
+        _data: &[u8],
+    ) -> Result<Vec<u8>, KeyStorageError> {
+        return Err(KeyStorageError::UnsupportedFeature {
+            feature: Features::Attestation,
+        });
     }
 }
 
@@ -74,7 +116,7 @@ struct RemoteSecureElementKeyHandle {
 }
 
 impl SignaturePublicKeyHandle for RemoteSecureElementKeyHandle {
-    fn as_jwk(&self) -> Result<PublicKeyJwk, KeyHandleError> {
+    fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
         eddsa_public_key_as_jwk(&self.key.public_key, "Ed25519", None)
     }
 
@@ -86,17 +128,21 @@ impl SignaturePublicKeyHandle for RemoteSecureElementKeyHandle {
         self.key.public_key.clone()
     }
 
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), SignerError> {
-        EDDSASigner {}.verify(message, signature, &self.key.public_key)
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
+        Ok(EDDSASigner.verify(message, signature, &self.key.public_key)?)
     }
 }
 
 #[async_trait::async_trait]
 impl SignaturePrivateKeyHandle for RemoteSecureElementKeyHandle {
-    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignerError> {
-        self.native_storage
-            .sign(&self.key.key_reference, message)
-            .await
+    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, KeyHandleError> {
+        let key_reference = self
+            .key
+            .key_reference
+            .as_ref()
+            .ok_or(KeyStorageError::MissingKeyReference)
+            .error_while("signing")?;
+        Ok(self.native_storage.sign(key_reference, message).await?)
     }
 }
 

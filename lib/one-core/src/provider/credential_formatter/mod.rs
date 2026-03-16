@@ -1,35 +1,26 @@
 use async_trait::async_trait;
 use error::FormatterError;
-use model::{
-    AuthenticationFn, CredentialPresentation, DetailCredential, ExtractPresentationCtx,
-    FormatPresentationCtx, Presentation, TokenVerifier,
-};
-use shared_types::{CredentialSchemaId, DidValue};
+use model::{AuthenticationFn, CredentialPresentation, DetailCredential, TokenVerifier};
+use shared_types::CredentialSchemaId;
 
-use crate::model::did::Did;
-use crate::model::revocation_list::StatusListType;
+use crate::config::core_config::{KeyAlgorithmType, RevocationType};
+use crate::model::credential::Credential;
+use crate::model::credential_schema::CredentialSchema;
+use crate::model::identifier::Identifier;
 use crate::provider::revocation::bitstring_status_list::model::StatusPurpose;
 use crate::service::credential_schema::dto::CreateCredentialSchemaRequestDTO;
 
-pub mod error;
-
-mod common;
+pub(crate) mod common;
 pub use common::nest_claims;
 
-use crate::config::core_config::KeyAlgorithmType;
-use crate::model::credential_schema::CredentialSchema;
-use crate::provider::credential_formatter::model::HolderBindingCtx;
-
-// Implementation
-pub mod json_ld;
+pub mod error;
+mod json_claims;
 pub mod json_ld_bbsplus;
 pub mod json_ld_classic;
-pub mod jwt;
 pub mod jwt_formatter;
 pub mod mapper;
 pub mod mdoc_formatter;
 pub mod model;
-pub mod physical_card;
 pub mod provider;
 pub mod sdjwt;
 pub mod sdjwt_formatter;
@@ -39,6 +30,14 @@ pub mod vcdm;
 
 #[cfg(test)]
 mod test;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataClaimSchema {
+    pub key: String,
+    pub data_type: String,
+    pub array: bool,
+    pub required: bool,
+}
 
 /// Format credentials for sharing and parse credentials which have been shared.
 #[allow(clippy::too_many_arguments)]
@@ -52,16 +51,16 @@ pub trait CredentialFormatter: Send + Sync {
         auth_fn: model::AuthenticationFn,
     ) -> Result<String, error::FormatterError>;
 
-    /// Formats BitStringStatusList credential
+    /// Formats Status List credential
     async fn format_status_list(
         &self,
         revocation_list_url: String,
-        issuer_did: &Did,
+        issuer_identifier: &Identifier,
         encoded_list: String,
         algorithm: KeyAlgorithmType,
         auth_fn: AuthenticationFn,
         status_purpose: StatusPurpose,
-        status_list_type: StatusListType,
+        status_list_type: RevocationType,
     ) -> Result<String, FormatterError>;
 
     /// Parses a received credential and verifies the signature.
@@ -70,7 +69,6 @@ pub trait CredentialFormatter: Send + Sync {
         credentials: &str,
         credential_schema: Option<&'a CredentialSchema>,
         verification: Box<dyn TokenVerifier>,
-        holder_binding_ctx: Option<HolderBindingCtx>,
     ) -> Result<DetailCredential, FormatterError>;
 
     /// Parses a received credential without verifying the signature.
@@ -85,41 +83,10 @@ pub trait CredentialFormatter: Send + Sync {
     /// For those formats capable of selective disclosure, call this with the keys of the claims
     /// to be shared. The token is processed and returns the correctly formatted presentation
     /// containing only the selected attributes.
-    async fn format_credential_presentation(
+    async fn prepare_selective_disclosure(
         &self,
         credential: CredentialPresentation,
-        holder_binding_ctx: Option<HolderBindingCtx>,
-        holder_binding_fn: Option<AuthenticationFn>,
     ) -> Result<String, FormatterError>;
-
-    /// Formats a presentation of credentials and signs it.
-    async fn format_presentation(
-        &self,
-        tokens: &[String],
-        holder_did: &DidValue,
-        algorithm: KeyAlgorithmType,
-        auth_fn: AuthenticationFn,
-        ctx: FormatPresentationCtx,
-    ) -> Result<String, FormatterError>;
-
-    /// Parses a presentation and verifies the signature.
-    async fn extract_presentation(
-        &self,
-        token: &str,
-        verification: Box<dyn TokenVerifier>,
-        ctx: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError>;
-
-    /// Parses a presentation without verifying the signature.
-    ///
-    /// This can be useful for checking the validity of a presentation (e.g.
-    /// expiration and revocation status) before committing to verifying a
-    /// signature.
-    async fn extract_presentation_unverified(
-        &self,
-        token: &str,
-        ctx: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError>;
 
     /// Returns the leeway time.
     ///
@@ -144,4 +111,21 @@ pub trait CredentialFormatter: Send + Sync {
     ) -> Result<String, FormatterError> {
         Ok(format!("{core_base_url}/ssi/schema/v1/{id}"))
     }
+
+    /// Returns definitions of metadata claims for the format
+    fn get_metadata_claims(&self) -> Vec<MetadataClaimSchema>;
+
+    /// Path to the subtree of user (non-metadata) claims within the formatted credentials
+    ///
+    /// Returns path segments
+    /// Returns empty if user claims do not appear nested in any specific metadata claim
+    fn user_claims_path(&self) -> Vec<String>;
+
+    /// Parse issued credential on holder side.
+    /// Reconstructs credential_schema, claims, issuer identifiers etc.
+    async fn parse_credential(
+        &self,
+        credential: &str,
+        verification: Box<dyn TokenVerifier>,
+    ) -> Result<Credential, FormatterError>;
 }

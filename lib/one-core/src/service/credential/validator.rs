@@ -4,38 +4,30 @@ use itertools::Itertools;
 use regex::Regex;
 use url::Url;
 
-use crate::common_mapper::NESTED_CLAIM_MARKER;
 use crate::config::ConfigValidationError;
-use crate::config::core_config::{CoreConfig, DatatypeType, IdentifierType, IssuanceProtocolType};
+use crate::config::core_config::{CoreConfig, DatatypeType, IdentifierType};
 use crate::config::validator::datatype::{DatatypeValidationError, validate_datatype_value};
-use crate::config::validator::exchange::{
-    validate_exchange_type, validate_protocol_did_compatibility,
-};
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaClaim};
+use crate::config::validator::protocol::validate_protocol_type;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::NESTED_CLAIM_MARKER;
+use crate::mapper::exchange::get_issuance_param_redirect_uri;
+use crate::model::claim_schema::ClaimSchema;
+use crate::model::credential_schema::CredentialSchema;
+use crate::proto::notification_scheduler::NotificationScheduler;
 use crate::provider::credential_formatter::model::FormatterCapabilities;
-use crate::provider::issuance_protocol::dto::IssuanceProtocolCapabilities;
-use crate::provider::issuance_protocol::openid4vci_draft13::model::OpenID4VCIParams;
-use crate::provider::revocation::model::CredentialRevocationState;
+use crate::provider::issuance_protocol::model::CommonParams;
 use crate::service::credential::dto::CredentialRequestClaimDTO;
 use crate::service::error::{BusinessLogicError, ServiceError, ValidationError};
 
 pub(crate) fn validate_create_request(
-    did_method: &str,
     exchange: &str,
-    exchange_capabilities: &IssuanceProtocolCapabilities,
     claims: &[CredentialRequestClaimDTO],
     schema: &CredentialSchema,
     formatter_capabilities: &FormatterCapabilities,
     config: &CoreConfig,
 ) -> Result<(), ServiceError> {
-    validate_exchange_type(exchange, &config.issuance_protocol)?;
-    validate_protocol_did_compatibility(
-        &exchange_capabilities.did_methods,
-        did_method,
-        &config.did,
-    )?;
+    validate_protocol_type(exchange, &config.issuance_protocol)?;
     validate_format_and_exchange_protocol_compatibility(exchange, formatter_capabilities, config)?;
-    validate_format_and_did_method_compatibility(did_method, formatter_capabilities, config)?;
 
     // ONE-843: cannot create credential based on deleted schema
     if schema.deleted_at.is_some() {
@@ -56,7 +48,7 @@ pub(crate) fn validate_create_request(
         let claim_schema_id = claim.claim_schema_id;
         let schema = claim_schemas
             .iter()
-            .find(|schema| schema.schema.id == claim_schema_id);
+            .find(|schema| schema.id == claim_schema_id);
 
         match schema {
             None => return Err(BusinessLogicError::MissingClaimSchema { claim_schema_id }.into()),
@@ -66,12 +58,12 @@ pub(crate) fn validate_create_request(
                 validate_object_value_non_empty(claim, schema)?;
                 validate_value_non_empty(claim)?;
 
-                validate_datatype_value(&claim.value, &schema.schema.data_type, &config.datatype)
+                validate_datatype_value(&claim.value, &schema.data_type, &config.datatype)
                     .map_err(|err| ValidationError::InvalidDatatype {
-                    value: claim.value.clone(),
-                    datatype: schema.schema.data_type.clone(),
-                    source: err,
-                })?;
+                        value: claim.value.clone(),
+                        datatype: schema.data_type.clone(),
+                        source: err,
+                    })?;
 
                 paths.push(claim.path.as_str());
             }
@@ -87,15 +79,21 @@ pub(crate) fn validate_create_request(
     claim_schemas
         .iter()
         .map(|claim_schema| {
-            let datatype = &claim_schema.schema.data_type;
-            let config = config.datatype.get_fields(datatype)?;
+            let datatype = &claim_schema.data_type;
+            let config = config
+                .datatype
+                .get_fields(datatype)
+                .error_while("getting datatype config")?;
 
-            if claim_schema.required && config.r#type != DatatypeType::Object {
+            if claim_schema.required
+                && !claim_schema.metadata // Clients are not expected to submit _metadata_ claims.
+                && config.r#type != DatatypeType::Object
+            {
                 claims
                     .iter()
-                    .find(|claim| claim.claim_schema_id == claim_schema.schema.id)
+                    .find(|claim| claim.claim_schema_id == claim_schema.id)
                     .ok_or(ValidationError::CredentialMissingClaim {
-                        claim_schema_id: claim_schema.schema.id,
+                        claim_schema_id: claim_schema.id,
                     })?;
             }
             Ok(())
@@ -110,28 +108,49 @@ pub(super) fn validate_redirect_uri(
     redirect_uri: Option<&str>,
     config: &CoreConfig,
 ) -> Result<(), ServiceError> {
-    let fields = config.issuance_protocol.get_fields(exchange)?;
-    match fields.r#type {
-        IssuanceProtocolType::OpenId4VciDraft13 | IssuanceProtocolType::OpenId4VciDraft13Swiyu => {
-            if let Some(redirect_uri) = redirect_uri {
-                let exchange_params: OpenID4VCIParams = config.issuance_protocol.get(exchange)?;
-                let params = exchange_params.redirect_uri;
+    let params = get_issuance_param_redirect_uri(config, exchange)
+        .error_while("getting redirect_uri config")?;
 
-                if !params.enabled {
-                    return Err(ValidationError::InvalidRedirectUri.into());
-                }
+    if let Some(redirect_uri) = redirect_uri {
+        if !params.enabled {
+            return Err(ValidationError::InvalidRedirectUri.into());
+        }
 
-                let url =
-                    Url::parse(redirect_uri).map_err(|_| ValidationError::InvalidRedirectUri)?;
+        let url = Url::parse(redirect_uri).map_err(|_| ValidationError::InvalidRedirectUri)?;
 
-                if !params.allowed_schemes.contains(&url.scheme().to_string()) {
-                    return Err(ValidationError::InvalidRedirectUri.into());
-                }
-            }
-
-            Ok(())
+        if !params.allowed_schemes.contains(&url.scheme().to_string()) {
+            return Err(ValidationError::InvalidRedirectUri.into());
         }
     }
+
+    Ok(())
+}
+
+pub(super) fn validate_webhook_url(
+    url: Option<&String>,
+    issuance_protocol: &str,
+    config: &CoreConfig,
+    notification_scheduler: &dyn NotificationScheduler,
+) -> Result<(), ServiceError> {
+    let Some(url) = url else {
+        return Ok(());
+    };
+
+    let params: CommonParams = config
+        .issuance_protocol
+        .get(issuance_protocol)
+        .error_while("getting protocol config")?;
+
+    let Some(task_id) = params.webhook_task else {
+        return Err(ValidationError::NotificationsNotAllowed {
+            protocol: issuance_protocol.to_string(),
+        }
+        .into());
+    };
+
+    Ok(notification_scheduler
+        .validate_url(url, &task_id)
+        .error_while("validating webhook URL")?)
 }
 
 struct PathNode {
@@ -211,14 +230,13 @@ impl PathNode {
                     .iter()
                     .map(|index| {
                         index.parse::<u64>().map_err(|e| {
-                            ServiceError::ConfigValidationError(
-                                ConfigValidationError::DatatypeValidation(
-                                    DatatypeValidationError::IndexParseFailure(e),
-                                ),
+                            ConfigValidationError::DatatypeValidation(
+                                DatatypeValidationError::IndexParseFailure(e),
                             )
                         })
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()
+                    .error_while("validating array path")?;
 
                 let continuous = indexes
                     .iter()
@@ -247,10 +265,7 @@ fn get_first_path_element(path: &str) -> (&str, &str) {
     }
 }
 
-fn validate_continuity(
-    paths: &[&str],
-    claim_schemas: &[CredentialSchemaClaim],
-) -> Result<(), ServiceError> {
+fn validate_continuity(paths: &[&str], claim_schemas: &[ClaimSchema]) -> Result<(), ServiceError> {
     let mut tree = PathNode {
         key: None,
         subnodes: vec![],
@@ -261,8 +276,8 @@ fn validate_continuity(
     let array_paths = claim_schemas
         .iter()
         .filter_map(|schema| {
-            if schema.schema.array {
-                Some(schema.schema.key.as_str())
+            if schema.array {
+                Some(schema.key.as_str())
             } else {
                 None
             }
@@ -285,9 +300,9 @@ fn validate_value_non_empty(claim: &CredentialRequestClaimDTO) -> Result<(), Ser
 
 fn validate_object_value_non_empty(
     claim: &CredentialRequestClaimDTO,
-    schema: &CredentialSchemaClaim,
+    schema: &ClaimSchema,
 ) -> Result<(), ServiceError> {
-    if claim.path.contains(NESTED_CLAIM_MARKER) && !schema.schema.array && claim.value.is_empty() {
+    if claim.path.contains(NESTED_CLAIM_MARKER) && !schema.array && claim.value.is_empty() {
         return Err(ValidationError::EmptyObjectNotAllowed.into());
     }
 
@@ -296,9 +311,9 @@ fn validate_object_value_non_empty(
 
 fn validate_array_value_non_empty(
     claim: &CredentialRequestClaimDTO,
-    schema: &CredentialSchemaClaim,
+    schema: &ClaimSchema,
 ) -> Result<(), ServiceError> {
-    if claim.value.is_empty() && schema.schema.array {
+    if claim.value.is_empty() && schema.array {
         return Err(ValidationError::EmptyArrayValueNotAllowed.into());
     }
 
@@ -347,15 +362,15 @@ fn get_nth_segment_of_key(key: &str, index: usize) -> Result<&str, ServiceError>
 
 fn validate_path(
     claim: &CredentialRequestClaimDTO,
-    schema: &CredentialSchemaClaim,
-    claim_schemas: &[CredentialSchemaClaim],
+    schema: &ClaimSchema,
+    claim_schemas: &[ClaimSchema],
 ) -> Result<(), ServiceError> {
     let related_claim_schemas = resolve_parent_claim_schemas(schema, claim_schemas)?;
 
     let segments = claim.path.split(NESTED_CLAIM_MARKER).collect::<Vec<&str>>();
     let expected_segments = related_claim_schemas
         .iter()
-        .map(|schema| if schema.schema.array { 2 } else { 1 })
+        .map(|schema| if schema.array { 2 } else { 1 })
         .sum::<usize>();
 
     if segments.len() != expected_segments {
@@ -368,22 +383,32 @@ fn validate_path(
     let mut schema_index = 0;
     let mut segment_index = 0;
     loop {
-        let related_schema = &related_claim_schemas[schema_index];
-        let key_segment = get_nth_segment_of_key(&related_schema.schema.key, schema_index)?;
-        if key_segment != segments[segment_index] {
+        let related_schema = related_claim_schemas.get(schema_index).ok_or_else(|| {
+            ServiceError::MappingError(format!("Could not find schema index: {schema_index}"))
+        })?;
+        let key_segment = get_nth_segment_of_key(&related_schema.key, schema_index)?;
+        let segment = segments.get(segment_index).ok_or_else(|| {
+            ServiceError::MappingError(format!("Could not find segment index: {segment_index}"))
+        })?;
+        if key_segment != *segment {
             return Err(ServiceError::MappingError(format!(
-                "expected: {key_segment}, found: {}",
-                segments[segment_index]
+                "expected: {key_segment}, found: {segment}"
             )));
         }
 
-        if related_schema.schema.array {
+        if related_schema.array {
             segment_index += 1;
-            segments[segment_index].parse::<u64>().map_err(|e| {
-                ServiceError::ConfigValidationError(ConfigValidationError::DatatypeValidation(
-                    DatatypeValidationError::IndexParseFailure(e),
-                ))
+            let segment = segments.get(segment_index).ok_or_else(|| {
+                ServiceError::MappingError(format!("Could not find segment index: {segment_index}"))
             })?;
+            segment
+                .parse::<u64>()
+                .map_err(|e| {
+                    ConfigValidationError::DatatypeValidation(
+                        DatatypeValidationError::IndexParseFailure(e),
+                    )
+                })
+                .error_while("validating array path")?;
         }
 
         segment_index += 1;
@@ -398,24 +423,24 @@ fn validate_path(
 }
 
 fn adapt_required_state_based_on_claim_presence(
-    claim_schemas: &[CredentialSchemaClaim],
+    claim_schemas: &[ClaimSchema],
     claims: &[CredentialRequestClaimDTO],
     config: &CoreConfig,
-) -> Result<Vec<CredentialSchemaClaim>, ServiceError> {
+) -> Result<Vec<ClaimSchema>, ServiceError> {
     let claims_with_names = claims
         .iter()
         .map(|claim| {
             let matching_claim_schema = claim_schemas
                 .iter()
-                .find(|claim_schema| claim_schema.schema.id == claim.claim_schema_id)
+                .find(|claim_schema| claim_schema.id == claim.claim_schema_id)
                 .ok_or(ValidationError::CredentialSchemaMissingClaims)?;
-            Ok((claim, matching_claim_schema.schema.key.to_owned()))
+            Ok((claim, matching_claim_schema.key.to_owned()))
         })
         .collect::<Result<Vec<(&CredentialRequestClaimDTO, String)>, ValidationError>>()?;
 
     let mut result = claim_schemas.to_vec();
     claim_schemas.iter().try_for_each(|claim_schema| {
-        let prefix = format!("{}/", claim_schema.schema.key);
+        let prefix = format!("{}/", claim_schema.key);
 
         let is_parent_schema_of_provided_claim = claims_with_names
             .iter()
@@ -423,7 +448,8 @@ fn adapt_required_state_based_on_claim_presence(
 
         let is_object = config
             .datatype
-            .get_fields(&claim_schema.schema.data_type)?
+            .get_fields(&claim_schema.data_type)
+            .error_while("getting datatype config")?
             .r#type
             == DatatypeType::Object;
 
@@ -432,7 +458,7 @@ fn adapt_required_state_based_on_claim_presence(
 
         if should_make_all_child_claims_non_required {
             result.iter_mut().for_each(|result_schema| {
-                if result_schema.schema.key.starts_with(&prefix) {
+                if result_schema.key.starts_with(&prefix) {
                     result_schema.required = false;
                 }
             });
@@ -449,7 +475,10 @@ fn validate_format_and_exchange_protocol_compatibility(
     formatter_capabilities: &FormatterCapabilities,
     config: &CoreConfig,
 ) -> Result<(), ServiceError> {
-    let exchange_protocol = config.issuance_protocol.get_fields(exchange)?;
+    let exchange_protocol = config
+        .issuance_protocol
+        .get_fields(exchange)
+        .error_while("getting protocol config")?;
 
     if !formatter_capabilities
         .issuance_exchange_protocols
@@ -461,12 +490,16 @@ fn validate_format_and_exchange_protocol_compatibility(
     Ok(())
 }
 
-fn validate_format_and_did_method_compatibility(
+pub(crate) fn validate_format_and_did_method_compatibility(
     did_method: &str,
     formatter_capabilities: &FormatterCapabilities,
     config: &CoreConfig,
 ) -> Result<(), ServiceError> {
-    let did_method_type = config.did.get_fields(did_method)?.r#type;
+    let did_method_type = config
+        .did
+        .get_fields(did_method)
+        .error_while("getting did method config")?
+        .r#type;
 
     if !formatter_capabilities
         .issuance_did_methods
@@ -486,14 +519,10 @@ fn validate_format_and_did_method_compatibility(
 }
 
 fn resolve_parent_claim_schemas<'a>(
-    schema: &'a CredentialSchemaClaim,
-    claim_schemas: &'a [CredentialSchemaClaim],
-) -> Result<Vec<&'a CredentialSchemaClaim>, ServiceError> {
-    let splits = schema
-        .schema
-        .key
-        .split(NESTED_CLAIM_MARKER)
-        .collect::<Vec<&str>>();
+    schema: &'a ClaimSchema,
+    claim_schemas: &'a [ClaimSchema],
+) -> Result<Vec<&'a ClaimSchema>, ServiceError> {
+    let splits = schema.key.split(NESTED_CLAIM_MARKER).collect::<Vec<&str>>();
 
     let mut result = vec![];
 
@@ -505,10 +534,10 @@ fn resolve_parent_claim_schemas<'a>(
         result.push(
             claim_schemas
                 .iter()
-                .find(|schema| schema.schema.key == current_str)
+                .find(|schema| schema.key == current_str)
                 .ok_or(ServiceError::BusinessLogic(
                     BusinessLogicError::MissingParentClaimSchema {
-                        claim_schema_id: schema.schema.id,
+                        claim_schema_id: schema.id,
                     },
                 ))?,
         );
@@ -517,19 +546,4 @@ fn resolve_parent_claim_schemas<'a>(
     }
 
     Ok(result)
-}
-
-pub(super) fn verify_suspension_support(
-    credential_schema: &CredentialSchema,
-    revocation_state: &CredentialRevocationState,
-) -> Result<(), ServiceError> {
-    if !credential_schema.allow_suspension
-        && matches!(
-            revocation_state,
-            CredentialRevocationState::Suspended { .. }
-        )
-    {
-        return Err(BusinessLogicError::SuspensionNotAvailableForSelectedRevocationMethod.into());
-    }
-    Ok(())
 }

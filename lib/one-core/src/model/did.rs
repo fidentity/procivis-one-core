@@ -9,7 +9,6 @@ use super::list_filter::{ListFilterValue, StringMatch};
 use super::list_query::ListQuery;
 use super::organisation::{Organisation, OrganisationRelations};
 use crate::model::key::KeyRelations;
-use crate::service::error::{ServiceError, ValidationError};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -39,6 +38,7 @@ pub enum KeyRole {
 pub struct RelatedKey {
     pub role: KeyRole,
     pub key: Key,
+    pub reference: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,35 +63,9 @@ impl Did {
         self.did_type.is_remote()
     }
 
-    pub fn find_key(&self, key_id: &KeyId, role: KeyRole) -> Result<Option<&Key>, ServiceError> {
-        let mut same_id_keys = self
-            .keys
-            .as_ref()
-            .ok_or_else(|| ServiceError::MappingError("keys is None".to_string()))?
-            .iter()
-            .filter(|entry| &entry.key.id == key_id)
-            .peekable();
-
-        if same_id_keys.peek().is_none() {
-            return Ok(None);
-        }
-
-        Ok(Some(
-            &same_id_keys
-                .find(|entry| entry.role == role)
-                .ok_or_else(|| ValidationError::InvalidKey("key has wrong role".into()))?
-                .key,
-        ))
-    }
-
-    pub fn find_first_key_by_role(&self, role: KeyRole) -> Result<Option<&Key>, ServiceError> {
-        Ok(self
-            .keys
-            .as_ref()
-            .ok_or_else(|| ServiceError::MappingError("keys is None".to_string()))?
-            .iter()
-            .find(|entry| entry.role == role)
-            .map(|entry| &entry.key))
+    /// constructs full verification method identifier for the given key
+    pub fn verification_method_id(&self, key: &RelatedKey) -> String {
+        format!("{}#{}", self.did, key.reference)
     }
 }
 

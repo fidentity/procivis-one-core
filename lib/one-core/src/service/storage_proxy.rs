@@ -1,24 +1,30 @@
 use std::sync::Arc;
 
 use anyhow::Context;
-use shared_types::{DidId, DidValue, OrganisationId};
+use futures::future::join_all;
+use shared_types::{CredentialId, InteractionId, OrganisationId};
 
-use crate::common_mapper::{DidRole, get_or_create_did_and_identifier};
+use crate::model::certificate::CertificateRelations;
 use crate::model::claim::ClaimRelations;
-use crate::model::credential::{Credential, CredentialRelations, CredentialRole};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, CredentialSchemaType,
+use crate::model::claim_schema::ClaimSchemaRelations;
+use crate::model::credential::{
+    Credential, CredentialFilterValue, CredentialRelations, CredentialRole, CredentialStateEnum,
+    GetCredentialQuery,
 };
-use crate::model::did::Did;
-use crate::model::identifier::{Identifier, IdentifierRelations};
-use crate::model::interaction::{Interaction, InteractionId, UpdateInteractionRequest};
-use crate::model::organisation::Organisation;
-use crate::provider::did_method::provider::DidMethodProvider;
+use crate::model::credential_schema::{
+    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaQuery,
+};
+use crate::model::identifier::IdentifierRelations;
+use crate::model::interaction::{Interaction, InteractionRelations, UpdateInteractionRequest};
+use crate::model::list_filter::{ListFilterCondition, ListFilterValue, StringMatch};
+use crate::model::list_query::ListPagination;
+use crate::model::organisation::OrganisationRelations;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
-use crate::repository::did_repository::DidRepository;
-use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
+use crate::service::credential_schema::dto::{
+    CredentialSchemaFilterValue, CredentialSchemaListIncludeEntityTypeEnum,
+};
 
 /// Interface to be implemented in order to use an exchange protocol.
 ///
@@ -31,49 +37,47 @@ pub(crate) trait StorageProxy: Send + Sync {
     /// Store an interaction with a chosen storage layer.
     async fn create_interaction(&self, interaction: Interaction) -> anyhow::Result<InteractionId>;
 
+    async fn create_credential(&self, credential: Credential) -> anyhow::Result<CredentialId>;
+
     /// Store an interaction with a chosen storage layer.
-    async fn update_interaction(&self, request: UpdateInteractionRequest) -> anyhow::Result<()>;
+    async fn update_interaction(
+        &self,
+        id: InteractionId,
+        request: UpdateInteractionRequest,
+    ) -> anyhow::Result<()>;
 
     /// Get a credential schema from a chosen storage layer.
     async fn get_schema(
         &self,
         schema_id: &str,
-        schema_type: &str,
         organisation_id: OrganisationId,
     ) -> anyhow::Result<Option<CredentialSchema>>;
 
-    /// Get credentials from a specified schema ID, from a chosen storage layer.
-    async fn get_credentials_by_credential_schema_id(
+    /// Get holder credentials with a specified schema ID, usable for presentation.
+    async fn get_presentation_credentials_by_schema_id(
         &self,
-        schema_id: &str,
+        schema_id: String,
         organisation_id: OrganisationId,
     ) -> anyhow::Result<Vec<Credential>>;
 
-    /// Obtain a DID by its address, from a chosen storage layer.
-    async fn get_did_by_value(
+    async fn get_credential_by_interaction_id(
         &self,
-        value: &DidValue,
+        interaction_id: &InteractionId,
+    ) -> anyhow::Result<Credential>;
+
+    /// Get a credential schema from the storage layer matching any of the specified schema_ids.
+    async fn find_schema_by_schema_ids(
+        &self,
+        schema_ids: &[String],
         organisation_id: OrganisationId,
-    ) -> anyhow::Result<Option<Did>>;
-
-    async fn get_identifier_for_did(&self, did_id: &DidId) -> anyhow::Result<Identifier>;
-
-    async fn get_or_create_did_and_identifier(
-        &self,
-        organisation: &Option<Organisation>,
-        did_value: &DidValue,
-        did_role: DidRole,
-    ) -> anyhow::Result<(Did, Identifier)>;
+    ) -> anyhow::Result<Option<CredentialSchema>>;
 }
 pub(crate) type StorageAccess = dyn StorageProxy;
 
 pub(crate) struct StorageProxyImpl {
-    pub interactions: Arc<dyn InteractionRepository>,
-    pub credential_schemas: Arc<dyn CredentialSchemaRepository>,
-    pub credentials: Arc<dyn CredentialRepository>,
-    pub dids: Arc<dyn DidRepository>,
-    pub identifiers: Arc<dyn IdentifierRepository>,
-    pub did_method_provider: Arc<dyn DidMethodProvider>,
+    interactions: Arc<dyn InteractionRepository>,
+    credential_schemas: Arc<dyn CredentialSchemaRepository>,
+    credentials: Arc<dyn CredentialRepository>,
 }
 
 impl StorageProxyImpl {
@@ -81,17 +85,11 @@ impl StorageProxyImpl {
         interactions: Arc<dyn InteractionRepository>,
         credential_schemas: Arc<dyn CredentialSchemaRepository>,
         credentials: Arc<dyn CredentialRepository>,
-        dids: Arc<dyn DidRepository>,
-        identifiers: Arc<dyn IdentifierRepository>,
-        did_method_provider: Arc<dyn DidMethodProvider>,
     ) -> Self {
         Self {
             interactions,
             credential_schemas,
             credentials,
-            dids,
-            identifiers,
-            did_method_provider,
         }
     }
 }
@@ -105,9 +103,13 @@ impl StorageProxy for StorageProxyImpl {
             .context("Create interaction error")
     }
 
-    async fn update_interaction(&self, request: UpdateInteractionRequest) -> anyhow::Result<()> {
+    async fn update_interaction(
+        &self,
+        id: InteractionId,
+        request: UpdateInteractionRequest,
+    ) -> anyhow::Result<()> {
         self.interactions
-            .update_interaction(request)
+            .update_interaction(id, request)
             .await
             .context("failed to update interaction")
     }
@@ -115,13 +117,11 @@ impl StorageProxy for StorageProxyImpl {
     async fn get_schema(
         &self,
         schema_id: &str,
-        schema_type: &str,
         organisation_id: OrganisationId,
     ) -> anyhow::Result<Option<CredentialSchema>> {
         self.credential_schemas
             .get_by_schema_id_and_organisation(
                 schema_id,
-                CredentialSchemaType::from(schema_type.to_string()),
                 organisation_id,
                 &CredentialSchemaRelations {
                     claim_schemas: Some(Default::default()),
@@ -132,23 +132,120 @@ impl StorageProxy for StorageProxyImpl {
             .context("Error while fetching credential schema")
     }
 
-    async fn get_credentials_by_credential_schema_id(
+    async fn find_schema_by_schema_ids(
         &self,
-        schema_id: &str,
+        schema_ids: &[String],
+        organisation_id: OrganisationId,
+    ) -> anyhow::Result<Option<CredentialSchema>> {
+        let schema_ids_filter_cond = schema_ids
+            .iter()
+            .map(|id| CredentialSchemaFilterValue::SchemaId(StringMatch::equals(id)))
+            .fold(ListFilterCondition::default(), |acc, cond| acc | cond);
+        let candidates = self
+            .credential_schemas
+            .get_credential_schema_list(
+                GetCredentialSchemaQuery {
+                    pagination: Some(ListPagination {
+                        page: 0,
+                        page_size: 1,
+                    }),
+                    sorting: None,
+                    filtering: Some(
+                        CredentialSchemaFilterValue::OrganisationId(organisation_id).condition()
+                            & schema_ids_filter_cond,
+                    ),
+                    include: Some(vec![
+                        CredentialSchemaListIncludeEntityTypeEnum::LayoutProperties,
+                    ]),
+                },
+                &CredentialSchemaRelations {
+                    claim_schemas: Some(ClaimSchemaRelations {}),
+                    organisation: Some(OrganisationRelations::default()),
+                },
+            )
+            .await
+            .context("Error while fetching credential schema")?;
+        Ok(candidates.values.into_iter().next())
+    }
+
+    async fn get_presentation_credentials_by_schema_id(
+        &self,
+        schema_id: String,
         organisation_id: OrganisationId,
     ) -> anyhow::Result<Vec<Credential>> {
+        let credentials = self
+            .credentials
+            .get_credential_list(GetCredentialQuery {
+                filtering: Some(
+                    CredentialFilterValue::SchemaId(schema_id).condition()
+                        & CredentialFilterValue::OrganisationId(organisation_id)
+                        & CredentialFilterValue::States(vec![
+                            CredentialStateEnum::Accepted,
+                            CredentialStateEnum::Suspended,
+                            CredentialStateEnum::Revoked,
+                        ])
+                        & CredentialFilterValue::Roles(vec![CredentialRole::Holder]),
+                ),
+                ..Default::default()
+            })
+            .await?
+            .values;
+
+        Ok(
+            join_all(credentials.into_iter().map(|credential| async move {
+                self.credentials
+                    .get_credential(
+                        &credential.id,
+                        &CredentialRelations {
+                            holder_identifier: Some(IdentifierRelations {
+                                ..Default::default()
+                            }),
+                            issuer_identifier: Some(IdentifierRelations {
+                                did: Some(Default::default()),
+                                ..Default::default()
+                            }),
+                            claims: Some(ClaimRelations {
+                                schema: Some(Default::default()),
+                            }),
+                            schema: Some(CredentialSchemaRelations {
+                                claim_schemas: Some(Default::default()),
+                                organisation: Some(Default::default()),
+                            }),
+                            issuer_certificate: Some(CertificateRelations {
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+            }))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect(),
+        )
+    }
+
+    async fn get_credential_by_interaction_id(
+        &self,
+        interaction_id: &InteractionId,
+    ) -> anyhow::Result<Credential> {
         Ok(self
             .credentials
-            .get_credentials_by_credential_schema_id(
-                schema_id.to_owned(),
+            .get_credentials_by_interaction_id(
+                interaction_id,
                 &CredentialRelations {
                     holder_identifier: Some(IdentifierRelations {
                         ..Default::default()
                     }),
                     issuer_identifier: Some(IdentifierRelations {
                         did: Some(Default::default()),
+                        certificates: Some(Default::default()),
                         ..Default::default()
                     }),
+                    issuer_certificate: Some(Default::default()),
                     claims: Some(ClaimRelations {
                         schema: Some(Default::default()),
                     }),
@@ -156,61 +253,23 @@ impl StorageProxy for StorageProxyImpl {
                         claim_schemas: Some(Default::default()),
                         organisation: Some(Default::default()),
                     }),
+                    interaction: Some(InteractionRelations {
+                        organisation: Some(Default::default()),
+                    }),
                     ..Default::default()
                 },
             )
             .await
-            .context("Error while fetching credential by credential schema id")?
+            .context("Error while fetching credential by interaction id")?
             .into_iter()
-            .filter(|cred| cred.deleted_at.is_none())
-            .filter(|cred| cred.role == CredentialRole::Holder)
-            .filter(|cred| {
-                cred.schema.as_ref().is_some_and(|schema| {
-                    schema
-                        .organisation
-                        .as_ref()
-                        .is_some_and(|o| o.id == organisation_id)
-                })
-            })
-            .collect::<Vec<_>>())
+            .next()
+            .context("No credential by interaction id")?)
     }
 
-    async fn get_did_by_value(
-        &self,
-        value: &DidValue,
-        organisation_id: OrganisationId,
-    ) -> anyhow::Result<Option<Did>> {
-        self.dids
-            .get_did_by_value(value, Some(Some(organisation_id)), &Default::default())
+    async fn create_credential(&self, credential: Credential) -> anyhow::Result<CredentialId> {
+        self.credentials
+            .create_credential(credential)
             .await
-            .context("Could not fetch did by value")
-    }
-
-    async fn get_identifier_for_did(&self, did_id: &DidId) -> anyhow::Result<Identifier> {
-        self.identifiers
-            .get_from_did_id(*did_id, &Default::default())
-            .await
-            .context("Could not fetch identifier by didId")
-            .and_then(|identifier| {
-                identifier.ok_or(anyhow::anyhow!("Could not find identifier by didId"))
-            })
-    }
-
-    async fn get_or_create_did_and_identifier(
-        &self,
-        organisation: &Option<Organisation>,
-        did_value: &DidValue,
-        did_role: DidRole,
-    ) -> anyhow::Result<(Did, Identifier)> {
-        get_or_create_did_and_identifier(
-            &*self.did_method_provider,
-            &*self.dids,
-            &*self.identifiers,
-            organisation,
-            did_value,
-            did_role,
-        )
-        .await
-        .context("get or create did and identifier")
+            .context("Create credential error")
     }
 }

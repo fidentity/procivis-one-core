@@ -3,16 +3,18 @@ use std::sync::Arc;
 
 use assert2::let_assert;
 use one_crypto::hasher::sha256::SHA256;
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::error::ContextWithErrorCode;
 use crate::model::key::Key;
-use crate::provider::credential_formatter::json_ld::json_ld_processor_options;
+use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::base_proof::create_base_proof;
 use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::test_data::{
     document_loader, vc_permanent_resident_card,
 };
 use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::{
-    add_derived_proof, create_base_proof, verify_base_proof, verify_derived_proof,
+    add_derived_proof, verify_base_proof, verify_derived_proof,
 };
 use crate::provider::credential_formatter::model::{
     MockTokenVerifier, SignatureProvider, TokenVerifier,
@@ -22,6 +24,7 @@ use crate::provider::key_algorithm::KeyAlgorithm;
 use crate::provider::key_algorithm::bbs::BBS;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_storage::provider::SignatureProviderImpl;
+use crate::util::rdf_canonization::json_ld_processor_options;
 
 #[tokio::test]
 async fn test_create_and_verify_base_and_derived_proof() {
@@ -36,7 +39,7 @@ async fn test_create_and_verify_base_and_derived_proof() {
     // create base proof
     let mut base_proof = create_base_proof(
         &vcdm,
-        mandatory_pointers,
+        mandatory_pointers.clone(),
         verification_method(),
         loader,
         &hasher,
@@ -48,7 +51,7 @@ async fn test_create_and_verify_base_and_derived_proof() {
     base_proof.context = Some(vcdm.context.clone());
 
     // verify base proof
-    verify_base_proof(
+    let proof_components = verify_base_proof(
         &vcdm,
         base_proof.clone(),
         loader,
@@ -58,6 +61,8 @@ async fn test_create_and_verify_base_and_derived_proof() {
     )
     .await
     .unwrap();
+
+    assert_eq!(proof_components.mandatory_pointers, mandatory_pointers);
 
     // create derived proof
     let selective_pointers = [
@@ -86,6 +91,7 @@ async fn test_create_and_verify_base_and_derived_proof() {
         .map(String::as_str)
         .chain(
             credential_subject.claims["permanentResidentCard"]
+                .value
                 .as_object()
                 .unwrap()
                 .keys()
@@ -132,7 +138,7 @@ fn auth_fn() -> impl SignatureProvider {
             last_modified: OffsetDateTime::now_utc(),
             public_key,
             name: "test".to_string(),
-            key_reference: vec![],
+            key_reference: None,
             storage_type: "test".to_string(),
             key_type: "test".to_string(),
             organisation: None,
@@ -149,7 +155,11 @@ fn verifier() -> impl TokenVerifier {
 
     verifier
         .expect_verify()
-        .returning(move |_, _, _, token, signature| key_handle.verify(token, signature));
+        .returning(move |_, _, token, signature| {
+            Ok(key_handle
+                .verify(token, signature)
+                .error_while("verifying signature")?)
+        });
 
     verifier
 }

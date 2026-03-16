@@ -14,7 +14,7 @@ use one_core::model::proof_schema::{
     ProofInputSchemaRelations, ProofSchema, ProofSchemaClaimRelations, ProofSchemaRelations,
 };
 use one_core::repository::proof_repository::ProofRepository;
-use shared_types::ProofId;
+use shared_types::{BlobId, ProofId};
 use sql_data_provider::test_utilities::get_dummy_date;
 use uuid::Uuid;
 
@@ -27,17 +27,47 @@ impl ProofsDB {
         Self { repository }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         id: Option<ProofId>,
         verifier_identifier: &Identifier,
-        holder_identifier: Option<&Identifier>,
         proof_schema: Option<&ProofSchema>,
         state: ProofStateEnum,
         exchange: &str,
         interaction: Option<&Interaction>,
         verifier_key: Key,
+        proof_blob_id: Option<BlobId>,
+        engagement: Option<String>,
+    ) -> Proof {
+        self.create_with_profile(
+            id,
+            verifier_identifier,
+            proof_schema,
+            state,
+            exchange,
+            interaction,
+            verifier_key,
+            None,
+            proof_blob_id,
+            engagement,
+        )
+        .await
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub async fn create_with_profile(
+        &self,
+        id: Option<ProofId>,
+        verifier_identifier: &Identifier,
+        proof_schema: Option<&ProofSchema>,
+        state: ProofStateEnum,
+        exchange: &str,
+        interaction: Option<&Interaction>,
+        verifier_key: Key,
+        profile: Option<String>,
+        proof_blob_id: Option<BlobId>,
+        engagement: Option<String>,
     ) -> Proof {
         let requested_date = match state {
             ProofStateEnum::Pending
@@ -63,8 +93,7 @@ impl ProofsDB {
             id: id.unwrap_or_else(|| Uuid::new_v4().into()),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
-            issuance_date: get_dummy_date(),
-            exchange: exchange.to_owned(),
+            protocol: exchange.to_owned(),
             transport: "HTTP".to_string(),
             redirect_uri: None,
             state,
@@ -73,21 +102,31 @@ impl ProofsDB {
             completed_date,
             claims: Some(vec![ProofClaim {
                 claim: Claim {
-                    id: Default::default(),
+                    id: Uuid::default().into(),
                     credential_id: Uuid::default().into(),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
-                    value: "test".to_string(),
+                    value: Some("test".to_string()),
                     path: "test".to_string(),
+                    selectively_disclosable: false,
                     schema: None,
                 },
                 credential: None,
             }]),
             schema: proof_schema.cloned(),
             verifier_identifier: Some(verifier_identifier.to_owned()),
-            holder_identifier: holder_identifier.cloned(),
             verifier_key: Some(verifier_key),
+            verifier_certificate: verifier_identifier
+                .certificates
+                .iter()
+                .flat_map(|v| v.first())
+                .next()
+                .cloned(),
             interaction: interaction.cloned(),
+            profile,
+            proof_blob_id,
+            engagement,
+            webhook_url: None,
         };
 
         let proof_id = self.repository.create_proof(proof.clone()).await.unwrap();
@@ -121,13 +160,11 @@ impl ProofsDB {
                         did: Some(Default::default()),
                         ..Default::default()
                     }),
-                    holder_identifier: Some(IdentifierRelations {
-                        did: Some(Default::default()),
-                        ..Default::default()
-                    }),
                     interaction: Some(Default::default()),
                     verifier_key: Some(KeyRelations::default()),
+                    ..Default::default()
                 },
+                None,
             )
             .await
             .unwrap()

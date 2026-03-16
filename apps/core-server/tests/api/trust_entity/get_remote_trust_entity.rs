@@ -1,4 +1,5 @@
 use serde_json::json;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 use wiremock::http::Method;
 use wiremock::matchers::{method, path};
@@ -73,6 +74,5 @@ async fn test_get_remote_trust_entity_success() {
     assert_eq!(body["role"], "ISSUER");
     assert_eq!(body["state"], "ACTIVE");
     assert_eq!(body["termsUrl"], "Terms URL");
-    body["did"]["did"].assert_eq(&did.did);
     body["organisationId"].assert_eq(&org_id);
 }

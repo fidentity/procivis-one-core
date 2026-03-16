@@ -3,42 +3,37 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use autometrics::autometrics;
-use one_core::model::claim::{Claim, ClaimId, ClaimRelations};
+use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::credential::{
-    Clearable, Credential, CredentialRelations, GetCredentialList, GetCredentialQuery,
-    UpdateCredentialRequest,
+    Credential, CredentialListIncludeEntityTypeEnum, CredentialRelations, GetCredentialList,
+    GetCredentialQuery, UpdateCredentialRequest,
 };
 use one_core::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
 use one_core::model::identifier::{Identifier, IdentifierRelations};
-use one_core::model::interaction::InteractionId;
 use one_core::repository::claim_repository::ClaimRepository;
 use one_core::repository::credential_repository::CredentialRepository;
 use one_core::repository::credential_schema_repository::CredentialSchemaRepository;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::identifier_repository::IdentifierRepository;
-use one_core::service::credential::dto::CredentialListIncludeEntityTypeEnum;
 use one_dto_mapper::convert_inner;
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::sea_query::{Expr, IntoCondition};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, FromQueryResult, JoinType,
-    PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, RelationTrait, Select, Set, SqlErr,
-    Unchanged,
+    ActiveModelTrait, ColumnTrait, EntityTrait, FromQueryResult, JoinType, PaginatorTrait,
+    QueryFilter, QueryOrder, QuerySelect, RelationTrait, Select, Set, SqlErr, Unchanged,
 };
-use shared_types::{CredentialId, CredentialSchemaId, DidId, IdentifierId};
+use shared_types::{ClaimId, CredentialId, CredentialSchemaId, IdentifierId, InteractionId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::CredentialProvider;
+use super::entity_model::CredentialListEntityModel;
+use super::mapper::{credentials_to_repository, from_clearable, request_to_active_model};
 use crate::common::calculate_pages_count;
-use crate::credential::CredentialProvider;
-use crate::credential::entity_model::CredentialListEntityModel;
-use crate::credential::mapper::{credentials_to_repository, request_to_active_model};
-use crate::entity::{
-    claim, claim_schema, credential, credential_schema, credential_schema_claim_schema, did,
-    identifier,
-};
+use crate::entity::{claim, claim_schema, credential, credential_schema, identifier};
 use crate::list_query_generic::{SelectWithFilterJoin, SelectWithListQuery};
 use crate::mapper::to_update_data_layer_error;
+use crate::transaction_context::TransactionManagerImpl;
 
 async fn get_credential_schema(
     schema_id: &CredentialSchemaId,
@@ -62,7 +57,7 @@ async fn get_credential_schema(
 async fn get_claims(
     credential: &credential::Model,
     relations: &ClaimRelations,
-    db: &DatabaseConnection,
+    db: &TransactionManagerImpl,
     claim_repository: Arc<dyn ClaimRepository>,
 ) -> Result<Vec<Claim>, DataLayerError> {
     #[derive(FromQueryResult)]
@@ -77,16 +72,16 @@ async fn get_claims(
         .join(JoinType::InnerJoin, claim::Relation::ClaimSchema.def())
         .join(
             JoinType::InnerJoin,
-            claim_schema::Relation::CredentialSchemaClaimSchema.def(),
+            claim_schema::Relation::CredentialSchema.def(),
         )
         // sorting claims according to the order from credential_schema
-        .order_by_asc(credential_schema_claim_schema::Column::Order)
+        .order_by_asc(claim_schema::Column::Order)
         .into_model::<ClaimIdModel>()
         .all(db)
         .await
         .map_err(|e| DataLayerError::Db(e.into()))?
         .into_iter()
-        .map(|claim| Uuid::from_str(&claim.id))
+        .map(|claim| Uuid::from_str(&claim.id).map(ClaimId::from))
         .collect::<Result<Vec<_>, _>>()?;
 
     claim_repository.get_claim_list(ids, relations).await
@@ -136,38 +131,15 @@ impl CredentialProvider {
         let interaction = if let Some(interaction_relations) = &relations.interaction {
             match &credential.interaction_id {
                 None => None,
-                Some(interaction_id) => {
-                    let interaction_id = Uuid::from_str(interaction_id)?;
-                    Some(
-                        self.interaction_repository
-                            .get_interaction(&interaction_id, interaction_relations)
-                            .await?
-                            .ok_or(DataLayerError::MissingRequiredRelation {
-                                relation: "credential-interaction",
-                                id: interaction_id.to_string(),
-                            })?,
-                    )
-                }
-            }
-        } else {
-            None
-        };
-
-        let revocation_list = if let Some(revocation_list_relations) = &relations.revocation_list {
-            match &credential.revocation_list_id {
-                None => None,
-                Some(revocation_list_id) => {
-                    let revocation_list_id = Uuid::from_str(revocation_list_id)?;
-                    Some(
-                        self.revocation_list_repository
-                            .get_revocation_list(&revocation_list_id, revocation_list_relations)
-                            .await?
-                            .ok_or(DataLayerError::MissingRequiredRelation {
-                                relation: "credential-revocation_list",
-                                id: revocation_list_id.to_string(),
-                            })?,
-                    )
-                }
+                Some(interaction_id) => Some(
+                    self.interaction_repository
+                        .get_interaction(interaction_id, interaction_relations, None)
+                        .await?
+                        .ok_or(DataLayerError::MissingRequiredRelation {
+                            relation: "credential-interaction",
+                            id: interaction_id.to_string(),
+                        })?,
+                ),
             }
         } else {
             None
@@ -193,14 +165,34 @@ impl CredentialProvider {
             None
         };
 
+        let issuer_certificate = if let Some(certificate_relations) = &relations.issuer_certificate
+        {
+            match &credential.issuer_certificate_id {
+                None => None,
+                Some(certificate_id) => {
+                    let certificate = self
+                        .certificate_repository
+                        .get(*certificate_id, certificate_relations)
+                        .await?
+                        .ok_or(DataLayerError::MissingRequiredRelation {
+                            relation: "credential-certificate",
+                            id: certificate_id.to_string(),
+                        })?;
+                    Some(certificate)
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Credential {
             issuer_identifier,
             holder_identifier,
             claims,
             schema,
-            revocation_list,
             interaction,
             key,
+            issuer_certificate,
             ..credential.into()
         })
     }
@@ -220,6 +212,31 @@ impl CredentialProvider {
 
         Ok(result)
     }
+
+    async fn update_claims(
+        &self,
+        credential_id: CredentialId,
+        claims: Option<Vec<Claim>>,
+    ) -> Result<(), DataLayerError> {
+        if let Some(claims) = claims {
+            if claims
+                .iter()
+                .any(|claim| claim.credential_id != credential_id)
+            {
+                return Err(anyhow::anyhow!("Claim credential-id mismatch!").into());
+            }
+
+            self.claim_repository
+                .delete_claims_for_credential(credential_id)
+                .await?;
+
+            if !claims.is_empty() {
+                self.claim_repository.create_claim_list(claims).await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credential::Entity> {
@@ -235,7 +252,12 @@ fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credent
             credential::Column::Role,
             credential::Column::State,
             credential::Column::SuspendEndDate,
-            credential::Column::Exchange,
+            credential::Column::Protocol,
+            credential::Column::Profile,
+            credential::Column::CredentialBlobId,
+            credential::Column::WalletUnitAttestationBlobId,
+            credential::Column::WalletInstanceAttestationBlobId,
+            credential::Column::WebhookUrl,
         ])
         .join(
             sea_orm::JoinType::InnerJoin,
@@ -244,6 +266,10 @@ fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credent
         .column_as(
             credential_schema::Column::CreatedDate,
             "credential_schema_created_date",
+        )
+        .column_as(
+            credential_schema::Column::DeletedAt,
+            "credential_schema_deleted_at",
         )
         .column_as(
             credential_schema::Column::Format,
@@ -260,28 +286,36 @@ fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credent
             "credential_schema_revocation_method",
         )
         .column_as(
-            credential_schema::Column::WalletStorageType,
-            "credential_schema_wallet_storage_type",
-        )
-        .column_as(
-            credential_schema::Column::ImportedSourceUrl,
-            "credential_schema_imported_source_url",
+            credential_schema::Column::KeyStorageSecurity,
+            "credential_schema_key_storage_security",
         )
         .column_as(
             credential_schema::Column::SchemaId,
             "credential_schema_schema_id",
         )
         .column_as(
-            credential_schema::Column::SchemaType,
-            "credential_schema_schema_type",
+            credential_schema::Column::ImportedSourceUrl,
+            "credential_schema_imported_source_url",
         )
         .column_as(
             credential_schema::Column::AllowSuspension,
             "credential_schema_allow_suspension",
         )
         .column_as(
-            credential_schema::Column::ExternalSchema,
-            "credential_schema_external_schema",
+            credential_schema::Column::RequiresWalletInstanceAttestation,
+            "credential_schema_requires_wallet_instance_attestation",
+        )
+        .column_as(
+            credential_schema::Column::TransactionCodeType,
+            "credential_schema_transaction_code_type",
+        )
+        .column_as(
+            credential_schema::Column::TransactionCodeLength,
+            "credential_schema_transaction_code_length",
+        )
+        .column_as(
+            credential_schema::Column::TransactionCodeDescription,
+            "credential_schema_transaction_code_description",
         )
         .join(
             JoinType::LeftJoin,
@@ -300,37 +334,28 @@ fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credent
         .column_as(identifier::Column::Type, "issuer_identifier_type")
         .column_as(identifier::Column::IsRemote, "issuer_identifier_is_remote")
         .column_as(identifier::Column::State, "issuer_identifier_state")
-        .join(JoinType::LeftJoin, identifier::Relation::Did.def())
-        .column_as(did::Column::CreatedDate, "issuer_did_created_date")
-        .column_as(did::Column::Deactivated, "issuer_did_deactivated")
-        .column_as(did::Column::Did, "issuer_did_did")
-        .column_as(did::Column::Id, "issuer_did_id")
-        .column_as(did::Column::LastModified, "issuer_did_last_modified")
-        .column_as(did::Column::Method, "issuer_did_method")
-        .column_as(did::Column::Name, "issuer_did_name")
-        .column_as(did::Column::TypeField, "issuer_did_type_field")
         .filter(credential::Column::DeletedAt.is_null())
         // list query
         .with_filter_join(&query_params)
-        .with_list_query(&query_params)
+        .with_list_query(&query_params);
+
+    if query_params.sorting.is_some() || query_params.pagination.is_some() {
         // fallback ordering
-        .order_by_desc(credential::Column::CreatedDate)
-        .order_by_desc(credential::Column::Id);
-
-    if let Some(include) = query_params.include {
-        if include.contains(&CredentialListIncludeEntityTypeEnum::LayoutProperties) {
-            query = query.column_as(
-                credential_schema::Column::LayoutProperties,
-                "credential_schema_schema_layout_properties",
-            );
-        }
-
-        if include.contains(&CredentialListIncludeEntityTypeEnum::Credential) {
-            query = query.column(credential::Column::Credential);
-        }
+        query = query
+            .order_by_desc(credential::Column::CreatedDate)
+            .order_by_desc(credential::Column::Id);
     }
 
-    query.distinct()
+    if let Some(include) = query_params.include
+        && include.contains(&CredentialListIncludeEntityTypeEnum::LayoutProperties)
+    {
+        query = query.column_as(
+            credential_schema::Column::LayoutProperties,
+            "credential_schema_schema_layout_properties",
+        );
+    }
+
+    query
 }
 
 #[autometrics]
@@ -341,6 +366,8 @@ impl CredentialRepository for CredentialProvider {
             .issuer_identifier
             .as_ref()
             .map(|identifier| identifier.id);
+
+        let issuer_certificate_id = request.issuer_certificate.as_ref().map(|cert| cert.id);
 
         let holder_identifier_id = request
             .holder_identifier
@@ -361,11 +388,6 @@ impl CredentialRepository for CredentialProvider {
             .as_ref()
             .map(|interaction| interaction.id);
 
-        let revocation_list_id = request
-            .revocation_list
-            .as_ref()
-            .map(|revocation_list| revocation_list.id);
-
         let key_id = request.key.as_ref().map(|key| key.id);
 
         if claims.iter().any(|claim| claim.credential_id != request.id) {
@@ -376,10 +398,13 @@ impl CredentialRepository for CredentialProvider {
             &request,
             schema,
             issuer_identifier_id,
+            issuer_certificate_id,
             holder_identifier_id,
             interaction_id,
-            revocation_list_id,
             convert_inner(key_id),
+            request.credential_blob_id,
+            request.wallet_unit_attestation_blob_id,
+            request.wallet_instance_attestation_blob_id,
         )
         .insert(&self.db)
         .await
@@ -448,25 +473,6 @@ impl CredentialRepository for CredentialProvider {
         self.credentials_to_repository(credentials, relations).await
     }
 
-    async fn get_credentials_by_issuer_did_id(
-        &self,
-        issuer_did_id: &DidId,
-        relations: &CredentialRelations,
-    ) -> Result<Vec<Credential>, DataLayerError> {
-        let credentials = credential::Entity::find()
-            .join(
-                JoinType::LeftJoin,
-                credential::Relation::IssuerIdentifier.def(),
-            )
-            .filter(identifier::Column::DidId.eq(issuer_did_id))
-            .order_by_asc(credential::Column::CreatedDate)
-            .all(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        self.credentials_to_repository(credentials, relations).await
-    }
-
     async fn get_credential_list(
         &self,
         query_params: GetCredentialQuery,
@@ -510,14 +516,19 @@ impl CredentialRepository for CredentialProvider {
             Some(identifier_id) => Set(Some(identifier_id)),
         };
 
-        let credential = match request.credential {
+        let issuer_certificate_id = match request.issuer_certificate_id {
             None => Unchanged(Default::default()),
-            Some(token) => Set(token),
+            Some(certificate_id) => Set(Some(certificate_id)),
+        };
+
+        let credential_blob_id = match request.credential_blob_id {
+            None => Unchanged(Default::default()),
+            Some(blob_id) => Set(Some(blob_id)),
         };
 
         let interaction_id = match request.interaction {
             None => Unchanged(Default::default()),
-            Some(interaction_id) => Set(Some(interaction_id.to_string())),
+            Some(interaction_id) => Set(Some(interaction_id)),
         };
 
         let key_id = match request.key {
@@ -530,47 +541,48 @@ impl CredentialRepository for CredentialProvider {
             Some(redirect_uri) => Set(redirect_uri),
         };
 
-        let suspend_end_date = match request.suspend_end_date {
-            Clearable::ForceSet(date) => match date {
-                None => Set(None),
-                Some(suspend) => Set(Some(suspend)),
-            },
-            Clearable::DontTouch => Unchanged(Default::default()),
-        };
+        let suspend_end_date = from_clearable(request.suspend_end_date);
 
         let state = match request.state {
             None => NotSet,
             Some(state) => Set(state.into()),
         };
 
+        let issuance_date = match request.issuance_date {
+            None => Unchanged(Default::default()),
+            Some(issuance_date) => Set(issuance_date.into()),
+        };
+
+        let wallet_unit_attestation_blob_id = match request.wallet_unit_attestation_blob_id {
+            None => Unchanged(Default::default()),
+            Some(blob_id) => Set(Some(blob_id)),
+        };
+
+        let wallet_instance_attestation_blob_id = match request.wallet_instance_attestation_blob_id
+        {
+            None => Unchanged(Default::default()),
+            Some(blob_id) => Set(Some(blob_id)),
+        };
+
         let update_model = credential::ActiveModel {
             id: Unchanged(credential_id),
             last_modified: Set(OffsetDateTime::now_utc()),
+            issuance_date,
             holder_identifier_id,
             issuer_identifier_id,
-            credential,
+            issuer_certificate_id,
             interaction_id,
             key_id,
             redirect_uri,
             suspend_end_date,
             state,
+            credential_blob_id,
+            wallet_unit_attestation_blob_id,
+            wallet_instance_attestation_blob_id,
             ..Default::default()
         };
 
-        if let Some(claims) = request.claims {
-            if claims
-                .iter()
-                .any(|claim| claim.credential_id != credential_id)
-            {
-                return Err(anyhow::anyhow!("Claim credential-id mismatch!").into());
-            }
-
-            self.claim_repository
-                .delete_claims_for_credential(credential_id)
-                .await?;
-
-            self.claim_repository.create_claim_list(claims).await?;
-        }
+        self.update_claims(credential_id, request.claims).await?;
 
         update_model
             .update(&self.db)
@@ -598,32 +610,6 @@ impl CredentialRepository for CredentialProvider {
                     }),
             )
             .distinct()
-            .all(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        self.credentials_to_repository(credentials, relations).await
-    }
-
-    async fn get_credentials_by_credential_schema_id(
-        &self,
-        schema_id: String,
-        relations: &CredentialRelations,
-    ) -> Result<Vec<Credential>, DataLayerError> {
-        let credentials = credential::Entity::find()
-            .join(
-                JoinType::InnerJoin,
-                credential::Relation::CredentialSchema
-                    .def()
-                    .on_condition(move |_left, _right| {
-                        Expr::col((
-                            credential_schema::Entity,
-                            credential_schema::Column::SchemaId,
-                        ))
-                        .eq(&schema_id)
-                        .into_condition()
-                    }),
-            )
             .all(&self.db)
             .await
             .map_err(|e| DataLayerError::Db(e.into()))?;
@@ -668,13 +654,12 @@ impl CredentialRepository for CredentialProvider {
         credential::Entity::update_many()
             .filter(credential::Column::Id.is_in(request))
             .set(credential::ActiveModel {
-                credential: Set(vec![]),
+                credential_blob_id: Set(None),
                 ..Default::default()
             })
             .exec(&self.db)
             .await
             .map_err(|e| DataLayerError::Db(e.into()))?;
-
         Ok(())
     }
 }

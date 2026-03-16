@@ -11,20 +11,24 @@ use axum::http::{Request, Response};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Router, middleware};
+use indexmap::IndexMap;
 use one_core::OneCore;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{Span, info, info_span, warn};
+use tracing::Span;
+use utoipa::openapi::PathItem;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::ServerConfig;
+use crate::authentication::{Authentication, authentication};
 use crate::dto::response::ErrorResponse;
 use crate::endpoint::{
     cache, certificate, config, credential, credential_schema, did, did_resolver, history,
-    identifier, interaction, jsonld, key, misc, organisation, proof, proof_schema, ssi, task,
-    trust_anchor, trust_entity, vc_api,
+    holder_wallet_unit, identifier, interaction, jsonld, key, misc, organisation, proof,
+    proof_schema, signature, ssi, statistics, task, trust_anchor, trust_entity, vc_api,
+    wallet_provider,
 };
-use crate::middleware::get_http_request_context;
+use crate::middleware::{UserInfo, get_http_request_context};
 use crate::openapi::gen_openapi_documentation;
 
 pub(crate) struct InternalAppState {
@@ -34,6 +38,8 @@ pub(crate) struct InternalAppState {
 
 pub(crate) type AppState = Arc<InternalAppState>;
 
+#[expect(clippy::expect_used)]
+#[expect(clippy::unwrap_used)]
 pub async fn start_server(listener: TcpListener, config: ServerConfig, core: OneCore) {
     listener.set_nonblocking(true).unwrap();
 
@@ -44,9 +50,12 @@ pub async fn start_server(listener: TcpListener, config: ServerConfig, core: One
     });
 
     let addr = listener.local_addr().expect("Invalid TCP listener");
-    info!("Starting server at http://{addr}");
+    tracing::info!("Starting server at http://{addr}");
 
-    let router = router(state, config);
+    let authentication = authentication(&config)
+        .await
+        .expect("Failed to initialize authentication");
+    let router = router(state, config, authentication);
 
     axum::serve(
         tokio::net::TcpListener::from_std(listener)
@@ -57,21 +66,148 @@ pub async fn start_server(listener: TcpListener, config: ServerConfig, core: One
     .expect("Failed to start axum server");
 }
 
-fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
-    let mut openapi_documentation = if config.enable_open_api {
-        Some(gen_openapi_documentation(config.clone()))
-    } else {
-        None
-    };
-
-    if !config.enable_management_endpoints && !config.enable_external_endpoints {
-        warn!("Management APIs and External APIs disabled.");
-    }
+fn router(state: AppState, config: Arc<ServerConfig>, authentication: Authentication) -> Router {
+    let mut openapi_documentation = config.enable_open_api.then_some(gen_openapi_documentation(
+        config.clone(),
+        state.core.config.clone(),
+    ));
 
     let mut openapi_paths = openapi_documentation.as_mut().map(|d| &mut d.paths.paths);
 
-    let protected = if config.enable_management_endpoints {
+    if !config.enable_management_endpoints && !config.enable_external_endpoints {
+        tracing::warn!("Management APIs and External APIs disabled.");
+    }
+
+    let management_endpoints =
+        get_management_endpoints(&config, authentication, &mut openapi_paths);
+
+    let external_endpoints = get_external_endpoints(&config, &mut openapi_paths);
+
+    let metrics_endpoints = if config.enable_metrics {
+        Router::new().route("/metrics", get(misc::get_metrics))
+    } else {
+        if let Some(paths) = openapi_paths.as_mut() {
+            paths.shift_remove("/metrics");
+        };
         Router::new()
+    };
+
+    let server_info_endpoints = if config.enable_server_info {
+        Router::new().route("/health", get(misc::health_check))
+    } else {
+        if let Some(paths) = openapi_paths.as_mut() {
+            paths.shift_remove("/health");
+        };
+        Router::new()
+    };
+
+    let openapi_endpoints = if let Some(openapi_documentation) = openapi_documentation {
+        Router::new()
+            .route(
+                "/api-docs/openapi.yaml",
+                get(misc::get_openapi_yaml(&openapi_documentation)),
+            )
+            .merge(
+                SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi_documentation),
+            )
+    } else {
+        Router::new()
+    };
+
+    let vcapi_endpoints = if config.insecure_vc_api_endpoints_enabled {
+        Router::new()
+            .route(
+                "/vc-api/credentials/issue",
+                post(vc_api::controller::issue_credential),
+            )
+            .route(
+                "/vc-api/credentials/verify",
+                post(vc_api::controller::verify_credential),
+            )
+            .route(
+                "/vc-api/presentations/verify",
+                post(vc_api::controller::verify_presentation),
+            )
+            .route(
+                "/vc-api/identifiers/{identifier}",
+                get(vc_api::controller::resolve_identifier),
+            )
+    } else {
+        Router::new()
+    };
+
+    let hide_error_response_cause = config.hide_error_response_cause;
+
+    let mut router = management_endpoints
+        .merge(external_endpoints)
+        .merge(vcapi_endpoints)
+        .layer(middleware::from_fn(crate::middleware::sentry_layer))
+        .layer(middleware::from_fn(crate::middleware::metrics_counter))
+        .merge(openapi_endpoints)
+        .merge(server_info_endpoints)
+        .merge(metrics_endpoints)
+        .layer(CatchPanicLayer::custom(move |err| {
+            handle_panic(err, hide_error_response_cause)
+        }))
+        .layer(Extension(config))
+        .layer(middleware::from_fn(
+            crate::middleware::add_disable_cache_headers,
+        ))
+        .layer(middleware::from_fn(
+            crate::middleware::add_x_content_type_options_no_sniff_header,
+        ));
+
+    if tracing::enabled!(target: "core_server::middleware", tracing::Level::TRACE) {
+        router = router.layer(middleware::from_fn(
+            crate::middleware::log_request_and_response,
+        ));
+    }
+
+    router
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let context = get_http_request_context(request);
+                    let user_info = request.extensions().get::<UserInfo>();
+                    tracing::error_span!(
+                        "http_request",
+                        method = context.method,
+                        path = context.path,
+                        service = "one-core",
+                        requestId = context.request_id.as_ref(),
+                        sessionId = context.session_id, // Derived from x-session-id header,
+                        organisation = user_info.and_then(|s| s.organisation_id.clone()),
+                        user = user_info.and_then(|s| s.user_id.clone()),
+                        actor = user_info.and_then(|s| s.act.clone())
+                    )
+                })
+                .on_request(|request: &Request<_>, _span: &Span| {
+                    tracing::info!(
+                        "SERVICE CALL START {} {}",
+                        request.method(),
+                        request.uri().path()
+                    )
+                })
+                .on_failure(|_, _, _: &_| {}) // override default on_failure handler
+                .on_response(|response: &Response<_>, duration: Duration, _: &_| {
+                    tracing::info!(
+                        "SERVICE CALL END {} ({} ms)",
+                        response.status(),
+                        duration.as_millis()
+                    );
+                }),
+        )
+        .layer(middleware::from_fn(crate::middleware::user_init))
+        .with_state(state)
+}
+
+fn get_management_endpoints(
+    config: &ServerConfig,
+    authentication: Authentication,
+    openapi_paths: &mut Option<&mut IndexMap<String, PathItem>>,
+) -> Router<AppState> {
+    if config.enable_management_endpoints {
+        let mut router = Router::new()
             .route("/api/cache/v1", delete(cache::controller::prune_cache))
             .route("/api/config/v1", get(config::controller::get_config))
             .route(
@@ -103,7 +239,7 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
             )
             .route(
                 "/api/credential/v1/revocation-check",
-                post(credential::controller::revocation_check),
+                post(credential::controller::credential_revocation_check),
             )
             .route(
                 "/api/proof-request/v1/{id}/share",
@@ -140,19 +276,22 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 "/api/proof-schema/v1/import",
                 post(proof_schema::controller::import_proof_schema),
             )
-            .route(
-                "/api/history/v1",
-                get(history::controller::get_history_list),
-            )
+            .route("/api/history/v1", {
+                let mut routes = get(history::controller::get_history_list);
+                if config.enable_history_create_endpoint {
+                    routes = routes.post(history::controller::create_history);
+                } else if let Some(paths) = openapi_paths
+                    && let Some(path) = paths.get_mut("/api/history/v1")
+                {
+                    path.post = None;
+                }
+                routes
+            })
             .route(
                 "/api/history/v1/{id}",
                 get(history::controller::get_history_entry),
             )
             .route("/api/key/v1/{id}", get(key::controller::get_key))
-            .route(
-                "/api/key/v1/{id}/check-certificate",
-                post(key::controller::check_certificate),
-            )
             .route(
                 "/api/key/v1/{id}/generate-csr",
                 post(key::controller::generate_csr),
@@ -179,6 +318,10 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 get(proof::controller::get_proof_presentation_definition),
             )
             .route(
+                "/api/proof-request/v2/{id}/presentation-definition",
+                get(proof::controller::get_proof_presentation_definition_v2),
+            )
+            .route(
                 "/api/proof-request/v1/{id}/claims",
                 delete(proof::controller::delete_proof_claims),
             )
@@ -190,7 +333,7 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
             .route(
                 "/api/organisation/v1/{id}",
                 get(organisation::controller::get_organisation)
-                    .put(organisation::controller::put_organisation),
+                    .patch(organisation::controller::patch_organisation),
             )
             .route("/api/did/v1/{id}", get(did::controller::get_did))
             .route(
@@ -208,6 +351,10 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 "/api/identifier/v1",
                 get(identifier::controller::get_identifier_list)
                     .post(identifier::controller::post_identifier),
+            )
+            .route(
+                "/api/identifier/v1/resolve-trust-entity",
+                post(identifier::controller::resolve_trust_entity),
             )
             .route(
                 "/api/identifier/v1/{id}",
@@ -235,12 +382,24 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 post(interaction::controller::presentation_submit),
             )
             .route(
+                "/api/interaction/v2/presentation-submit",
+                post(interaction::controller::presentation_submit_v2),
+            )
+            .route(
                 "/api/interaction/v1/propose-proof",
                 post(interaction::controller::propose_proof),
             )
             .route(
                 "/api/interaction/v1/presentation-reject",
                 post(interaction::controller::presentation_reject),
+            )
+            .route(
+                "/api/interaction/v1/initiate-issuance",
+                post(interaction::controller::initiate_issuance),
+            )
+            .route(
+                "/api/interaction/v1/continue-issuance",
+                post(interaction::controller::continue_issuance),
             )
             .route("/api/task/v1/run", post(task::controller::post_task))
             .route(
@@ -274,6 +433,19 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 post(trust_entity::controller::create_remote_trust_entity),
             )
             .route(
+                "/api/wallet-unit/v1",
+                get(wallet_provider::controller::get_wallet_unit_list),
+            )
+            .route(
+                "/api/wallet-unit/v1/{id}",
+                get(wallet_provider::controller::get_wallet_unit_details)
+                    .delete(wallet_provider::controller::remove_wallet_unit),
+            )
+            .route(
+                "/api/wallet-unit/v1/{id}/revoke",
+                post(wallet_provider::controller::revoke_wallet_unit),
+            )
+            .route(
                 "/api/trust-entity/remote/v1/{did_id}",
                 get(trust_entity::controller::get_remote_trust_entity)
                     .patch(trust_entity::controller::update_remote_trust_entity),
@@ -282,23 +454,77 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 "/api/jsonld-context/v1",
                 get(jsonld::controller::resolve_jsonld_context),
             )
-            .layer(middleware::from_fn(crate::middleware::bearer_check))
+            .route(
+                "/api/holder-wallet-unit/v1/{id}",
+                get(holder_wallet_unit::controller::wallet_unit_holder_details),
+            )
+            .route(
+                "/api/holder-wallet-unit/v1/{id}/status",
+                post(holder_wallet_unit::controller::wallet_unit_holder_status),
+            )
+            .route(
+                "/api/holder-wallet-unit/v1",
+                post(holder_wallet_unit::controller::wallet_unit_holder_register),
+            )
+            .route(
+                "/api/statistics/v1/dashboard",
+                get(statistics::controller::organisation_statistics),
+            )
+            .route(
+                "/api/statistics/v1/dashboard/system",
+                get(statistics::controller::system_statistics),
+            );
+
+        if config.enable_signature_endpoints {
+            router = router
+                .route(
+                    "/api/signature/v1",
+                    post(signature::controller::create_signature),
+                )
+                .route(
+                    "/api/signature/v1/{id}/revoke",
+                    post(signature::controller::revoke_signature),
+                )
+                .route(
+                    "/api/signature/v1/revocation-check",
+                    post(signature::controller::signature_revocation_check),
+                );
+        } else if let Some(paths) = openapi_paths {
+            paths.shift_remove("/api/signature/v1");
+            paths.shift_remove("/api/signature/v1/{id}/revoke");
+            paths.shift_remove("/api/signature/v1/revocation-check");
+        }
+
+        if config.enable_server_info {
+            router = router.route("/api/build-info/v1", get(misc::get_build_info));
+        } else if let Some(paths) = openapi_paths {
+            paths.shift_remove("/api/build-info/v1");
+        }
+
+        router
+            .layer(middleware::from_fn(crate::middleware::authorization_check))
+            .layer(Extension(authentication))
     } else {
-        if let Some(paths) = openapi_paths.as_mut() {
+        if let Some(paths) = openapi_paths {
             paths.shift_remove("/api");
         };
         Router::new()
-    };
+    }
+}
 
-    let unprotected = if config.enable_external_endpoints {
+fn get_external_endpoints(
+    config: &ServerConfig,
+    openapi_paths: &mut Option<&mut IndexMap<String, PathItem>>,
+) -> Router<AppState> {
+    if config.enable_external_endpoints {
         Router::new()
             .route(
                 "/ssi/openid4vci/draft-13/{id}/.well-known/openid-credential-issuer",
                 get(ssi::issuance::draft13::controller::oid4vci_draft13_get_issuer_metadata),
             )
             .route(
-                "/ssi/openid4vci/draft-13/{id}/.well-known/openid-configuration",
-                get(ssi::issuance::draft13::controller::oid4vci_draft13_service_discovery),
+                "/ssi/openid4vci/draft-13/{id}/.well-known/oauth-authorization-server",
+                get(ssi::issuance::draft13::controller::oid4vci_draft13_oauth_authorization_server),
             )
             .route(
                 "/ssi/openid4vci/draft-13/{credential_schema_id}/offer/{credential_id}",
@@ -313,12 +539,47 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 post(ssi::issuance::draft13::controller::oid4vci_draft13_create_credential),
             )
             .route(
+                "/ssi/openid4vci/draft-13/{id}/notification",
+                post(ssi::issuance::draft13::controller::oid4vci_draft13_credential_notification),
+            )
+            .route(
+                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                get(ssi::issuance::final1_0::controller::oid4vci_final1_0_get_issuer_metadata),
+            )
+            .route(
+                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                get(ssi::issuance::final1_0::controller::oid4vci_final1_0_oauth_authorization_server),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0/{credential_schema_id}/offer/{credential_id}",
+                get(ssi::issuance::final1_0::controller::oid4vci_final1_0_get_credential_offer),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0/{id}/token",
+                post(ssi::issuance::final1_0::controller::oid4vci_final1_0_create_token),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0/{id}/credential",
+                post(ssi::issuance::final1_0::controller::oid4vci_final1_0_create_credential),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0/{id}/notification",
+                post(ssi::issuance::final1_0::controller::oid4vci_final1_0_credential_notification),
+            ).route(
+                "/ssi/openid4vci/final-1.0/{protocol_id}/nonce",
+                post(ssi::issuance::final1_0::controller::oid4vci_final1_0_nonce),
+            )
+            .route(
                 "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/openid-credential-issuer",
                 get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_get_issuer_metadata),
             )
             .route(
                 "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/openid-configuration",
                 get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_service_discovery),
+            )
+            .route(
+                "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/oauth-authorization-server",
+                get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_oauth_authorization_server),
             )
             .route(
                 "/ssi/openid4vci/draft-13-swiyu/{credential_schema_id}/offer/{credential_id}",
@@ -372,12 +633,25 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 get(ssi::verification::draft25::controller::oid4vp_draft25_client_request),
             )
             .route(
+                "/ssi/openid4vp/final-1.0/response",
+                post(ssi::verification::final1_0::controller::oid4vp_final1_0_direct_post)
+                    .layer(DefaultBodyLimit::disable()),
+            )
+            .route(
+                "/ssi/openid4vp/final-1.0/{id}/client-metadata",
+                get(ssi::verification::final1_0::controller::oid4vp_final1_0_client_metadata),
+            )
+            .route(
+                "/ssi/openid4vp/final-1.0/{id}/client-request",
+                get(ssi::verification::final1_0::controller::oid4vp_final1_0_client_request),
+            )
+            .route(
                 "/ssi/revocation/v1/list/{id}",
                 get(ssi::controller::get_revocation_list_by_id),
             )
             .route(
-                "/ssi/revocation/v1/lvvc/{id}",
-                get(ssi::controller::get_lvvc_by_credential_id),
+                 "/ssi/revocation/v1/crl/{id}",
+                get(ssi::controller::get_crl_by_id),
             )
             .route(
                 "/ssi/did-web/v1/{id}/did.json",
@@ -416,127 +690,44 @@ fn router(state: AppState, config: Arc<ServerConfig>) -> Router {
                 "/ssi/vct/v1/{organisationId}/{vctType}",
                 get(ssi::controller::ssi_get_sd_jwt_vc_type_metadata),
             )
+            .route(
+                "/ssi/ca/{id}",
+                get(ssi::controller::ssi_get_certificate_authority),
+            )
+            .route(
+                "/ssi/wallet-unit/v1",
+                post(ssi::wallet_provider::controller::register_wallet_unit)
+            )
+            .route(
+                "/ssi/wallet-unit/v1/{id}/activate",
+                post(ssi::wallet_provider::controller::activate_wallet_unit),
+            )
+            .route(
+                "/ssi/wallet-unit/v1/{id}/issue-attestation",
+                post(ssi::wallet_provider::controller::issue_wallet_unit_attestation)
+            )
+            .route(
+                "/ssi/wallet-provider/v1/{walletProvider}",
+                get(ssi::wallet_provider::controller::get_wallet_provider_metadata),
+            )
     } else {
-        if let Some(paths) = openapi_paths.as_mut() {
+        if let Some(paths) = openapi_paths {
             paths.shift_remove("/ssi");
         };
         Router::new()
-    };
-
-    let metrics_endpoints = if config.enable_metrics {
-        Router::new().route("/metrics", get(misc::get_metrics))
-    } else {
-        if let Some(paths) = openapi_paths.as_mut() {
-            paths.shift_remove("/metrics");
-        };
-        Router::new()
-    };
-
-    let server_info_endpoints = if config.enable_server_info {
-        Router::new()
-            .route("/build-info", get(misc::get_build_info))
-            .route("/health", get(misc::health_check))
-    } else {
-        if let Some(paths) = openapi_paths.as_mut() {
-            paths.shift_remove("/build-info");
-            paths.shift_remove("/health");
-        };
-        Router::new()
-    };
-
-    let openapi_endpoints = if let Some(openapi_documentation) = openapi_documentation {
-        Router::new()
-            .route(
-                "/api-docs/openapi.yaml",
-                get(misc::get_openapi_yaml(&openapi_documentation)),
-            )
-            .merge(
-                SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi_documentation),
-            )
-    } else {
-        Router::new()
-    };
-
-    let router = {
-        if config.insecure_vc_api_endpoints_enabled {
-            let interop_test_endpoints = Router::new()
-                .route(
-                    "/vc-api/credentials/issue",
-                    post(vc_api::controller::issue_credential),
-                )
-                .route(
-                    "/vc-api/credentials/verify",
-                    post(vc_api::controller::verify_credential),
-                )
-                .route(
-                    "/vc-api/presentations/verify",
-                    post(vc_api::controller::verify_presentation),
-                )
-                .route(
-                    "/vc-api/identifiers/{identifier}",
-                    get(vc_api::controller::resolve_identifier),
-                );
-
-            Router::new().merge(interop_test_endpoints)
-        } else {
-            Router::new()
-        }
-    };
-
-    router
-        .merge(protected)
-        .merge(unprotected)
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(|request: &Request<_>| {
-                    let context = get_http_request_context(request);
-                    info_span!(
-                        "http_request",
-                        method = context.method,
-                        path = context.path,
-                        service = "one-core",
-                        RequestId = context.request_id,
-                        SessionId = context.session_id,
-                    )
-                })
-                .on_request(|request: &Request<_>, _span: &Span| {
-                    tracing::debug!(
-                        "SERVICE CALL START {} {}",
-                        request.method(),
-                        request.uri().path()
-                    )
-                })
-                .on_failure(|_, _, _: &_| {}) // override default on_failure handler
-                .on_response(|response: &Response<_>, _: Duration, _span: &Span| {
-                    tracing::debug!("SERVICE CALL END {}", response.status())
-                }),
-        )
-        .layer(middleware::from_fn(crate::middleware::sentry_layer))
-        .layer(middleware::from_fn(crate::middleware::metrics_counter))
-        .merge(metrics_endpoints)
-        .merge(server_info_endpoints)
-        .merge(openapi_endpoints)
-        .layer(CatchPanicLayer::custom(handle_panic))
-        .layer(Extension(config))
-        .layer(middleware::from_fn(
-            crate::middleware::add_disable_cache_headers,
-        ))
-        .layer(middleware::from_fn(
-            crate::middleware::add_x_content_type_options_no_sniff_header,
-        ))
-        .with_state(state)
+    }
 }
 
-fn handle_panic(err: Box<dyn Any + Send + 'static>) -> Response<Body> {
+fn handle_panic(err: Box<dyn Any + Send + 'static>, hide_cause: bool) -> Response<Body> {
     let message = if let Some(s) = err.downcast_ref::<String>() {
         s.clone()
     } else if let Some(s) = err.downcast_ref::<&str>() {
         s.to_string()
     } else {
-        "Unknown panic message".to_string()
+        "Unknown panic cause".to_string()
     };
 
     tracing::error!("PANIC occurred in request: {message}");
 
-    ErrorResponse::for_panic(message).into_response()
+    ErrorResponse::for_panic(message, hide_cause).into_response()
 }

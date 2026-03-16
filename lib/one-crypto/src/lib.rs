@@ -15,6 +15,8 @@ use secrecy::SecretSlice;
 use sha2::Sha256;
 use thiserror::Error;
 
+use crate::hasher::sha256::SHA256;
+
 pub mod encryption;
 pub mod hasher;
 pub mod jwe;
@@ -31,15 +33,11 @@ mod test;
 #[derive(Clone)]
 pub struct CryptoProviderImpl {
     hashers: HashMap<String, Arc<dyn Hasher>>,
-    signers: HashMap<String, Arc<dyn Signer>>,
 }
 
 impl CryptoProviderImpl {
-    pub fn new(
-        hashers: HashMap<String, Arc<dyn Hasher>>,
-        signers: HashMap<String, Arc<dyn Signer>>,
-    ) -> Self {
-        Self { hashers, signers }
+    pub fn new(hashers: HashMap<String, Arc<dyn Hasher>>) -> Self {
+        Self { hashers }
     }
 }
 
@@ -51,22 +49,12 @@ impl CryptoProvider for CryptoProviderImpl {
             .ok_or(CryptoProviderError::MissingHasher(hasher.to_owned()))?
             .clone())
     }
-
-    fn get_signer(&self, signer: &str) -> Result<Arc<dyn Signer>, CryptoProviderError> {
-        Ok(self
-            .signers
-            .get(signer)
-            .ok_or(CryptoProviderError::MissingHasher(signer.to_owned()))?
-            .clone())
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Error, Clone)]
 pub enum CryptoProviderError {
     #[error("Missing hasher: `{0}`")]
     MissingHasher(String),
-    #[error("Missing signer: `{0}`")]
-    MissingSigner(String),
 }
 
 #[derive(Debug, PartialEq, Eq, Error)]
@@ -79,6 +67,8 @@ pub enum HasherError {
 
 #[derive(Debug, PartialEq, Eq, Error, Clone)]
 pub enum SignerError {
+    #[error("Could not generate key pair: `{0}`")]
+    CouldNotGenerateKeyPair(String),
     #[error("Crypto provider error: `{0}`")]
     CryptoError(#[from] CryptoProviderError),
     #[error("Could not sign: `{0}`")]
@@ -87,14 +77,14 @@ pub enum SignerError {
     CouldNotExtractKeyPair,
     #[error("Could not extract public key: `{0}`")]
     CouldNotExtractPublicKey(String),
+    #[error("Could not extract private key: `{0}`")]
+    CouldNotExtractPrivateKey(String),
     #[error("Could not verify: `{0}`")]
     CouldNotVerify(String),
+    #[error("HMAC error: `{0}`")]
+    HmacError(String),
     #[error("Invalid signature")]
     InvalidSignature,
-    #[error("Missing algorithm `{0}`")]
-    MissingAlgorithm(String),
-    #[error("Missing key")]
-    MissingKey,
 }
 
 /// Provides hashing.
@@ -133,7 +123,10 @@ pub trait Signer: Send + Sync {
 pub trait CryptoProvider: Send + Sync {
     /// Returns hasher instance.
     fn get_hasher(&self, hasher: &str) -> Result<Arc<dyn Hasher>, CryptoProviderError>;
+}
 
-    /// Returns signer instance.
-    fn get_signer(&self, signer: &str) -> Result<Arc<dyn Signer>, CryptoProviderError>;
+pub fn initialize_crypto_provider() -> Arc<dyn CryptoProvider> {
+    let hashers: Vec<(String, Arc<dyn Hasher>)> = vec![("sha-256".to_string(), Arc::new(SHA256))];
+
+    Arc::new(CryptoProviderImpl::new(HashMap::from_iter(hashers)))
 }

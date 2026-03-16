@@ -38,7 +38,10 @@ pub struct GetListResponse<ResponseItem> {
     pub total_items: u64,
 }
 
-#[derive(Clone, Debug)]
-pub struct EntityShareResponseDTO {
-    pub url: String,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockType {
+    /// Exclusive lock
+    Update,
+    /// Shared lock
+    Share,
 }

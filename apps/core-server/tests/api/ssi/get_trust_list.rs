@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use one_core::model::organisation::Organisation;
 use one_core::model::trust_anchor::TrustAnchor;
-use one_core::model::trust_entity::{TrustEntity, TrustEntityRole, TrustEntityState};
+use one_core::model::trust_entity::{
+    TrustEntity, TrustEntityRole, TrustEntityState, TrustEntityType,
+};
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::fixtures::TestingDidParams;
@@ -33,7 +36,10 @@ pub async fn new_with_trust_list() -> (
             TrustEntityRole::Issuer,
             TrustEntityState::Active,
             trust_anchor.clone(),
-            did.clone(),
+            TrustEntityType::Did,
+            did.did.into(),
+            None,
+            did.organisation,
         )
         .await;
 
@@ -50,7 +56,10 @@ pub async fn new_with_trust_list() -> (
             TrustEntityRole::Verifier,
             TrustEntityState::Active,
             trust_anchor.clone(),
-            did2,
+            TrustEntityType::Did,
+            did2.did.into(),
+            None,
+            did2.organisation,
         )
         .await;
 
@@ -84,8 +93,8 @@ async fn test_get_trust_list_success() {
             .map(|v| v.as_str().unwrap().to_owned())
             .collect::<HashSet<_>>(),
         HashSet::from_iter([
-            entity_one.did.unwrap().did.to_string(),
-            entity_two.did.unwrap().did.to_string()
+            entity_one.entity_key.to_string(),
+            entity_two.entity_key.to_string()
         ])
     );
 }
@@ -140,7 +149,10 @@ async fn test_get_trust_list_filters_not_active() {
             TrustEntityRole::Verifier,
             TrustEntityState::Withdrawn,
             trust_anchor.clone(),
-            did3.clone(),
+            TrustEntityType::Did,
+            did3.did.into(),
+            None,
+            did3.organisation,
         )
         .await;
     let did4 = context
@@ -156,7 +168,10 @@ async fn test_get_trust_list_filters_not_active() {
             TrustEntityRole::Verifier,
             TrustEntityState::Removed,
             trust_anchor.clone(),
-            did4.clone(),
+            TrustEntityType::Did,
+            did4.did.into(),
+            None,
+            did4.organisation,
         )
         .await;
     let did5 = context
@@ -172,7 +187,10 @@ async fn test_get_trust_list_filters_not_active() {
             TrustEntityRole::Verifier,
             TrustEntityState::RemovedAndWithdrawn,
             trust_anchor.clone(),
-            did5.clone(),
+            TrustEntityType::Did,
+            did5.did.into(),
+            None,
+            did5.organisation,
         )
         .await;
 

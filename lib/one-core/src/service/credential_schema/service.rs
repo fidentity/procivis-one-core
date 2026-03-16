@@ -1,11 +1,11 @@
-use shared_types::CredentialSchemaId;
+use shared_types::{CredentialSchemaId, OrganisationId};
 use uuid::Uuid;
 
-use super::import::import_credential_schema;
-use crate::common_mapper::list_response_into;
+use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::mapper::credential_schema_claim::claim_schema_from_metadata_claim_schema;
+use crate::mapper::list_response_into;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential_schema::CredentialSchemaRelations;
-use crate::model::history::HistoryAction;
 use crate::model::organisation::OrganisationRelations;
 use crate::repository::error::DataLayerError;
 use crate::service::credential_schema::CredentialSchemaService;
@@ -15,10 +15,14 @@ use crate::service::credential_schema::dto::{
     GetCredentialSchemaQueryDTO, ImportCredentialSchemaRequestDTO,
 };
 use crate::service::credential_schema::mapper::from_create_request_with_id;
+use crate::service::credential_schema::validator::UniquenessCheckResult;
 use crate::service::error::{
     BusinessLogicError, EntityNotFoundError, MissingProviderError, ServiceError,
 };
-use crate::util::history::log_history_event_credential_schema;
+use crate::util::logging::quoted_opt_provider;
+use crate::validator::{
+    throw_if_org_not_matching_session, throw_if_org_relation_not_matching_session,
+};
 
 impl CredentialSchemaService {
     /// Creates a credential schema according to request
@@ -30,72 +34,102 @@ impl CredentialSchemaService {
         &self,
         request: CreateCredentialSchemaRequestDTO,
     ) -> Result<CredentialSchemaId, ServiceError> {
+        throw_if_org_not_matching_session(&request.organisation_id, &*self.session_provider)?;
         let core_base_url = self
             .core_base_url
             .as_ref()
-            .ok_or_else(|| ServiceError::Other("Missing core base_url".to_string()))?;
+            .ok_or_else(|| ServiceError::MappingError("Missing core base_url".to_string()))?;
 
         let formatter = self
             .formatter_provider
-            .get_formatter(&request.format)
-            .ok_or(MissingProviderError::Formatter(request.format.to_owned()))?;
+            .get_credential_formatter(&request.format)
+            .ok_or(MissingProviderError::Formatter(request.format.to_string()))?;
         super::validator::validate_create_request(
             &request,
             &self.config,
             &*formatter,
             &*self.revocation_method_provider,
-            false,
         )?;
 
-        super::validator::credential_schema_already_exists(
+        match super::validator::credential_schema_already_exists(
             &*self.credential_schema_repository,
             &request.name,
             request.schema_id.clone(),
             request.organisation_id,
         )
-        .await?;
+        .await?
+        {
+            UniquenessCheckResult::SchemaIdConflict | UniquenessCheckResult::NameConflict => {
+                return Err(BusinessLogicError::CredentialSchemaAlreadyExists.into());
+            }
+            UniquenessCheckResult::Ok => {}
+        };
 
         super::validator::check_claims_presence_in_layout_properties(&request)?;
         super::validator::check_background_properties(&request)?;
         super::validator::check_logo_properties(&request)?;
+        super::validator::validate_key_storage_security_supported(
+            request.key_storage_security,
+            &self.config,
+        )?;
 
         let organisation = self
             .organisation_repository
             .get_organisation(&request.organisation_id, &OrganisationRelations::default())
-            .await?;
+            .await
+            .error_while("getting organisation")?;
 
         let Some(organisation) = organisation else {
             return Err(BusinessLogicError::MissingOrganisation(request.organisation_id).into());
         };
 
-        let format_type = &self.config.format.get_fields(&request.format)?.r#type;
+        if organisation.deactivated_at.is_some() {
+            return Err(
+                BusinessLogicError::OrganisationIsDeactivated(request.organisation_id).into(),
+            );
+        }
+
         let id = CredentialSchemaId::from(Uuid::new_v4());
-        let schema_id = formatter.credential_schema_id(id, &request, core_base_url)?;
+        let schema_id = formatter
+            .credential_schema_id(id, &request, core_base_url)
+            .error_while("creating schemaId")?;
         let imported_source_url = format!("{core_base_url}/ssi/schema/v1/{id}");
-        let credential_schema = from_create_request_with_id(
-            id,
-            request,
-            organisation,
-            format_type,
-            None,
-            schema_id,
-            imported_source_url,
-        )?;
+        let mut credential_schema =
+            from_create_request_with_id(id, request, organisation, schema_id, imported_source_url)?;
 
-        let result = self
+        let metadata_claims = formatter
+            .get_metadata_claims()
+            .into_iter()
+            .map(|metadata_claim| {
+                claim_schema_from_metadata_claim_schema(
+                    metadata_claim,
+                    credential_schema.created_date,
+                )
+            })
+            .collect::<Vec<_>>();
+        credential_schema
+            .claim_schemas
+            .as_mut()
+            .ok_or(ServiceError::MappingError(
+                "Missing claim schemas".to_string(),
+            ))?
+            .extend(metadata_claims);
+
+        let success_log = format!(
+            "Created credential schema `{}` ({id}): format `{}`, revocation method {:?}, key storage security {}",
+            credential_schema.name,
+            credential_schema.format,
+            credential_schema.revocation_method,
+            quoted_opt_provider(&credential_schema.key_storage_security)
+        );
+        let schema_id = self
             .credential_schema_repository
-            .create_credential_schema(credential_schema.to_owned())
+            .create_credential_schema(credential_schema)
             .await
-            .map_err(ServiceError::from)?;
+            .error_while("getting credential schema")?;
 
-        log_history_event_credential_schema(
-            &*self.history_repository,
-            &credential_schema,
-            HistoryAction::Created,
-        )
-        .await;
-
-        Ok(result)
+        tracing::info!(message = success_log);
+        Ok(schema_id)
     }
 
     /// Deletes a credential schema
@@ -116,19 +150,30 @@ impl CredentialSchemaService {
                     ..Default::default()
                 },
             )
-            .await?
+            .await
+            .error_while("getting credential schema")?
             .ok_or(BusinessLogicError::MissingCredentialSchema)?;
+
+        throw_if_org_relation_not_matching_session(
+            credential_schema.organisation.as_ref(),
+            &*self.session_provider,
+        )?;
 
         self.credential_schema_repository
             .delete_credential_schema(&credential_schema)
             .await
             .map_err(|error| match error {
                 DataLayerError::RecordNotUpdated => {
-                    EntityNotFoundError::CredentialSchema(*credential_schema_id).into()
+                    ServiceError::from(EntityNotFoundError::CredentialSchema(*credential_schema_id))
                 }
-                error => ServiceError::from(error),
+                error => error.error_while("deleting credential schema").into(),
             })?;
 
+        tracing::info!(
+            "Deleted credential schema `{}` ({})",
+            credential_schema.name,
+            credential_schema.id
+        );
         Ok(())
     }
 
@@ -150,11 +195,17 @@ impl CredentialSchemaService {
                     organisation: Some(OrganisationRelations::default()),
                 },
             )
-            .await?;
+            .await
+            .error_while("getting credential schema")?;
 
         let Some(schema) = schema else {
             return Err(EntityNotFoundError::CredentialSchema(*credential_schema_id).into());
         };
+
+        throw_if_org_relation_not_matching_session(
+            schema.organisation.as_ref(),
+            &*self.session_provider,
+        )?;
 
         if schema.deleted_at.is_some() {
             return Err(EntityNotFoundError::CredentialSchema(*credential_schema_id).into());
@@ -170,12 +221,15 @@ impl CredentialSchemaService {
     /// * `query` - query parameters
     pub async fn get_credential_schema_list(
         &self,
+        organisation_id: &OrganisationId,
         query: GetCredentialSchemaQueryDTO,
     ) -> Result<GetCredentialSchemaListResponseDTO, ServiceError> {
+        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)?;
         let result = self
             .credential_schema_repository
             .get_credential_schema_list(query, &Default::default())
-            .await?;
+            .await
+            .error_while("getting credential schemas")?;
         Ok(list_response_into(result))
     }
 
@@ -188,31 +242,47 @@ impl CredentialSchemaService {
         &self,
         request: ImportCredentialSchemaRequestDTO,
     ) -> Result<CredentialSchemaId, ServiceError> {
+        throw_if_org_not_matching_session(&request.organisation_id, &*self.session_provider)?;
         let organisation = self
             .organisation_repository
             .get_organisation(&request.organisation_id, &OrganisationRelations::default())
-            .await?
+            .await
+            .error_while("getting organisation")?
             .ok_or(ServiceError::BusinessLogic(
                 BusinessLogicError::MissingOrganisation(request.organisation_id),
             ))?;
 
-        let credential_schema = import_credential_schema(
-            request.schema,
-            organisation,
-            &self.config,
-            &*self.credential_schema_repository,
-            &*self.formatter_provider,
-            &*self.revocation_method_provider,
-        )
-        .await?;
+        if organisation.deactivated_at.is_some() {
+            return Err(
+                BusinessLogicError::OrganisationIsDeactivated(request.organisation_id).into(),
+            );
+        }
 
-        log_history_event_credential_schema(
-            &*self.history_repository,
-            &credential_schema,
-            HistoryAction::Imported,
-        )
-        .await;
+        let credential_schema = self
+            .import_parser
+            .parse_import_credential_schema(
+                crate::proto::credential_schema::dto::ImportCredentialSchemaRequestDTO {
+                    organisation,
+                    schema: request.schema.into(),
+                },
+            )
+            .error_while("parsing schema")?;
 
+        let success_log = format!(
+            "Imported credential schema `{}` ({}): format `{}`, revocation method {:?}, key storage security {}",
+            credential_schema.name,
+            credential_schema.id,
+            credential_schema.format,
+            credential_schema.revocation_method,
+            quoted_opt_provider(&credential_schema.key_storage_security)
+        );
+
+        let credential_schema = self
+            .importer_proto
+            .import_credential_schema(credential_schema)
+            .await
+            .error_while("importing schema")?;
+        tracing::info!(message = success_log);
         Ok(credential_schema.id)
     }
 
@@ -234,17 +304,16 @@ impl CredentialSchemaService {
                     organisation: Some(OrganisationRelations::default()),
                 },
             )
-            .await?
+            .await
+            .error_while("getting credential schema")?
             .ok_or(ServiceError::EntityNotFound(
                 EntityNotFoundError::CredentialSchema(*credential_schema_id),
             ))?;
 
-        log_history_event_credential_schema(
-            &*self.history_repository,
-            &credential_schema,
-            HistoryAction::Shared,
-        )
-        .await;
+        throw_if_org_relation_not_matching_session(
+            credential_schema.organisation.as_ref(),
+            &*self.session_provider,
+        )?;
 
         Ok(CredentialSchemaShareResponseDTO {
             url: credential_schema.imported_source_url,

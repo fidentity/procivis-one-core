@@ -1,12 +1,12 @@
 [package]
-authors           = ["Procivis"]
-build             = "build.rs"
-edition.workspace = true
-license           = "Apache-2.0"
-name              = "core-server"
-publish           = false
-rust-version      = "1.92"
-version           = "0.1.0"
+authors                = ["Procivis"]
+build                  = "build.rs"
+edition.workspace      = true
+license                = "Apache-2.0"
+name                   = "core-server"
+publish                = false
+rust-version.workspace = true
+version                = "0.1.0"
 
 # disable doctests
 [lib]

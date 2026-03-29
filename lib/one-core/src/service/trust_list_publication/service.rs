@@ -17,7 +17,7 @@ use crate::model::trust_list_publication::{
 };
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::provider::trust_list_publisher::{
-    CreateTrustListRequest, TrustListPublisher, TrustListPublisherCapabilities,
+    CreateTrustListRequest, TrustListContent, TrustListPublisher, TrustListPublisherCapabilities,
 };
 use crate::service::trust_list_publication::TrustListPublicationService;
 use crate::service::trust_list_publication::dto::{
@@ -180,7 +180,7 @@ impl TrustListPublicationService {
     pub async fn get_trust_list_publication_content(
         &self,
         id: TrustListPublicationId,
-    ) -> Result<String, TrustListPublicationServiceError> {
+    ) -> Result<TrustListContent, TrustListPublicationServiceError> {
         let trust_list = self.fetch_trust_list_publication(id).await?;
         throw_if_org_relation_not_matching_session(
             trust_list.organisation.as_ref(),

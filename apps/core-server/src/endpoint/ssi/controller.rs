@@ -579,8 +579,8 @@ pub(crate) async fn ssi_get_trust_list_publication(
     match result {
         Ok(result) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/jwt")],
-            result,
+            [(header::CONTENT_TYPE, result.content_type.to_string())],
+            result.content,
         )
             .into_response(),
         Err(TrustListPublicationServiceError::TrustListPublicationNotFound(_)) => {

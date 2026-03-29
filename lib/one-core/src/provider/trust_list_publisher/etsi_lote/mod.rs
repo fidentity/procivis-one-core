@@ -14,6 +14,7 @@ use standardized_types::etsi_119_602::{
     TrustedEntityService,
 };
 use standardized_types::jades::JadesHeader;
+use strum::Display;
 use time::OffsetDateTime;
 
 use crate::config::core_config::{IdentifierType, KeyAlgorithmType};
@@ -37,7 +38,7 @@ use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::trust_list_publisher::error::TrustListPublisherError;
 use crate::provider::trust_list_publisher::{
-    CreateTrustListRequest, TrustListPublisher, TrustListPublisherCapabilities,
+    CreateTrustListRequest, TrustListContent, TrustListPublisher, TrustListPublisherCapabilities,
 };
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::trust_entry_repository::TrustEntryRepository;
@@ -61,6 +62,18 @@ pub(crate) struct EtsiLotePublisher {
 pub(crate) struct EtsiLoteParams {
     #[serde_as(as = "DurationSeconds<i64>")]
     pub refresh_interval_seconds: time::Duration,
+    pub content_type: LoteContentType,
+}
+
+#[derive(Clone, Debug, Display, Deserialize, PartialEq)]
+
+pub enum LoteContentType {
+    #[strum(to_string = "application/xml")]
+    #[serde(rename = "application/xml")]
+    Xml,
+    #[strum(to_string = "application/jwt")]
+    #[serde(rename = "application/jwt")]
+    Jwt,
 }
 
 #[async_trait::async_trait]
@@ -221,15 +234,19 @@ impl TrustListPublisher for EtsiLotePublisher {
     async fn generate_trust_list_content(
         &self,
         publication: TrustListPublication,
-    ) -> Result<String, TrustListPublisherError> {
+    ) -> Result<TrustListContent, TrustListPublisherError> {
         let refresh_interval = self.params.refresh_interval_seconds;
 
-        if publication.last_modified + refresh_interval > self.clock.now_utc() {
-            return Ok(String::from_utf8(publication.content)?);
-        }
+        let content = if publication.last_modified + refresh_interval > self.clock.now_utc() {
+            publication.content
+        } else {
+            self.sign_trust_list(publication.id).await?
+        };
 
-        let content = self.sign_trust_list(publication.id).await?;
-        Ok(String::from_utf8(content)?)
+        Ok(TrustListContent {
+            content: String::from_utf8(content)?,
+            content_type: self.params.content_type.clone(),
+        })
     }
 }
 
@@ -398,7 +415,7 @@ fn build_trusted_entity(
         .into_iter()
         .map(|(uri, display_name)| TrustedEntityService {
             service_information: ServiceInformation {
-                service_type_identifier: uri.to_string(),
+                service_type_identifier: Some(uri.to_string()),
                 service_name: params.service.name.clone().unwrap_or_else(|| {
                     vec![MultiLangString {
                         lang: "en".into(),
@@ -481,7 +498,7 @@ fn build_lote_payload(
         }]),
         scheme_territory: list_params
             .scheme_territory
-            .unwrap_or_else(|| lote_type.scheme_territory().to_string()),
+            .or(Some(lote_type.scheme_territory().to_string())),
         scheme_operator_address: list_params.scheme_operator_address,
         scheme_name: list_params.scheme_name.or_else(|| {
             Some(vec![MultiLangString {

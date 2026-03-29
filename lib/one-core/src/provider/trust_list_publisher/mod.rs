@@ -11,6 +11,13 @@ use crate::model::trust_entry::{TrustEntry, TrustEntryStateEnum};
 use crate::model::trust_list_publication::TrustListPublication;
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::provider::trust_list_publisher::error::TrustListPublisherError;
+use crate::provider::trust_list_publisher::etsi_lote::LoteContentType;
+
+#[derive(Debug)]
+pub struct TrustListContent {
+    pub content: String,
+    pub content_type: LoteContentType,
+}
 
 pub struct CreateTrustListRequest {
     pub name: String,
@@ -51,7 +58,7 @@ pub trait TrustListPublisher: Send + Sync {
     async fn generate_trust_list_content(
         &self,
         publication: TrustListPublication,
-    ) -> Result<String, TrustListPublisherError>;
+    ) -> Result<TrustListContent, TrustListPublisherError>;
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -758,6 +758,7 @@ trustListPublisher:
     params:
       public:
         refreshIntervalSeconds: 86400
+        contentType: "application/jwt"
 trustListSubscriber:
   LOTE_SUBSCRIBER:
     type: ETSI_LOTE

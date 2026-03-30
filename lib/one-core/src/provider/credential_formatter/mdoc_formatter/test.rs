@@ -1,12 +1,14 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Add;
 
-use coset::{KeyType, Label, RegisteredLabelWithPrivate};
+use coset::{CoseKeyBuilder, KeyType, Label, RegisteredLabelWithPrivate, iana};
+use ct_codecs::Base64UrlSafeNoPadding;
 use hex_literal::hex;
 use maplit::{hashmap, hashset};
 use serde_json::json;
 use shared_types::OrganisationId;
 use similar_asserts::assert_eq;
+use standardized_types::jwk::PublicJwkEc;
 use time::macros::datetime;
 use uuid::Uuid;
 
@@ -327,6 +329,23 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
             })
         });
 
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider.expect_parse_jwk().returning(|_| {
+        let mut public_key = MockSignaturePublicKeyHandle::new();
+        public_key.expect_as_cose().returning(|| {
+            Ok(CoseKeyBuilder::new_ec2_pub_key(
+                iana::EllipticCurve::P_256,
+                b"xabc".into(),
+                b"yabc".into(),
+            )
+            .build())
+        });
+        Ok(ParsedKey {
+            algorithm_type: KeyAlgorithmType::Ecdsa,
+            key: KeyHandle::SignatureOnly(SignatureKeyHandle::PublicKeyOnly(Arc::new(public_key))),
+        })
+    });
+
     let params = Params {
         mso_expires_in: Duration::seconds(10),
         mso_expected_update_in: Duration::days(10),
@@ -343,7 +362,7 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
         Arc::new(did_method_provider),
         config.datatype,
         Arc::new(MockDataTypeProvider::new()),
-        Arc::new(MockKeyAlgorithmProvider::new()),
+        Arc::new(key_algorithm_provider),
     );
 
     let mut auth_fn = MockSignatureProvider::new();
@@ -578,6 +597,23 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
             })
         });
 
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider.expect_parse_jwk().returning(|_| {
+        let mut public_key = MockSignaturePublicKeyHandle::new();
+        public_key.expect_as_cose().returning(|| {
+            Ok(CoseKeyBuilder::new_ec2_pub_key(
+                iana::EllipticCurve::P_256,
+                b"xabc".into(),
+                b"yabc".into(),
+            )
+            .build())
+        });
+        Ok(ParsedKey {
+            algorithm_type: KeyAlgorithmType::Ecdsa,
+            key: KeyHandle::SignatureOnly(SignatureKeyHandle::PublicKeyOnly(Arc::new(public_key))),
+        })
+    });
+
     let config = generic_config().core;
 
     let formatter = MdocFormatter::new(
@@ -586,7 +622,7 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
         Arc::new(did_method_provider),
         config.datatype,
         Arc::new(MockDataTypeProvider::new()),
-        Arc::new(MockKeyAlgorithmProvider::new()),
+        Arc::new(key_algorithm_provider),
     );
 
     let mut auth_fn = MockSignatureProvider::new();
@@ -845,6 +881,23 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
             })
         });
 
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider.expect_parse_jwk().returning(|_| {
+        let mut public_key = MockSignaturePublicKeyHandle::new();
+        public_key.expect_as_cose().returning(|| {
+            Ok(CoseKeyBuilder::new_ec2_pub_key(
+                iana::EllipticCurve::P_256,
+                b"xabc".into(),
+                b"yabc".into(),
+            )
+            .build())
+        });
+        Ok(ParsedKey {
+            algorithm_type: KeyAlgorithmType::Ecdsa,
+            key: KeyHandle::SignatureOnly(SignatureKeyHandle::PublicKeyOnly(Arc::new(public_key))),
+        })
+    });
+
     let config = generic_config().core;
 
     let formatter = MdocFormatter::new(
@@ -853,7 +906,7 @@ Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
         Arc::new(did_method_provider),
         config.datatype,
         Arc::new(MockDataTypeProvider::new()),
-        Arc::new(MockKeyAlgorithmProvider::new()),
+        Arc::new(key_algorithm_provider),
     );
 
     let mut auth_fn = MockSignatureProvider::new();

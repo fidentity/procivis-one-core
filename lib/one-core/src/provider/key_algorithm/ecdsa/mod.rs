@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coset::iana::EnumI64;
+use coset::{CoseKey, CoseKeyBuilder, iana};
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
 use one_crypto::Signer;
 use one_crypto::encryption::EncryptionError;
@@ -101,8 +103,8 @@ impl KeyAlgorithm for Ecdsa {
         vec!["ES256".to_string()]
     }
 
-    fn cose_alg_id(&self) -> Option<i32> {
-        todo!()
+    fn cose_alg_id(&self) -> Option<i64> {
+        Some(iana::Algorithm::ES256.to_i64())
     }
 
     fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
@@ -154,7 +156,7 @@ impl KeyAlgorithm for Ecdsa {
         self.reconstruct_key(&raw_pubkey, None, None)
     }
 
-    fn parse_raw(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
+    fn parse_der(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
         let public_key = ECDSASigner::parse_public_key_from_der(public_key_der, true)?;
         let handle = Arc::new(EcdsaPublicKeyHandle::new(public_key, None));
         Ok(KeyHandle::SignatureAndKeyAgreement {
@@ -205,6 +207,14 @@ impl SignaturePublicKeyHandle for EcdsaPublicKeyHandle {
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(ECDSASigner.verify(message, signature, &self.public_key)?)
     }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        ecdsa_public_key_as_cose(&self.public_key)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(ECDSASigner::public_key_to_der(&self.public_key)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -225,6 +235,14 @@ impl PublicKeyAgreementHandle for EcdsaPublicKeyHandle {
 
     fn as_raw(&self) -> Vec<u8> {
         self.public_key.clone()
+    }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        ecdsa_public_key_as_cose(&self.public_key)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(ECDSASigner::public_key_to_der(&self.public_key)?)
     }
 }
 
@@ -265,4 +283,9 @@ pub(crate) fn ecdsa_public_key_as_multibase(public_key: &[u8]) -> Result<String,
     let key = ECDSASigner::parse_public_key(public_key, true)?;
     let data = [codec, key.as_slice()].concat();
     Ok(format!("z{}", bs58::encode(data).into_string()))
+}
+
+pub(crate) fn ecdsa_public_key_as_cose(public_key: &[u8]) -> Result<CoseKey, KeyHandleError> {
+    let (x, y) = ECDSASigner::public_key_coordinates(public_key)?;
+    Ok(CoseKeyBuilder::new_ec2_pub_key(iana::EllipticCurve::P_256, x, y).build())
 }

@@ -82,8 +82,8 @@ impl KeyAlgorithm for BBS {
         vec!["BBS_PLUS".to_string()]
     }
 
-    fn cose_alg_id(&self) -> Option<i32> {
-        todo!()
+    fn cose_alg_id(&self) -> Option<i64> {
+        None
     }
 
     fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
@@ -120,7 +120,7 @@ impl KeyAlgorithm for BBS {
         self.reconstruct_key(&raw_pubkey, None, None)
     }
 
-    fn parse_raw(&self, _public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
+    fn parse_der(&self, _public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
         Err(KeyAlgorithmError::NotSupported(
             "raw BBS keys not supported".to_string(),
         ))

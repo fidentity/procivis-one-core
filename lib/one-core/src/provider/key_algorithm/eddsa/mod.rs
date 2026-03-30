@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coset::iana::EnumI64;
+use coset::{CoseKey, CoseKeyBuilder, iana};
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
 use one_crypto::Signer;
 use one_crypto::encryption::EncryptionError;
@@ -114,8 +116,8 @@ impl KeyAlgorithm for Eddsa {
         vec!["EdDSA".to_string(), "EDDSA".to_string()]
     }
 
-    fn cose_alg_id(&self) -> Option<i32> {
-        todo!()
+    fn cose_alg_id(&self) -> Option<i64> {
+        Some(iana::Algorithm::EdDSA.to_i64())
     }
 
     fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
@@ -178,7 +180,7 @@ impl KeyAlgorithm for Eddsa {
         self.reconstruct_key(&raw_pubkey, None, None)
     }
 
-    fn parse_raw(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
+    fn parse_der(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
         let key = EDDSASigner::public_key_from_der(public_key_der)?;
         let handle = Arc::new(
             EddsaPublicKeyHandle::new(key, None).error_while("creating public key handle")?,
@@ -222,7 +224,7 @@ impl EddsaPrivateKeyHandle {
 
 impl SignaturePublicKeyHandle for EddsaPublicKeyHandle {
     fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
-        eddsa_public_key_as_jwk(&self.public_key, "Ed25519", self.r#use.clone())
+        eddsa_public_key_as_jwk(&self.public_key, self.r#use.clone())
     }
 
     fn as_multibase(&self) -> Result<String, KeyHandleError> {
@@ -235,6 +237,23 @@ impl SignaturePublicKeyHandle for EddsaPublicKeyHandle {
 
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(EDDSASigner.verify(message, signature, &self.public_key)?)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(EDDSASigner::public_key_to_der(&self.public_key)?)
+    }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        Ok(CoseKeyBuilder::new_okp_key()
+            .param(
+                iana::Ec2KeyParameter::Crv.to_i64(),
+                ciborium::Value::from(iana::EllipticCurve::Ed25519.to_i64()),
+            )
+            .param(
+                iana::Ec2KeyParameter::X as i64,
+                ciborium::Value::from(self.public_key.to_owned()),
+            )
+            .build())
     }
 }
 
@@ -275,6 +294,23 @@ impl PublicKeyAgreementHandle for EddsaPublicKeyHandle {
     fn as_raw(&self) -> Vec<u8> {
         self.public_key_x25519.to_owned()
     }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        Ok(CoseKeyBuilder::new_okp_key()
+            .param(
+                iana::Ec2KeyParameter::Crv.to_i64(),
+                ciborium::Value::from(iana::EllipticCurve::X25519.to_i64()),
+            )
+            .param(
+                iana::Ec2KeyParameter::X as i64,
+                ciborium::Value::from(self.public_key_x25519.to_owned()),
+            )
+            .build())
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Err(KeyHandleError::OperationNotSupported)
+    }
 }
 
 struct X25519PublicKeyHandle {
@@ -307,11 +343,27 @@ impl PublicKeyAgreementHandle for X25519PublicKeyHandle {
     fn as_raw(&self) -> Vec<u8> {
         self.public_key.clone()
     }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        Ok(CoseKeyBuilder::new_okp_key()
+            .param(
+                iana::Ec2KeyParameter::Crv.to_i64(),
+                ciborium::Value::from(iana::EllipticCurve::X25519.to_i64()),
+            )
+            .param(
+                iana::Ec2KeyParameter::X as i64,
+                ciborium::Value::from(self.public_key.to_owned()),
+            )
+            .build())
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Err(KeyHandleError::OperationNotSupported)
+    }
 }
 
 pub(crate) fn eddsa_public_key_as_jwk(
     public_key: &[u8],
-    curve: &str,
     r#use: Option<JwkUse>,
 ) -> Result<PublicJwk, KeyHandleError> {
     let alg = match r#use {
@@ -323,7 +375,7 @@ pub(crate) fn eddsa_public_key_as_jwk(
         alg,
         r#use,
         kid: None,
-        crv: curve.to_string(),
+        crv: "Ed25519".to_string(),
         x: Base64UrlSafeNoPadding::encode_to_string(public_key)?,
         y: None,
     }))

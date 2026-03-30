@@ -1,6 +1,7 @@
 use std::string::FromUtf8Error;
 use std::sync::Arc;
 
+use coset::CoseKey;
 use one_crypto::encryption::EncryptionError;
 use one_crypto::jwe::PrivateKeyAgreementHandle;
 use one_crypto::signer::bbs::parse_bbs_input;
@@ -101,6 +102,32 @@ impl KeyHandle {
         }
     }
 
+    pub fn public_key_as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        match &self {
+            Self::SignatureOnly(value) => value.public().as_cose(),
+            Self::SignatureAndKeyAgreement { signature, .. } => signature.public().as_cose(),
+            Self::KeyAgreementOnly(key_agreement) => key_agreement.public().as_cose(),
+            Self::MultiMessageSignature(_) => Err(KeyHandleError::OperationNotSupported),
+        }
+    }
+    pub fn public_key_as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        match &self {
+            Self::SignatureOnly(value) => value.public().as_der(),
+            Self::SignatureAndKeyAgreement { signature, .. } => signature.public().as_der(),
+            Self::KeyAgreementOnly(key_agreement) => key_agreement.public().as_der(),
+            Self::MultiMessageSignature(_) => Err(KeyHandleError::OperationNotSupported),
+        }
+    }
+
+    pub fn public_key_as_raw(&self) -> Vec<u8> {
+        match &self {
+            Self::SignatureOnly(value) => value.public().as_raw(),
+            Self::SignatureAndKeyAgreement { signature, .. } => signature.public().as_raw(),
+            Self::KeyAgreementOnly(key_agreement) => key_agreement.public().as_raw(),
+            Self::MultiMessageSignature(value) => value.public().as_raw(),
+        }
+    }
+
     pub fn verify(&self, message: &[u8], signature_bytes: &[u8]) -> Result<(), KeyHandleError> {
         match &self {
             Self::SignatureOnly(value) => value.public().verify(message, signature_bytes),
@@ -141,15 +168,6 @@ impl KeyHandle {
                     .sign(input.header, input.messages)
             }
             Self::KeyAgreementOnly(_) => Err(KeyHandleError::OperationNotSupported),
-        }
-    }
-
-    pub fn public_key_as_raw(&self) -> Vec<u8> {
-        match &self {
-            Self::SignatureOnly(value) => value.public().as_raw(),
-            Self::SignatureAndKeyAgreement { signature, .. } => signature.public().as_raw(),
-            Self::KeyAgreementOnly(key_agreement) => key_agreement.public().as_raw(),
-            Self::MultiMessageSignature(value) => value.public().as_raw(),
         }
     }
 }
@@ -195,6 +213,8 @@ pub trait SignaturePublicKeyHandle: Send + Sync {
     fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError>;
     fn as_multibase(&self) -> Result<String, KeyHandleError>;
     fn as_raw(&self) -> Vec<u8>;
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError>;
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError>;
 
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError>;
 }
@@ -246,6 +266,8 @@ pub trait PublicKeyAgreementHandle: Send + Sync {
     fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError>;
     fn as_multibase(&self) -> Result<String, KeyHandleError>;
     fn as_raw(&self) -> Vec<u8>;
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError>;
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError>;
 }
 
 #[derive(Clone)]

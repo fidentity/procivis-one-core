@@ -41,13 +41,13 @@ pub trait KeyAlgorithm: Send + Sync {
     /// https://datatracker.ietf.org/doc/html/draft-ietf-cose-dilithium
     fn issuance_jose_alg_id(&self) -> Option<String>;
     fn verification_jose_alg_ids(&self) -> Vec<String>;
-    fn cose_alg_id(&self) -> Option<i32>;
+    fn cose_alg_id(&self) -> Option<i64>;
 
     /// parse public keys coming from an external source
     fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError>;
     fn parse_private_jwk(&self, jwk: PrivateJwk) -> Result<GeneratedKey, KeyAlgorithmError>;
     fn parse_multibase(&self, multibase: &str) -> Result<KeyHandle, KeyAlgorithmError>;
-    fn parse_raw(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError>;
+    fn parse_der(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError>;
 }
 
 pub(crate) fn parse_multibase_with_tag(

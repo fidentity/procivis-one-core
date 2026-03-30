@@ -4,7 +4,7 @@ use standardized_types::jwk::PrivateJwkEc;
 use super::*;
 
 #[test]
-fn test_jwk_to_bytes() {
+fn test_public_key_representations() {
     let jwk = PublicJwk::Okp(PublicJwkEc {
         alg: None,
         r#use: None,
@@ -14,13 +14,55 @@ fn test_jwk_to_bytes() {
         y: None,
     });
 
+    let key = Eddsa.parse_jwk(&jwk).unwrap();
+
     assert_eq!(
+        key.public_key_as_raw(),
         vec![
             155, 176, 4, 229, 68, 29, 140, 187, 130, 58, 118, 71, 7, 88, 2, 21, 250, 54, 186, 248,
             76, 233, 111, 248, 196, 89, 169, 36, 173, 54, 175, 187,
         ],
-        Eddsa.parse_jwk(&jwk).unwrap().public_key_as_raw()
-    )
+    );
+
+    assert_eq!(
+        key.public_key_as_der().unwrap(),
+        vec![
+            48, 42, 48, 5, 6, 3, 43, 101, 112, 3, 33, 0, 155, 176, 4, 229, 68, 29, 140, 187, 130,
+            58, 118, 71, 7, 88, 2, 21, 250, 54, 186, 248, 76, 233, 111, 248, 196, 89, 169, 36, 173,
+            54, 175, 187,
+        ]
+    );
+
+    assert_eq!(
+        key.public_key_as_multibase().unwrap(),
+        "z6MkpvzunJyRHjLn6dWmrmCafhBa1MPK5eazFLyHzvNonGNN"
+    );
+
+    assert_eq!(key.public_key_as_jwk().unwrap(), jwk);
+
+    assert_eq!(
+        key.public_key_as_cose().unwrap(),
+        CoseKey {
+            kty: iana::KeyType::OKP.into(),
+            key_id: Default::default(),
+            alg: None,
+            key_ops: Default::default(),
+            base_iv: Default::default(),
+            params: vec![
+                (
+                    coset::Label::Int(iana::Ec2KeyParameter::Crv as i64),
+                    ciborium::Value::from(iana::EllipticCurve::Ed25519 as u64),
+                ),
+                (
+                    coset::Label::Int(iana::Ec2KeyParameter::X as i64),
+                    ciborium::Value::Bytes(vec![
+                        155, 176, 4, 229, 68, 29, 140, 187, 130, 58, 118, 71, 7, 88, 2, 21, 250,
+                        54, 186, 248, 76, 233, 111, 248, 196, 89, 169, 36, 173, 54, 175, 187,
+                    ])
+                ),
+            ]
+        }
+    );
 }
 
 #[tokio::test]

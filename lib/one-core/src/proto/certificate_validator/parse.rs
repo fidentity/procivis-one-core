@@ -184,7 +184,7 @@ impl CertificateValidatorImpl {
             .error_while("getting key algorithm")?;
 
         let key_handle = key_algorithm
-            .parse_raw(certificate.subject_pki.raw)
+            .parse_der(certificate.subject_pki.raw)
             .error_while("parsing certificate public key")?;
 
         Ok(key_handle)

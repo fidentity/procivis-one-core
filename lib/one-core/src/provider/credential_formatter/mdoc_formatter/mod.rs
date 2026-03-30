@@ -7,16 +7,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use ciborium::Value;
-use coset::iana::{self, EnumI64};
-use coset::{CoseKey, CoseKeyBuilder, Header, HeaderBuilder, SignatureContext};
-use ct_codecs::{Base64, Base64UrlSafeNoPadding, Decoder, Encoder};
+use coset::iana::EnumI64;
+use coset::{Header, HeaderBuilder, SignatureContext};
+use ct_codecs::{Base64, Decoder, Encoder};
 use indexmap::{IndexMap, IndexSet};
 use one_crypto::utilities::generate_random_bytes;
 use serde::Deserialize;
 use serde_with::{DurationSeconds, serde_as};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use shared_types::{CredentialId, CredentialSchemaId, DidValue};
-use standardized_types::jwk::{PublicJwk, PublicJwkEc};
+use standardized_types::jwk::PublicJwk;
 use time::format_description::FormatItem;
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
@@ -161,11 +161,11 @@ impl CredentialFormatter for MdocFormatter {
                     })?
                     .reconstruct_key(&key.public_key, None, None)
                     .error_while("reconstructing key")?
-                    .public_key_as_jwk()
-                    .error_while("getting JWK")?
+                    .public_key_as_cose()
+                    .error_while("getting CoseKey")?
             }
             crate::model::identifier::IdentifierType::Did => {
-                try_extract_did(
+                let jwk = try_extract_did(
                     self.did_method_provider.as_ref(),
                     &holder_identifier
                         .did
@@ -175,7 +175,14 @@ impl CredentialFormatter for MdocFormatter {
                         .did,
                     credential_data.holder_key_id.as_ref(),
                 )
-                .await?
+                .await?;
+
+                self.key_algorithm_provider
+                    .parse_jwk(&jwk)
+                    .error_while("parsing JWK")?
+                    .key
+                    .public_key_as_cose()
+                    .error_while("getting CoseKey")?
             }
             _ => {
                 return Err(FormatterError::CouldNotFormat(
@@ -184,10 +191,8 @@ impl CredentialFormatter for MdocFormatter {
             }
         };
 
-        let cose_key = try_build_cose_key(holder_key).await?;
-
         let device_key_info = DeviceKeyInfo {
-            device_key: DeviceKey(cose_key),
+            device_key: DeviceKey(holder_key),
             key_authorizations: None,
             key_info: None,
         };
@@ -903,38 +908,6 @@ async fn try_extract_did(
     Err(FormatterError::CouldNotVerify(format!(
         "Verification method not found: did:{holder_did}, keyId:{holder_key_id:?}"
     )))
-}
-
-async fn try_build_cose_key(key: PublicJwk) -> Result<CoseKey, FormatterError> {
-    let base64decode = |v| Base64UrlSafeNoPadding::decode_to_vec(v, None);
-
-    Ok(match key {
-        PublicJwk::Ec(PublicJwkEc {
-            crv, x, y: Some(y), ..
-        }) if &crv == "P-256" => {
-            let x = base64decode(x)?;
-            let y = base64decode(y)?;
-
-            CoseKeyBuilder::new_ec2_pub_key(iana::EllipticCurve::P_256, x, y).build()
-        }
-
-        PublicJwk::Okp(key) if key.crv == "Ed25519" => {
-            let x = base64decode(key.x)?;
-
-            CoseKeyBuilder::new_okp_key()
-                .param(
-                    iana::Ec2KeyParameter::Crv.to_i64(),
-                    ciborium::Value::from(iana::EllipticCurve::Ed25519.to_i64()),
-                )
-                .param(iana::Ec2KeyParameter::X as i64, ciborium::Value::from(x))
-                .build()
-        }
-        key => {
-            return Err(FormatterError::CouldNotFormat(format!(
-                "Key not available for mdoc {key:?}"
-            )));
-        }
-    })
 }
 
 fn build_json_value(value: DataElementValue) -> Result<serde_json::Value, FormatterError> {

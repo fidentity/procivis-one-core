@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use coset::CoseKey;
 use one_crypto::signer::ecdsa::ECDSASigner;
 use one_crypto::{Signer, SignerError};
 use serde::Deserialize;
@@ -10,7 +11,7 @@ use crate::config::core_config::KeyAlgorithmType;
 use crate::error::ContextWithErrorCode;
 use crate::model::key::Key;
 use crate::provider::key_algorithm::ecdsa::{
-    ecdsa_public_key_as_jwk, ecdsa_public_key_as_multibase,
+    ecdsa_public_key_as_cose, ecdsa_public_key_as_jwk, ecdsa_public_key_as_multibase,
 };
 use crate::provider::key_algorithm::key::{
     KeyHandle, KeyHandleError, SignatureKeyHandle, SignaturePrivateKeyHandle,
@@ -182,6 +183,14 @@ impl SignaturePublicKeyHandle for SecureElementKeyHandle {
 
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(ECDSASigner.verify(message, signature, &self.key.public_key)?)
+    }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        ecdsa_public_key_as_cose(&self.key.public_key)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(ECDSASigner::public_key_to_der(&self.key.public_key)?)
     }
 }
 

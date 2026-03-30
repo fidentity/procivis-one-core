@@ -47,6 +47,7 @@ impl SignatureService {
                         key: Some(KeyRelations { organisation: None }),
                         organisation: None,
                     }),
+                    ..Default::default()
                 },
             )
             .await

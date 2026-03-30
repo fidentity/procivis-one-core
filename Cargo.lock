@@ -1559,6 +1559,7 @@ dependencies = [
  "serde_json",
  "similar-asserts",
  "standardized-types",
+ "strum 0.27.2",
  "thiserror 2.0.17",
 ]
 
@@ -6206,6 +6207,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "autometrics",
+ "dcql",
  "futures",
  "hex",
  "itertools",

@@ -12,6 +12,7 @@ pub mod did_repository;
 pub mod history_repository;
 pub mod holder_wallet_unit_repository;
 pub mod identifier_repository;
+pub mod identifier_trust_information_repository;
 pub mod interaction_repository;
 pub mod key_repository;
 pub mod notification_repository;

@@ -39,3 +39,6 @@ mod trust_tests;
 mod verifier_instance_tests;
 #[path = "test/wallet_unit.rs"]
 mod wallet_unit_tests;
+
+#[path = "test/identifier_trust_information.rs"]
+mod identifier_trust_information_tests;

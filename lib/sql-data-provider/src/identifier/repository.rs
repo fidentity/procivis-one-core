@@ -39,6 +39,14 @@ impl IdentifierProvider {
             );
         }
 
+        if let Some(_trust_relations) = &relations.trust_information {
+            result.trust_information = Some(
+                self.trust_information_repository
+                    .get_by_identifier_id(&model.id)
+                    .await?,
+            );
+        }
+
         if model.r#type == identifier::IdentifierType::Did
             && let Some(did_relations) = &relations.did
             && let Some(did_id) = &model.did_id

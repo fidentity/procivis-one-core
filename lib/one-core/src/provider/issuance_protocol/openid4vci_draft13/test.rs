@@ -167,6 +167,7 @@ fn generic_credential_did() -> Credential {
         did: Some(issuer_did),
         key: None,
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
@@ -203,6 +204,7 @@ fn generic_credential_certificate() -> Credential {
             state: CertificateState::Active,
             key: None,
         }]),
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
@@ -240,6 +242,7 @@ fn generic_credential_key() -> Credential {
         did: None,
         key: Some(issuer_key),
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
@@ -564,6 +567,7 @@ async fn test_handle_invitation_credential_by_ref_with_did_success() {
                     organisation: did.organisation,
                     key: None,
                     certificates: None,
+                    trust_information: None,
                 },
                 relation,
             ))

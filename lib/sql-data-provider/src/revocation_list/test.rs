@@ -58,6 +58,7 @@ async fn setup() -> TestSetup {
         did: None,
         key: None,
         certificates: None,
+        trust_information: None,
     };
 
     TestSetup {

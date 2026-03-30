@@ -13,6 +13,9 @@ use super::list_filter::{ListFilterValue, StringMatch};
 use super::list_query::ListQuery;
 use super::organisation::{Organisation, OrganisationRelations};
 use crate::config;
+use crate::model::identifier_trust_information::{
+    IdentifierTrustInformation, IdentifierTrustInformationRelations,
+};
 use crate::model::list_filter::ValueComparison;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +34,7 @@ pub struct Identifier {
     pub did: Option<Did>,
     pub key: Option<Key>,
     pub certificates: Option<Vec<Certificate>>,
+    pub trust_information: Option<Vec<IdentifierTrustInformation>>,
 }
 
 impl Identifier {
@@ -93,6 +97,7 @@ pub struct IdentifierRelations {
     pub did: Option<DidRelations>,
     pub key: Option<KeyRelations>,
     pub certificates: Option<CertificateRelations>,
+    pub trust_information: Option<IdentifierTrustInformationRelations>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

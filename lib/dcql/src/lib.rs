@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 use standardized_types::x509::AuthorityKeyIdentifier;
+use strum::EnumString;
 use thiserror::Error;
 
 pub mod builder;
@@ -103,17 +104,22 @@ pub struct ClaimQuery {
     pub intent_to_retain: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString)]
 pub enum CredentialFormat {
     #[serde(rename = "jwt_vc_json")]
+    #[strum(to_string = "jwt_vc_json")]
     JwtVc,
     #[serde(rename = "ldp_vc")]
+    #[strum(to_string = "ldp_vc")]
     LdpVc,
     #[serde(rename = "mso_mdoc")]
+    #[strum(to_string = "mso_mdoc")]
     MsoMdoc,
     #[serde(rename = "dc+sd-jwt")]
+    #[strum(to_string = "dc+sd-jwt")]
     SdJwt,
     #[serde(rename = "vc+sd-jwt")]
+    #[strum(to_string = "vc+sd-jwt")]
     W3cSdJwt,
 }
 

@@ -167,8 +167,7 @@ impl TrustEntityService {
                         organisation: Some(OrganisationRelations::default()),
                         ..Default::default()
                     }),
-                    key: None,
-                    certificates: None,
+                    ..Default::default()
                 },
             )
             .await

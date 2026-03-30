@@ -10,6 +10,7 @@ pub mod did;
 pub mod history;
 pub mod holder_wallet_unit;
 pub mod identifier;
+pub mod identifier_trust_information;
 pub mod interaction;
 pub mod key;
 pub mod key_did;

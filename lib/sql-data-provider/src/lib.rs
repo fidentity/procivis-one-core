@@ -21,6 +21,7 @@ use one_core::repository::did_repository::DidRepository;
 use one_core::repository::history_repository::HistoryRepository;
 use one_core::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use one_core::repository::identifier_repository::IdentifierRepository;
+use one_core::repository::identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use one_core::repository::interaction_repository::InteractionRepository;
 use one_core::repository::key_repository::KeyRepository;
 use one_core::repository::notification_repository::NotificationRepository;
@@ -58,6 +59,7 @@ use crate::credential::CredentialProvider;
 use crate::credential_schema::CredentialSchemaProvider;
 use crate::history::HistoryProvider;
 use crate::holder_wallet_unit::HolderWalletUnitProvider;
+use crate::identifier_trust_information::IdentifierTrustInformationProvider;
 use crate::key::KeyProvider;
 use crate::notification::NotificationProvider;
 use crate::remote_entity_cache::RemoteEntityCacheProvider;
@@ -118,6 +120,8 @@ pub struct DataLayer {
     credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
     history_repository: Arc<dyn HistoryRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
+    #[allow(dead_code)]
+    identifier_trust_information_repository: Arc<dyn IdentifierTrustInformationRepository>,
     certificate_repository: Arc<dyn CertificateRepository>,
     key_repository: Arc<dyn KeyRepository>,
     json_ld_context_repository: Arc<dyn RemoteEntityCacheRepository>,
@@ -148,6 +152,11 @@ impl DataLayer {
         let history_repository = Arc::new(HistoryProvider {
             db: transaction_manager.clone(),
         });
+
+        let identifier_trust_information_repository =
+            Arc::new(IdentifierTrustInformationProvider {
+                db: transaction_manager.clone(),
+            });
 
         let claim_schema_repository = Arc::new(ClaimSchemaProvider {
             db: transaction_manager.clone(),
@@ -199,6 +208,7 @@ impl DataLayer {
             did_repository: did_repository.clone(),
             key_repository: key_repository.clone(),
             certificate_repository: certificate_repository.clone(),
+            trust_information_repository: identifier_trust_information_repository.clone(),
         });
 
         let proof_schema_repository = Arc::new(ProofSchemaProvider {
@@ -338,6 +348,7 @@ impl DataLayer {
             trust_list_publication_repository,
             trust_list_subscription_repository,
             identifier_repository,
+            identifier_trust_information_repository,
             certificate_repository,
             blob_repository,
             notification_repository,
@@ -468,6 +479,7 @@ pub async fn db_conn(
 
 mod blob;
 mod holder_wallet_unit;
+mod identifier_trust_information;
 #[cfg(any(test, feature = "test_utils"))]
 pub mod test_utilities;
 mod transaction_context;

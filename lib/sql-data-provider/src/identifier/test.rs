@@ -1,11 +1,15 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use dcql::CredentialFormat;
 use one_core::model::common::SortDirection;
 use one_core::model::did::Did;
 use one_core::model::identifier::{
-    Identifier, IdentifierFilterValue, IdentifierListQuery, IdentifierState, IdentifierType,
-    SortableIdentifierColumn,
+    Identifier, IdentifierFilterValue, IdentifierListQuery, IdentifierRelations, IdentifierState,
+    IdentifierType, SortableIdentifierColumn,
+};
+use one_core::model::identifier_trust_information::{
+    IdentifierTrustInformation, IdentifierTrustInformationRelations, SchemaFormat,
 };
 use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::list_query::{ListPagination, ListSorting};
@@ -14,6 +18,7 @@ use one_core::repository::certificate_repository::MockCertificateRepository;
 use one_core::repository::did_repository::MockDidRepository;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::identifier_repository::IdentifierRepository;
+use one_core::repository::identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use one_core::repository::key_repository::MockKeyRepository;
 use one_core::repository::organisation_repository::MockOrganisationRepository;
 use sea_orm::DatabaseConnection;
@@ -22,9 +27,10 @@ use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::IdentifierProvider;
+use crate::entity::blob::BlobType;
 use crate::test_utilities::{
-    dummy_organisation, get_dummy_date, insert_did_key, insert_organisation_to_database,
-    setup_test_data_layer_and_connection,
+    dummy_organisation, get_dummy_date, insert_blob_to_database, insert_did_key,
+    insert_organisation_to_database, setup_test_data_layer_and_connection,
 };
 use crate::transaction_context::TransactionManagerImpl;
 
@@ -33,6 +39,7 @@ struct TestSetup {
     pub organisation: Organisation,
     pub did: Did,
     pub db: DatabaseConnection,
+    pub trust_information_repository: Arc<dyn IdentifierTrustInformationRepository>,
 }
 
 #[derive(Default)]
@@ -81,10 +88,14 @@ async fn setup(repositories: Repositories) -> TestSetup {
             did_repository: Arc::new(MockDidRepository::default()),
             key_repository: Arc::new(MockKeyRepository::default()),
             certificate_repository: Arc::new(MockCertificateRepository::default()),
+            trust_information_repository: data_layer
+                .identifier_trust_information_repository
+                .clone(),
         },
         organisation,
         did,
         db,
+        trust_information_repository: data_layer.identifier_trust_information_repository,
     }
 }
 
@@ -124,6 +135,7 @@ async fn test_create_and_delete_identifier() {
         key: None,
         certificates: None,
         deleted_at: None,
+        trust_information: None,
     };
 
     assert_eq!(id, setup.provider.create(identifier.clone()).await.unwrap());
@@ -172,6 +184,7 @@ async fn test_get_identifier() {
         key: None,
         certificates: None,
         deleted_at: None,
+        trust_information: None,
     };
 
     setup.provider.create(identifier.clone()).await.unwrap();
@@ -242,6 +255,7 @@ async fn test_get_identifier_list() {
         key: None,
         certificates: None,
         deleted_at: None,
+        trust_information: None,
     };
 
     let did2_id = insert_did_key(
@@ -282,6 +296,7 @@ async fn test_get_identifier_list() {
         key: None,
         certificates: None,
         deleted_at: None,
+        trust_information: None,
     };
 
     setup.provider.create(identifier1.clone()).await.unwrap();
@@ -327,4 +342,120 @@ async fn test_get_identifier_list() {
     assert_eq!(result.total_pages, 2);
     assert_eq!(result.values.len(), 1);
     assert_eq!(result.values[0].id, id1);
+}
+
+#[tokio::test]
+async fn test_get_identifier_with_trust_info() {
+    let mut organisation_repository = MockOrganisationRepository::new();
+    organisation_repository
+        .expect_get_organisation()
+        .returning(|_, _| {
+            Ok(Some(Organisation {
+                id: Uuid::new_v4().into(),
+                name: "test_organisation".to_string(),
+                created_date: get_dummy_date(),
+                last_modified: get_dummy_date(),
+                deactivated_at: None,
+                wallet_provider: None,
+                wallet_provider_issuer: None,
+            }))
+        });
+
+    let setup = setup(Repositories {
+        organisation_repository,
+    })
+    .await;
+    let id = Uuid::new_v4().into();
+
+    let identifier = Identifier {
+        id,
+        created_date: get_dummy_date(),
+        last_modified: get_dummy_date(),
+        name: "test_identifier".to_string(),
+        r#type: IdentifierType::Did,
+        is_remote: false,
+        state: IdentifierState::Active,
+        organisation: Some(setup.organisation.clone()),
+        did: Some(setup.did.clone()),
+        key: None,
+        certificates: None,
+        deleted_at: None,
+        trust_information: None,
+    };
+
+    setup.provider.create(identifier.clone()).await.unwrap();
+    setup
+        .trust_information_repository
+        .create(IdentifierTrustInformation {
+            id: Uuid::new_v4().into(),
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            valid_from: None,
+            valid_to: None,
+            intended_use: None,
+            allowed_issuance_types: vec![],
+            allowed_verification_types: vec![
+                SchemaFormat {
+                    format: CredentialFormat::JwtVc,
+                    schema_id: "test-schema-id".to_string(),
+                },
+                SchemaFormat {
+                    format: CredentialFormat::SdJwt,
+                    schema_id: "test-schema-id".to_string(),
+                },
+            ],
+            identifier_id: id,
+            blob_id: insert_blob_to_database(
+                &setup.db,
+                None,
+                BlobType::RegistrationCertificate,
+                None,
+            )
+            .await
+            .unwrap(),
+        })
+        .await
+        .unwrap();
+    setup
+        .trust_information_repository
+        .create(IdentifierTrustInformation {
+            id: Uuid::new_v4().into(),
+            created_date: get_dummy_date(),
+            last_modified: get_dummy_date(),
+            valid_from: None,
+            valid_to: None,
+            intended_use: None,
+            allowed_issuance_types: vec![SchemaFormat {
+                format: CredentialFormat::JwtVc,
+                schema_id: "test-schema-id".to_string(),
+            }],
+            allowed_verification_types: vec![],
+            identifier_id: id,
+            blob_id: insert_blob_to_database(
+                &setup.db,
+                None,
+                BlobType::RegistrationCertificate,
+                None,
+            )
+            .await
+            .unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let identifier = setup
+        .provider
+        .get(
+            id,
+            &IdentifierRelations {
+                trust_information: Some(IdentifierTrustInformationRelations::default()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(identifier.trust_information.is_some());
+    assert_eq!(identifier.trust_information.unwrap().len(), 2);
 }

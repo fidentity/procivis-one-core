@@ -10,6 +10,7 @@ version                = "0.1.0"
 [dependencies]
 bon.workspace                = true
 serde                        = { version = "1.0", features = ["derive"] }
+strum.workspace              = true
 similar-asserts.workspace    = true
 standardized-types.workspace = true
 thiserror.workspace          = true

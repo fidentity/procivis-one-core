@@ -40,6 +40,7 @@ impl IdentifiersDB {
             r#type: params.r#type.unwrap_or(IdentifierType::Did),
             is_remote: params.is_remote.unwrap_or_default(),
             deleted_at: params.deleted_at,
+            trust_information: None,
         };
 
         let _ = self.repository.create(identifier.clone()).await.unwrap();
@@ -56,6 +57,7 @@ impl IdentifiersDB {
                     organisation: Some(Default::default()),
                     did: Some(Default::default()),
                     certificates: Some(Default::default()),
+                    trust_information: Some(Default::default()),
                 },
             )
             .await

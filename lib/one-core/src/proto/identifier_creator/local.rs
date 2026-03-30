@@ -57,6 +57,7 @@ impl IdentifierCreatorProto {
             did: Some(did),
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -100,6 +101,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: Some(key),
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -140,6 +142,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -190,6 +193,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())

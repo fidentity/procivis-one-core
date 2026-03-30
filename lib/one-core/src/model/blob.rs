@@ -35,4 +35,5 @@ pub enum BlobType {
     Proof,
     WalletInstanceAttestation,
     WalletUnitAttestation,
+    RegistrationCertificate,
 }

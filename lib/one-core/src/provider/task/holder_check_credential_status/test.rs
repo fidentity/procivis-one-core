@@ -282,6 +282,7 @@ fn generic_credential() -> Credential {
             did: Some(issuer_did),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         issuer_certificate: None,
         holder_identifier: None,

@@ -41,4 +41,6 @@ pub enum BlobType {
     WalletInstanceAttestation,
     #[sea_orm(string_value = "WALLET_UNIT_ATTESTATION")]
     WalletUnitAttestation,
+    #[sea_orm(string_value = "REGISTRATION_CERTIFICATE")]
+    RegistrationCertificate,
 }

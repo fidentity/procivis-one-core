@@ -161,6 +161,7 @@ async fn resolve_untrusted_identifier() {
             state: CertificateState::Active,
             key: Some(dummy_key()),
         }]),
+        trust_information: None,
     };
 
     let result = subscriber
@@ -204,6 +205,7 @@ async fn resolve_trusted_identifier() {
             state: CertificateState::Active,
             key: Some(dummy_key()),
         }]),
+        trust_information: None,
     };
 
     let result = subscriber

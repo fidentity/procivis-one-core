@@ -51,6 +51,7 @@ impl From<TrustEntryWithIdentifier> for TrustEntry {
                 did: None,
                 key: None,
                 certificates: None,
+                trust_information: None,
             }),
         }
     }

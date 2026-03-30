@@ -56,6 +56,7 @@ impl From<identifier::Model> for Identifier {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         }
     }
 }

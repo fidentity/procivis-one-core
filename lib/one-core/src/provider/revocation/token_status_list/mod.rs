@@ -361,7 +361,6 @@ impl RevocationMethod for TokenStatusList {
             .get(
                 issuer_id,
                 &IdentifierRelations {
-                    organisation: None,
                     did: Some(DidRelations {
                         keys: Some(Default::default()),
                         ..Default::default()
@@ -371,6 +370,7 @@ impl RevocationMethod for TokenStatusList {
                         key: Some(Default::default()),
                         ..Default::default()
                     }),
+                    ..Default::default()
                 },
             )
             .await

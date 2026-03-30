@@ -1662,6 +1662,7 @@ fn dummy_credential(organisation_id: Option<OrganisationId>) -> Credential {
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         issuer_certificate: None,
         holder_identifier: None,

@@ -509,6 +509,7 @@ mod tests {
                     organisation: None,
                 }),
             }]),
+            trust_information: None,
         };
 
         identifier_repository
@@ -951,6 +952,7 @@ mod tests {
             did: None,
             key: Some(create_test_key(key_type)),
             certificates: None,
+            trust_information: None,
         }
     }
 
@@ -969,6 +971,7 @@ mod tests {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         }
     }
 
@@ -1018,6 +1021,7 @@ mod tests {
             did: None,
             key: None,
             certificates: Some(vec![certificate]),
+            trust_information: None,
         }
     }
 }

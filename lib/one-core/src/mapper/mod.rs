@@ -579,6 +579,7 @@ mod tests {
                 did: Some(did.clone()),
                 key: None,
                 certificates: None,
+                trust_information: None,
             },
             RemoteIdentifierRelation::Did(did),
             None,

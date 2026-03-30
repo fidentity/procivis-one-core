@@ -29,6 +29,7 @@ serde_json.workspace         = true
 shared-types.workspace       = true
 similar-asserts              = { workspace = true, optional = true }
 standardized-types.workspace = true
+dcql.workspace               = true
 time.workspace               = true
 tokio                        = { workspace = true, features = ["macros"] }
 tracing.workspace            = true

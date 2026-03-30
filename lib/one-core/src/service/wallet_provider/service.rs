@@ -989,7 +989,6 @@ impl WalletProviderService {
             .get(
                 issuer_identifier_id,
                 &IdentifierRelations {
-                    organisation: None,
                     did: Some(DidRelations {
                         keys: Some(KeyRelations::default()),
                         ..Default::default()
@@ -999,6 +998,7 @@ impl WalletProviderService {
                         key: Some(KeyRelations::default()),
                         ..Default::default()
                     }),
+                    ..Default::default()
                 },
             )
             .await

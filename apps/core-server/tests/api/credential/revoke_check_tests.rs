@@ -2076,6 +2076,7 @@ async fn minimal_mdoc_credential(params: Params) -> String {
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         holder_key_id: None,
         issuer_certificate: None,

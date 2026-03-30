@@ -174,6 +174,7 @@ fn generic_credential_did() -> Credential {
         did: Some(issuer_did),
         key: None,
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
@@ -211,6 +212,7 @@ fn generic_credential_key() -> Credential {
         did: None,
         key: Some(issuer_key),
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }

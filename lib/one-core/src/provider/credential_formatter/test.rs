@@ -107,6 +107,7 @@ fn generate_credential_matching_detail(
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         issuer_certificate: None,
         holder_identifier: Some(Identifier {
@@ -134,6 +135,7 @@ fn generate_credential_matching_detail(
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         schema: Some(CredentialSchema {
             id: detail.schema.id,

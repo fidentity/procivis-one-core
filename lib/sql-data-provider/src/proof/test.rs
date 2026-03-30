@@ -366,6 +366,7 @@ async fn test_create_proof_success() {
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         interaction: None,
         profile: None,
@@ -540,6 +541,7 @@ async fn test_get_proof_with_relations() {
                 }),
                 key: None,
                 certificates: None,
+                trust_information: None,
             }))
         });
 

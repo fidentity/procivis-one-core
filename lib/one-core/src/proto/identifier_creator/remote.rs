@@ -100,6 +100,7 @@ impl IdentifierCreatorProto {
                     did: Some(did.to_owned()),
                     key: None,
                     certificates: None,
+                    trust_information: None,
                 };
                 self.identifier_repository
                     .create(identifier.clone())
@@ -181,6 +182,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.clone())
@@ -294,6 +296,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: Some(key.clone()),
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.clone())

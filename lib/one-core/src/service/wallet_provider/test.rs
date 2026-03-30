@@ -182,6 +182,7 @@ async fn test_register_wallet_unit() {
                     organisation: None,
                 }),
                 certificates: None,
+                trust_information: None,
             }))
         });
 
@@ -294,6 +295,7 @@ async fn test_register_wallet_unit_integrity_check() {
                     organisation: None,
                 }),
                 certificates: None,
+                trust_information: None,
             }))
         });
 

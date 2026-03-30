@@ -308,5 +308,6 @@ pub fn prepare_identifier(
         did: identifier_did,
         key: identifier_key,
         certificates: identifier_certificate.map(|c| vec![c]),
+        trust_information: None,
     })
 }

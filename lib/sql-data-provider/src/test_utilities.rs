@@ -373,6 +373,25 @@ pub async fn insert_organisation_to_database(
     Ok(organisation.id)
 }
 
+pub async fn insert_blob_to_database(
+    database: &DatabaseConnection,
+    id: Option<BlobId>,
+    r#type: BlobType,
+    value: Option<Vec<u8>>,
+) -> Result<BlobId, DbErr> {
+    let id = id.unwrap_or(Uuid::new_v4().into());
+    let blob = blob::ActiveModel {
+        id: Set(id),
+        created_date: Set(get_dummy_date()),
+        last_modified: Set(get_dummy_date()),
+        value: Set(value.unwrap_or_default()),
+        r#type: Set(r#type),
+    }
+    .insert(database)
+    .await?;
+    Ok(blob.id)
+}
+
 pub async fn insert_key_to_database(
     database: &DatabaseConnection,
     key_type: String,

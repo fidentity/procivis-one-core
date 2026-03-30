@@ -174,6 +174,7 @@ async fn setup_empty() -> TestSetup {
         did: Some(did.clone()),
         key: None,
         certificates: None,
+        trust_information: None,
     };
 
     TestSetup {

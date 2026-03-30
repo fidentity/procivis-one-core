@@ -158,6 +158,7 @@ async fn test_handle_invitation_success() {
                     is_remote: true,
                     state: IdentifierState::Active,
                     deleted_at: None,
+                    trust_information: None,
                 },
                 RemoteIdentifierRelation::Did(Did {
                     id: Uuid::new_v4().into(),

@@ -477,6 +477,7 @@ pub async fn create_identifier(
         r#type: params.r#type.unwrap_or(IdentifierType::Did),
         is_remote: params.is_remote.unwrap_or_default(),
         deleted_at: params.deleted_at,
+        trust_information: None,
     };
 
     data_layer

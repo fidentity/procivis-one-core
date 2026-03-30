@@ -23,6 +23,7 @@ walletProvider:
           providerName: "Procivis One Dev"
         featureFlags:
           trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 verifierProvider:
   PROCIVIS_ONE:
     params:
@@ -32,6 +33,7 @@ verifierProvider:
           minimum: "v1.0.0"
         featureFlags:
           trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 format:
   MDOC_SHORT_EXPIRY:
     type: "MDOC"

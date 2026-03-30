@@ -65,6 +65,7 @@ walletProvider:
           wscdType: HYBRID
         featureFlags:
           trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: false
 format:
   MDOC_SHORT_EXPIRY:
     type: "MDOC"
@@ -329,3 +330,4 @@ verifierProvider:
             link: https//example.com
         featureFlags:
           trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: false

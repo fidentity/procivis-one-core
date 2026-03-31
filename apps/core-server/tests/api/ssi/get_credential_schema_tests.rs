@@ -1,3 +1,5 @@
+use similar_asserts::assert_eq;
+
 use crate::utils::context::TestContext;
 use crate::utils::field_match::FieldHelpers;
 
@@ -11,7 +13,7 @@ async fn test_get_credential_schema_success() {
         .create(
             "credential-schema",
             &organisation,
-            "LVVC",
+            Some("BITSTRINGSTATUSLIST".into()),
             Default::default(),
         )
         .await;
@@ -29,7 +31,7 @@ async fn test_get_credential_schema_success() {
 
     resp["id"].assert_eq(&credential_schema.id);
     assert_eq!(resp["claims"].as_array().unwrap().len(), 2);
-    assert_eq!(resp["revocationMethod"], "LVVC");
+    assert_eq!(resp["revocationMethod"], "BITSTRINGSTATUSLIST");
     assert_eq!(resp["organisationId"], organisation.id.to_string());
     assert_eq!(resp["layoutProperties"]["background"]["color"], "#DA2727");
     assert_eq!(resp["layoutProperties"]["primaryAttribute"], "firstName");

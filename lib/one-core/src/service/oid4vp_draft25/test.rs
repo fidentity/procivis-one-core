@@ -2,50 +2,45 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
-use serde_json::json;
-use shared_types::{DidValue, ProofId};
-use time::{Duration, OffsetDateTime};
+use shared_types::{InteractionId, ProofId};
+use similar_asserts::assert_eq;
+use standardized_types::jwa::EncryptionAlgorithm;
+use standardized_types::jwk::{JwkUse, PublicJwk, PublicJwkEc};
+use standardized_types::openid4vp::{
+    ClientMetadataJwks, GenericAlgs, LdpVcAlgs, PresentationFormat, SdJwtVcAlgs,
+};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::OID4VPDraft25Service;
+use super::error::OID4VPDraft25ServiceError;
 use crate::config::core_config::{CoreConfig, VerificationProtocolType};
 use crate::model::claim_schema::ClaimSchema;
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaType, LayoutType};
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
 use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
 use crate::model::identifier::Identifier;
-use crate::model::interaction::Interaction;
-use crate::model::key::{Key, PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::interaction::{Interaction, InteractionType};
+use crate::model::key::Key;
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputClaimSchema, ProofInputSchema, ProofSchema};
-use crate::provider::credential_formatter::MockCredentialFormatter;
-use crate::provider::credential_formatter::model::{
-    CredentialStatus, CredentialSubject, DetailCredential, Presentation,
-};
-use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
-use crate::provider::did_method::model::{DidDocument, DidVerificationMethod};
-use crate::provider::did_method::provider::MockDidMethodProvider;
+use crate::proto::identifier_creator::MockIdentifierCreator;
+use crate::proto::openid4vp_proof_validator::MockOpenId4VpProofValidator;
+use crate::proto::transaction_manager::NoTransactionManager;
+use crate::provider::blob_storage_provider::{MockBlobStorage, MockBlobStorageProvider};
 use crate::provider::key_algorithm::MockKeyAlgorithm;
 use crate::provider::key_algorithm::key::{
     KeyHandle, MockSignaturePublicKeyHandle, SignatureKeyHandle,
 };
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_storage::MockKeyStorage;
-use crate::provider::key_storage::model::{KeySecurity, KeyStorageCapabilities};
+use crate::provider::key_storage::model::KeyStorageCapabilities;
 use crate::provider::key_storage::provider::MockKeyProvider;
-use crate::provider::revocation::MockRevocationMethod;
-use crate::provider::revocation::model::CredentialRevocationState;
-use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::provider::verification_protocol::openid4vp::error::OpenID4VCError;
 use crate::provider::verification_protocol::openid4vp::model::*;
 use crate::repository::credential_repository::MockCredentialRepository;
-use crate::repository::did_repository::MockDidRepository;
-use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::proof_repository::MockProofRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
-use crate::service::error::ServiceError;
-use crate::service::key::dto::{PublicKeyJwkDTO, PublicKeyJwkEllipticDataDTO};
 use crate::service::test_utilities::*;
 
 #[derive(Default)]
@@ -55,16 +50,13 @@ struct Mocks {
     pub key_repository: MockKeyRepository,
     pub key_provider: MockKeyProvider,
     pub config: CoreConfig,
-    pub did_repository: MockDidRepository,
-    pub identifier_repository: MockIdentifierRepository,
-    pub formatter_provider: MockCredentialFormatterProvider,
-    pub did_method_provider: MockDidMethodProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
-    pub revocation_method_provider: MockRevocationMethodProvider,
     pub validity_credential_repository: MockValidityCredentialRepository,
+    pub blob_storage_provider: MockBlobStorageProvider,
+    pub identifier_creator: MockIdentifierCreator,
+    pub proof_validator: MockOpenId4VpProofValidator,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn setup_service(mocks: Mocks) -> OID4VPDraft25Service {
     OID4VPDraft25Service::new(
         Arc::new(mocks.credential_repository),
@@ -72,20 +64,19 @@ fn setup_service(mocks: Mocks) -> OID4VPDraft25Service {
         Arc::new(mocks.key_repository),
         Arc::new(mocks.key_provider),
         Arc::new(mocks.config),
-        Arc::new(mocks.did_repository),
-        Arc::new(mocks.identifier_repository),
-        Arc::new(mocks.formatter_provider),
-        Arc::new(mocks.did_method_provider),
         Arc::new(mocks.key_algorithm_provider),
-        Arc::new(mocks.revocation_method_provider),
         Arc::new(mocks.validity_credential_repository),
+        Arc::new(mocks.blob_storage_provider),
+        Arc::new(mocks.identifier_creator),
+        Arc::new(NoTransactionManager),
+        Arc::new(mocks.proof_validator),
     )
 }
 
-fn jwt_format_map() -> HashMap<String, OpenID4VpPresentationFormat> {
+fn jwt_format_map() -> HashMap<String, PresentationFormat> {
     HashMap::from([(
         "jwt_vc_json".to_string(),
-        OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+        PresentationFormat::GenericAlgList(GenericAlgs {
             alg: vec!["EdDSA".to_string(), "ES256".to_string()],
         }),
     )])
@@ -99,8 +90,9 @@ async fn test_presentation_definition_success() {
 
     let interaction_data = serde_json::to_vec(&OpenID4VPVerifierInteractionContent {
         nonce: "nonce".to_string(),
-        encryption_key_id: None,
-        presentation_definition: OpenID4VPPresentationDefinition {
+        encryption_key: None,
+        dcql_query: None,
+        presentation_definition: Some(OpenID4VPPresentationDefinition {
             id: Uuid::new_v4().to_string(),
             input_descriptors: vec![OpenID4VPPresentationDefinitionInputDescriptor {
                 id: "123".to_string(),
@@ -108,7 +100,6 @@ async fn test_presentation_definition_success() {
                 purpose: None,
                 format: jwt_format_map(),
                 constraints: OpenID4VPPresentationDefinitionConstraint {
-                    validity_credential_nbf: None,
                     fields: vec![OpenID4VPPresentationDefinitionConstraintField {
                         id: Some(Uuid::new_v4().into()),
                         name: None,
@@ -121,7 +112,7 @@ async fn test_presentation_definition_success() {
                     limit_disclosure: None,
                 },
             }],
-        },
+        }),
         client_id: "client_id".to_string(),
         client_id_scheme: None,
         response_uri: None,
@@ -133,19 +124,22 @@ async fn test_presentation_definition_success() {
         proof_repository
             .expect_get_proof()
             .once()
-            .return_once(move |_, _| {
+            .return_once(move |_, _, _| {
                 Ok(Some(Proof {
                     id: proof_id.to_owned(),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
-                    issuance_date: get_dummy_date(),
-                    exchange: "OPENID4VP_DRAFT25".to_string(),
+                    protocol: "OPENID4VP_DRAFT25".to_string(),
                     transport: "HTTP".to_string(),
                     redirect_uri: None,
                     state: ProofStateEnum::Pending,
                     role: ProofRole::Verifier,
                     requested_date: Some(get_dummy_date()),
                     completed_date: None,
+                    profile: None,
+                    proof_blob_id: None,
+                    engagement: None,
+                    webhook_url: None,
                     schema: Some(ProofSchema {
                         id: Uuid::default().into(),
                         created_date: now,
@@ -156,7 +150,6 @@ async fn test_presentation_definition_success() {
                         expire_duration: 0,
                         organisation: None,
                         input_schemas: Some(vec![ProofInputSchema {
-                            validity_constraint: Some(100),
                             claim_schemas: Some(vec![ProofInputClaimSchema {
                                 schema: ClaimSchema {
                                     id: Uuid::from_str("2fa85f64-5717-4562-b3fc-2c963f66afa6")
@@ -167,6 +160,8 @@ async fn test_presentation_definition_success() {
                                     created_date: get_dummy_date(),
                                     last_modified: get_dummy_date(),
                                     array: false,
+                                    metadata: false,
+                                    required: true,
                                 },
                                 required: true,
                                 order: 0,
@@ -179,32 +174,34 @@ async fn test_presentation_definition_success() {
                                 deleted_at: None,
                                 created_date: get_dummy_date(),
                                 last_modified: get_dummy_date(),
-                                external_schema: false,
                                 name: "Credential1".to_owned(),
-                                format: "JWT".to_owned(),
-                                revocation_method: "NONE".to_owned(),
-                                wallet_storage_type: None,
+                                format: "JWT".into(),
+                                revocation_method: None,
+                                key_storage_security: None,
                                 claim_schemas: None,
                                 organisation: None,
                                 layout_type: LayoutType::Card,
                                 layout_properties: None,
-                                schema_type: CredentialSchemaType::ProcivisOneSchema2024,
                                 schema_id: "CredentialSchemaId".to_owned(),
                                 allow_suspension: true,
+                                requires_wallet_instance_attestation: false,
+                                transaction_code: None,
                             }),
                         }]),
                     }),
                     claims: None,
                     verifier_identifier: None,
-                    holder_identifier: None,
                     verifier_key: None,
+                    verifier_certificate: None,
                     interaction: Some(Interaction {
-                        id: Uuid::new_v4(),
+                        id: Uuid::new_v4().into(),
                         created_date: get_dummy_date(),
                         last_modified: get_dummy_date(),
-                        host: None,
                         data: Some(interaction_data),
                         organisation: None,
+                        nonce_id: None,
+                        interaction_type: InteractionType::Verification,
+                        expires_at: None,
                     }),
                 }))
             });
@@ -225,21 +222,18 @@ async fn test_presentation_definition_success() {
 async fn test_submit_proof_failed_credential_suspended() {
     let proof_id: ProofId = Uuid::new_v4().into();
     let verifier_did = "did:verifier:123".parse().unwrap();
-    let holder_did: DidValue = "did:holder:123".parse().unwrap();
-    let issuer_did: DidValue = "did:issuer:123".parse().unwrap();
-
     let mut proof_repository = MockProofRepository::new();
-
-    let interaction_id = Uuid::parse_str("a83dabc3-1601-4642-84ec-7a5ad8a70d36").unwrap();
-
+    let interaction_id: InteractionId = Uuid::parse_str("a83dabc3-1601-4642-84ec-7a5ad8a70d36")
+        .unwrap()
+        .into();
     let nonce = "7QqBfOcEcydceH6ZrXtu9fhDCvXjtLBv".to_string();
-
     let claim_id = Uuid::new_v4().into();
     let credential_schema = dummy_credential_schema();
     let interaction_data = OpenID4VPVerifierInteractionContent {
         nonce: nonce.to_owned(),
-        encryption_key_id: None,
-        presentation_definition: OpenID4VPPresentationDefinition {
+        encryption_key: None,
+        dcql_query: None,
+        presentation_definition: Some(OpenID4VPPresentationDefinition {
             id: interaction_id.to_string(),
             input_descriptors: vec![OpenID4VPPresentationDefinitionInputDescriptor {
                 id: "input_0".to_string(),
@@ -270,11 +264,10 @@ async fn test_submit_proof_failed_credential_suspended() {
                             intent_to_retain: None,
                         },
                     ],
-                    validity_credential_nbf: None,
                     limit_disclosure: None,
                 },
             }],
-        },
+        }),
         client_id: "client_id".to_string(),
         client_id_scheme: Some(ClientIdScheme::RedirectUri),
         response_uri: None,
@@ -282,16 +275,17 @@ async fn test_submit_proof_failed_credential_suspended() {
     let interaction_data_serialized = serde_json::to_vec(&interaction_data).unwrap();
     let now = OffsetDateTime::now_utc();
     let interaction = Interaction {
-        id: interaction_id.to_owned(),
+        id: interaction_id,
         created_date: now,
         last_modified: now,
-        host: None,
         data: Some(interaction_data_serialized),
         organisation: None,
+        nonce_id: None,
+        interaction_type: InteractionType::Verification,
+        expires_at: None,
     };
 
     let interaction_id_copy = interaction_id.to_owned();
-    let holder_did_clone = holder_did.clone();
     proof_repository
         .expect_get_proof_by_interaction_id()
         .withf(move |_interaction_id, _| {
@@ -309,17 +303,9 @@ async fn test_submit_proof_failed_credential_suspended() {
                     }),
                     ..dummy_identifier()
                 }),
-                holder_identifier: Some(Identifier {
-                    did: Some(Did {
-                        did: holder_did_clone,
-                        ..dummy_did()
-                    }),
-                    ..dummy_identifier()
-                }),
                 state: ProofStateEnum::Pending,
                 schema: Some(ProofSchema {
                     input_schemas: Some(vec![ProofInputSchema {
-                        validity_constraint: None,
                         claim_schemas: Some(vec![
                             ProofInputClaimSchema {
                                 schema: ClaimSchema {
@@ -360,177 +346,74 @@ async fn test_submit_proof_failed_credential_suspended() {
         .once()
         .returning(|_, _, _| Ok(()));
 
-    let mut formatter = MockCredentialFormatter::new();
+    let mut blob_storage = MockBlobStorage::new();
+    blob_storage.expect_create().returning(|_| Ok(()));
 
-    let holder_did_clone = holder_did.clone();
-    let issuer_did_clone = issuer_did.clone();
-    formatter
-        .expect_extract_credentials_unverified()
-        .once()
-        .returning(move |_, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: Some(OffsetDateTime::now_utc()),
-                valid_until: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                update_at: None,
-                invalid_before: Some(OffsetDateTime::now_utc()),
-                issuer_did: Some(issuer_did_clone.to_owned()),
-                subject: Some(holder_did_clone.to_owned()),
-                claims: CredentialSubject {
-                    claims: HashMap::from([
-                        ("unknown_key".to_string(), json!("unknown_key_value")),
-                        ("required_key".to_string(), json!("required_key_value")),
-                    ]),
-                    id: None,
-                },
-                status: vec![],
-                credential_schema: None,
-            })
-        });
+    let blob_storage = Arc::new(blob_storage);
+    let mut blob_storage_provider = MockBlobStorageProvider::new();
+    blob_storage_provider
+        .expect_get_blob_storage()
+        .returning(move |_| Some(blob_storage.clone()));
 
-    let holder_did_clone = holder_did.clone();
-    let nonce_clone = nonce.clone();
-    formatter
-        .expect_extract_presentation_unverified()
-        .once()
-        .returning(move |_, _| {
-            Ok(Presentation {
-                id: Some("presentation id".to_string()),
-                issued_at: Some(OffsetDateTime::now_utc()),
-                expires_at: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                issuer_did: Some(holder_did_clone.to_owned()),
-                nonce: Some(nonce_clone.to_owned()),
-                credentials: vec!["credential".to_string()],
-            })
-        });
-
-    let holder_did_clone = holder_did.clone();
-    let nonce_clone = nonce.clone();
-    formatter
-        .expect_extract_presentation()
-        .once()
-        .returning(move |_, _, _| {
-            Ok(Presentation {
-                id: Some("presentation id".to_string()),
-                issued_at: Some(OffsetDateTime::now_utc()),
-                expires_at: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                issuer_did: Some(holder_did_clone.to_owned()),
-                nonce: Some(nonce_clone.to_owned()),
-                credentials: vec!["credential".to_string()],
-            })
-        });
-    formatter.expect_get_leeway().returning(|| 10);
-    let issuer_did_clone = issuer_did.clone();
-    formatter
-        .expect_extract_credentials()
-        .once()
-        .returning(move |_, _, _, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: Some(OffsetDateTime::now_utc()),
-                valid_until: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                update_at: None,
-                invalid_before: Some(OffsetDateTime::now_utc()),
-                issuer_did: Some(issuer_did_clone.to_owned()),
-                subject: Some(holder_did.to_owned()),
-                claims: CredentialSubject {
-                    claims: HashMap::from([
-                        ("unknown_key".to_string(), json!("unknown_key_value")),
-                        ("required_key".to_string(), json!("required_key_value")),
-                    ]),
-                    id: None,
-                },
-                status: vec![CredentialStatus {
-                    id: Some("did:status:test".parse().unwrap()),
-                    r#type: "".to_string(),
-                    status_purpose: None,
-                    additional_fields: Default::default(),
-                }],
-                credential_schema: None,
-            })
-        });
-
-    let formatter = Arc::new(formatter);
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
-    formatter_provider
-        .expect_get_formatter()
-        .times(4)
-        .returning(move |_| Some(formatter.clone()));
-
-    let mut revocation_method = MockRevocationMethod::new();
-    revocation_method
-        .expect_check_credential_revocation_status()
-        .once()
-        .return_once(|_, _, _, _| {
-            Ok(CredentialRevocationState::Suspended {
-                suspend_end_date: None,
-            })
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method_by_status_type()
-        .once()
-        .return_once(|_| Some((Arc::new(revocation_method), "".to_string())));
+    let mut proof_validator = MockOpenId4VpProofValidator::new();
+    proof_validator
+        .expect_validate_submission()
+        .returning(|_, _, _, _| Err(OpenID4VCError::CredentialIsRevokedOrSuspended));
 
     let service = setup_service(Mocks {
         proof_repository,
-        formatter_provider,
-        revocation_method_provider,
+        blob_storage_provider,
+        proof_validator,
         config: generic_config().core,
         ..Default::default()
     });
 
-    let vp_token = "vp_token";
-
     let err = service
         .direct_post(OpenID4VPDirectPostRequestDTO {
-            presentation_submission: Some(PresentationSubmissionMappingDTO {
-                id: "25f5a42c-6850-49a0-b842-c7b2411021a5".to_string(),
-                definition_id: interaction_id.to_string(),
-                descriptor_map: vec![PresentationSubmissionDescriptorDTO {
-                    id: "input_0".to_string(),
-                    format: "jwt_vp_json".to_string(),
-                    path: "$".to_string(),
-                    path_nested: Some(NestedPresentationSubmissionDescriptorDTO {
-                        format: "jwt_vc_json".to_string(),
-                        path: "$.vp.verifiableCredential[0]".to_string(),
-                    }),
-                }],
+            submission_data: VpSubmissionData::Pex(PexSubmission {
+                vp_token: vec!["vp_token".to_string()],
+                presentation_submission: PresentationSubmissionMappingDTO {
+                    id: "25f5a42c-6850-49a0-b842-c7b2411021a5".to_string(),
+                    definition_id: interaction_id.to_string(),
+                    descriptor_map: vec![PresentationSubmissionDescriptorDTO {
+                        id: "input_0".to_string(),
+                        format: "jwt_vp_json".to_string(),
+                        path: "$".to_string(),
+                        path_nested: Some(NestedPresentationSubmissionDescriptorDTO {
+                            format: "jwt_vc_json".to_string(),
+                            path: "$.vp.verifiableCredential[0]".to_string(),
+                        }),
+                    }],
+                },
             }),
-            vp_token: Some(vp_token.to_string()),
             state: Some("a83dabc3-1601-4642-84ec-7a5ad8a70d36".parse().unwrap()),
-            response: None,
         })
         .await
         .unwrap_err();
 
     assert!(matches!(
         err,
-        ServiceError::OpenID4VCError(OpenID4VCError::CredentialIsRevokedOrSuspended)
+        OID4VPDraft25ServiceError::OpenID4VCError(OpenID4VCError::CredentialIsRevokedOrSuspended)
     ));
 }
 
 #[tokio::test]
-async fn test_submit_proof_failed_incapable_holder_did_method() {
+async fn test_submit_proof_failed_on_validator_failure() {
     let proof_id: ProofId = Uuid::new_v4().into();
     let verifier_did = "did:verifier:123".parse().unwrap();
-    let holder_did: DidValue = "did:holder:123".parse().unwrap();
-    let subject_did: DidValue = "did:subject:123".parse().unwrap();
-    let issuer_did: DidValue = "did:issuer:123".parse().unwrap();
-
     let mut proof_repository = MockProofRepository::new();
-
-    let interaction_id = Uuid::parse_str("a83dabc3-1601-4642-84ec-7a5ad8a70d36").unwrap();
-
+    let interaction_id: InteractionId = Uuid::parse_str("a83dabc3-1601-4642-84ec-7a5ad8a70d36")
+        .unwrap()
+        .into();
     let nonce = "7QqBfOcEcydceH6ZrXtu9fhDCvXjtLBv".to_string();
 
     let claim_id = Uuid::new_v4().into();
     let credential_schema = dummy_credential_schema();
     let interaction_data = OpenID4VPVerifierInteractionContent {
         nonce: nonce.to_owned(),
-        encryption_key_id: None,
-        presentation_definition: OpenID4VPPresentationDefinition {
+        encryption_key: None,
+        dcql_query: None,
+        presentation_definition: Some(OpenID4VPPresentationDefinition {
             id: interaction_id.to_string(),
             input_descriptors: vec![OpenID4VPPresentationDefinitionInputDescriptor {
                 id: "input_0".to_string(),
@@ -561,11 +444,10 @@ async fn test_submit_proof_failed_incapable_holder_did_method() {
                             intent_to_retain: None,
                         },
                     ],
-                    validity_credential_nbf: None,
                     limit_disclosure: None,
                 },
             }],
-        },
+        }),
         client_id: "client_id".to_string(),
         client_id_scheme: Some(ClientIdScheme::RedirectUri),
         response_uri: None,
@@ -573,16 +455,17 @@ async fn test_submit_proof_failed_incapable_holder_did_method() {
     let interaction_data_serialized = serde_json::to_vec(&interaction_data).unwrap();
     let now = OffsetDateTime::now_utc();
     let interaction = Interaction {
-        id: interaction_id.to_owned(),
+        id: interaction_id,
         created_date: now,
         last_modified: now,
-        host: None,
         data: Some(interaction_data_serialized),
         organisation: None,
+        nonce_id: None,
+        interaction_type: InteractionType::Verification,
+        expires_at: None,
     };
 
     let interaction_id_copy = interaction_id.to_owned();
-    let holder_did_clone = holder_did.clone();
     proof_repository
         .expect_get_proof_by_interaction_id()
         .withf(move |_interaction_id, _| {
@@ -600,18 +483,9 @@ async fn test_submit_proof_failed_incapable_holder_did_method() {
                     }),
                     ..dummy_identifier()
                 }),
-                holder_identifier: Some(Identifier {
-                    did: Some(Did {
-                        did: holder_did_clone,
-                        did_method: "MDL".to_string(),
-                        ..dummy_did()
-                    }),
-                    ..dummy_identifier()
-                }),
                 state: ProofStateEnum::Pending,
                 schema: Some(ProofSchema {
                     input_schemas: Some(vec![ProofInputSchema {
-                        validity_constraint: None,
                         claim_schemas: Some(vec![
                             ProofInputClaimSchema {
                                 schema: ClaimSchema {
@@ -652,177 +526,54 @@ async fn test_submit_proof_failed_incapable_holder_did_method() {
         .once()
         .returning(|_, _, _| Ok(()));
 
-    let mut formatter = MockCredentialFormatter::new();
+    let mut blob_storage = MockBlobStorage::new();
+    blob_storage.expect_create().returning(|_| Ok(()));
 
-    let issuer_did_clone = issuer_did.clone();
-    let subject_did_clone = subject_did.clone();
-    formatter
-        .expect_extract_credentials_unverified()
-        .once()
-        .returning(move |_, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: Some(OffsetDateTime::now_utc()),
-                valid_until: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                update_at: None,
-                invalid_before: Some(OffsetDateTime::now_utc()),
-                issuer_did: Some(issuer_did_clone.to_owned()),
-                subject: Some(subject_did_clone.to_owned()),
-                claims: CredentialSubject {
-                    claims: HashMap::from([
-                        ("unknown_key".to_string(), json!("unknown_key_value")),
-                        ("required_key".to_string(), json!("required_key_value")),
-                    ]),
-                    id: None,
-                },
-                status: vec![],
-                credential_schema: None,
-            })
-        });
+    let blob_storage = Arc::new(blob_storage);
+    let mut blob_storage_provider = MockBlobStorageProvider::new();
+    blob_storage_provider
+        .expect_get_blob_storage()
+        .returning(move |_| Some(blob_storage.clone()));
 
-    let holder_did_clone = holder_did.clone();
-    let nonce_clone = nonce.clone();
-    formatter
-        .expect_extract_presentation_unverified()
-        .once()
-        .returning(move |_, _| {
-            Ok(Presentation {
-                id: Some("presentation id".to_string()),
-                issued_at: Some(OffsetDateTime::now_utc()),
-                expires_at: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                issuer_did: Some(holder_did_clone.to_owned()),
-                nonce: Some(nonce_clone.to_owned()),
-                credentials: vec!["credential".to_string()],
-            })
-        });
-
-    let holder_did_clone = holder_did.clone();
-    let nonce_clone = nonce.clone();
-    formatter
-        .expect_extract_presentation()
-        .once()
-        .returning(move |_, _, _| {
-            Ok(Presentation {
-                id: Some("presentation id".to_string()),
-                issued_at: Some(OffsetDateTime::now_utc()),
-                expires_at: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                issuer_did: Some(holder_did_clone.to_owned()),
-                nonce: Some(nonce_clone.to_owned()),
-                credentials: vec!["credential".to_string()],
-            })
-        });
-    formatter.expect_get_leeway().returning(|| 10);
-    let issuer_did_clone = issuer_did.clone();
-    formatter
-        .expect_extract_credentials()
-        .once()
-        .returning(move |_, _, _, _| {
-            Ok(DetailCredential {
-                id: None,
-                valid_from: Some(OffsetDateTime::now_utc()),
-                valid_until: Some(OffsetDateTime::now_utc() + Duration::days(10)),
-                update_at: None,
-                invalid_before: Some(OffsetDateTime::now_utc()),
-                issuer_did: Some(issuer_did_clone.to_owned()),
-                subject: Some(subject_did.to_owned()),
-                claims: CredentialSubject {
-                    claims: HashMap::from([
-                        ("unknown_key".to_string(), json!("unknown_key_value")),
-                        ("required_key".to_string(), json!("required_key_value")),
-                    ]),
-                    id: None,
-                },
-                status: vec![CredentialStatus {
-                    id: Some("did:status:test".parse().unwrap()),
-                    r#type: "".to_string(),
-                    status_purpose: None,
-                    additional_fields: Default::default(),
-                }],
-                credential_schema: None,
-            })
-        });
-
-    let formatter = Arc::new(formatter);
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
-    formatter_provider
-        .expect_get_formatter()
-        .times(4)
-        .returning(move |_| Some(formatter.clone()));
-
-    let mut revocation_method = MockRevocationMethod::new();
-    revocation_method
-        .expect_check_credential_revocation_status()
-        .once()
-        .return_once(|_, _, _, _| Ok(CredentialRevocationState::Valid));
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method_by_status_type()
-        .once()
-        .return_once(|_| Some((Arc::new(revocation_method), "".to_string())));
-
-    let mut did_method_provider = MockDidMethodProvider::new();
-    did_method_provider.expect_resolve().returning(|did| {
-        Ok(DidDocument {
-            context: json!({}),
-            id: did.to_owned(),
-            verification_method: vec![DidVerificationMethod {
-                id: "did-vm-id".to_string(),
-                r#type: "did-vm-type".to_string(),
-                controller: "did-vm-controller".to_string(),
-                public_key_jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-                    r#use: None,
-                    kid: None,
-                    crv: "P-256".to_string(),
-                    x: Base64UrlSafeNoPadding::encode_to_string("xabc").unwrap(),
-                    y: Some(Base64UrlSafeNoPadding::encode_to_string("yabc").unwrap()),
-                }),
-            }],
-            authentication: None,
-            assertion_method: None,
-            key_agreement: None,
-            capability_invocation: None,
-            capability_delegation: None,
-            also_known_as: None,
-            service: None,
-        })
-    });
+    let mut proof_validator = MockOpenId4VpProofValidator::new();
+    proof_validator
+        .expect_validate_submission()
+        .returning(|_, _, _, _| Err(OpenID4VCError::ValidationError("failed".to_string())));
 
     let service = setup_service(Mocks {
         proof_repository,
-        formatter_provider,
-        revocation_method_provider,
-        did_method_provider,
+        blob_storage_provider,
+        proof_validator,
         config: generic_config().core,
         ..Default::default()
     });
 
-    let vp_token = "vp_token";
-
     let err = service
         .direct_post(OpenID4VPDirectPostRequestDTO {
-            presentation_submission: Some(PresentationSubmissionMappingDTO {
-                id: "25f5a42c-6850-49a0-b842-c7b2411021a5".to_string(),
-                definition_id: interaction_id.to_string(),
-                descriptor_map: vec![PresentationSubmissionDescriptorDTO {
-                    id: "input_0".to_string(),
-                    format: "jwt_vp_json".to_string(),
-                    path: "$".to_string(),
-                    path_nested: Some(NestedPresentationSubmissionDescriptorDTO {
-                        format: "jwt_vc_json".to_string(),
-                        path: "$.vp.verifiableCredential[0]".to_string(),
-                    }),
-                }],
+            submission_data: VpSubmissionData::Pex(PexSubmission {
+                vp_token: vec!["vp_token".to_string()],
+                presentation_submission: PresentationSubmissionMappingDTO {
+                    id: "25f5a42c-6850-49a0-b842-c7b2411021a5".to_string(),
+                    definition_id: interaction_id.to_string(),
+                    descriptor_map: vec![PresentationSubmissionDescriptorDTO {
+                        id: "input_0".to_string(),
+                        format: "jwt_vp_json".to_string(),
+                        path: "$".to_string(),
+                        path_nested: Some(NestedPresentationSubmissionDescriptorDTO {
+                            format: "jwt_vc_json".to_string(),
+                            path: "$.vp.verifiableCredential[0]".to_string(),
+                        }),
+                    }],
+                },
             }),
-            vp_token: Some(vp_token.to_string()),
             state: Some("a83dabc3-1601-4642-84ec-7a5ad8a70d36".parse().unwrap()),
-            response: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         err,
-        ServiceError::OpenID4VCError(OpenID4VCError::ValidationError(e)) if e == "Unsupported holder DID method: holder"));
+        OID4VPDraft25ServiceError::OpenID4VCError(OpenID4VCError::ValidationError(_))
+    ));
 }
 
 #[tokio::test]
@@ -834,16 +585,28 @@ async fn test_get_client_metadata_success() {
 
     let now = OffsetDateTime::now_utc();
     let proof_id: ProofId = Uuid::new_v4().into();
+    let verifier_key = Key {
+        id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
+            .unwrap()
+            .into(),
+        created_date: now,
+        last_modified: now,
+        public_key: vec![],
+        name: "verifier_key1".to_string(),
+        key_reference: None,
+        storage_type: "INTERNAL".to_string(),
+        key_type: "EDDSA".to_string(),
+        organisation: None,
+    };
     let proof = Proof {
         id: proof_id,
         created_date: now,
         last_modified: now,
-        issuance_date: now,
-        exchange: VerificationProtocolType::OpenId4VpDraft25.to_string(),
+        protocol: VerificationProtocolType::OpenId4VpDraft25.to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Pending,
-        role: ProofRole::Holder,
+        role: ProofRole::Verifier,
         requested_date: Some(now),
         completed_date: None,
         schema: None,
@@ -862,46 +625,40 @@ async fn test_get_client_metadata_success() {
                         .into(),
                 ))),
                 did: "did:example:1".parse().unwrap(),
-                did_type: DidType::Remote,
+                did_type: DidType::Local,
                 did_method: "KEY".to_string(),
                 keys: Some(vec![RelatedKey {
                     role: KeyRole::KeyAgreement,
-                    key: Key {
-                        id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
-                            .unwrap()
-                            .into(),
-                        created_date: now,
-                        last_modified: now,
-                        public_key: vec![],
-                        name: "verifier_key1".to_string(),
-                        key_reference: vec![],
-                        storage_type: "INTERNAL".to_string(),
-                        key_type: "EDDSA".to_string(),
-                        organisation: None,
-                    },
+                    key: verifier_key.clone(),
+                    reference: "1".to_string(),
                 }]),
                 deactivated: false,
                 log: None,
             }),
             ..dummy_identifier()
         }),
-        holder_identifier: None,
-        verifier_key: None,
+        verifier_key: Some(verifier_key),
+        verifier_certificate: None,
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     };
     {
         proof_repository
             .expect_get_proof()
             .times(1)
-            .return_once(move |_, _| Ok(Some(proof)));
+            .return_once(move |_, _, _| Ok(Some(proof)));
 
         key_algorithm
             .expect_reconstruct_key()
             .return_once(|_, _, _| {
                 let mut key_handle = MockSignaturePublicKeyHandle::default();
                 key_handle.expect_as_jwk().return_once(|| {
-                    Ok(PublicKeyJwk::Okp(PublicKeyJwkEllipticData {
-                        r#use: Some("enc".to_string()),
+                    Ok(PublicJwk::Okp(PublicJwkEc {
+                        alg: None,
+                        r#use: Some(JwkUse::Encryption),
                         kid: None,
                         crv: "123".to_string(),
                         x: "456".to_string(),
@@ -924,7 +681,6 @@ async fn test_get_client_metadata_success() {
             .return_once(|| KeyStorageCapabilities {
                 features: vec![],
                 algorithms: vec![],
-                security: vec![KeySecurity::Software],
             });
 
         Some(Arc::new(key_storage))
@@ -938,58 +694,53 @@ async fn test_get_client_metadata_success() {
     });
     let result = service.get_client_metadata(proof_id).await.unwrap();
     assert_eq!(
-        OpenID4VPClientMetadata {
-            jwks: Some(OpenID4VPClientMetadataJwks {
-                keys: vec![OpenID4VPClientMetadataJwkDTO {
-                    key_id: "c322aa7f-9803-410d-b891-939b279fb965"
-                        .parse::<Uuid>()
-                        .unwrap()
-                        .into(),
-                    jwk: PublicKeyJwkDTO::Okp(PublicKeyJwkEllipticDataDTO {
-                        r#use: Some("enc".to_string()),
-                        kid: None,
-                        crv: "123".to_string(),
-                        x: "456".to_string(),
-                        y: None,
-                    }),
-                }]
+        OpenID4VPDraftClientMetadata {
+            jwks: Some(ClientMetadataJwks {
+                keys: vec![PublicJwk::Okp(PublicJwkEc {
+                    alg: None,
+                    r#use: Some(JwkUse::Encryption),
+                    kid: Some("c322aa7f-9803-410d-b891-939b279fb965".to_string()),
+                    crv: "123".to_string(),
+                    x: "456".to_string(),
+                    y: None,
+                }),]
             }),
             vp_formats: HashMap::from([
                 (
                     "jwt_vp_json".to_string(),
-                    OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+                    PresentationFormat::GenericAlgList(GenericAlgs {
                         alg: vec!["EdDSA".to_string(), "ES256".to_string()]
                     })
                 ),
                 (
                     "ldp_vp".to_string(),
-                    OpenID4VpPresentationFormat::LdpVcAlgs(LdpVcAlgs {
+                    PresentationFormat::LdpVcAlgs(LdpVcAlgs {
                         proof_type: vec!["DataIntegrityProof".to_string()],
                     })
                 ),
                 (
                     "vc+sd-jwt".to_string(),
-                    OpenID4VpPresentationFormat::SdJwtVcAlgs(OpenID4VPVcSdJwtAlgs {
-                        sd_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
-                        kb_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
+                    PresentationFormat::SdJwtVcAlgs(SdJwtVcAlgs {
+                        sd_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
+                        kb_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
                     })
                 ),
                 (
                     "dc+sd-jwt".to_string(),
-                    OpenID4VpPresentationFormat::SdJwtVcAlgs(OpenID4VPVcSdJwtAlgs {
-                        sd_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
-                        kb_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
+                    PresentationFormat::SdJwtVcAlgs(SdJwtVcAlgs {
+                        sd_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
+                        kb_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
                     })
                 ),
                 (
                     "jwt_vc_json".to_string(),
-                    OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+                    PresentationFormat::GenericAlgList(GenericAlgs {
                         alg: vec!["EdDSA".to_string(), "ES256".to_string()]
                     })
                 ),
                 (
                     "mso_mdoc".to_string(),
-                    OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+                    PresentationFormat::GenericAlgList(GenericAlgs {
                         alg: vec!["EdDSA".to_string(), "ES256".to_string()]
                     })
                 ),
@@ -997,9 +748,7 @@ async fn test_get_client_metadata_success() {
             authorization_encrypted_response_alg: Some(
                 AuthorizationEncryptedResponseAlgorithm::EcdhEs
             ),
-            authorization_encrypted_response_enc: Some(
-                AuthorizationEncryptedResponseContentEncryptionAlgorithm::A256GCM
-            ),
+            authorization_encrypted_response_enc: Some(EncryptionAlgorithm::A256GCM),
             ..Default::default()
         },
         result

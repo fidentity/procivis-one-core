@@ -1,16 +1,16 @@
 use one_dto_mapper::From;
 use serde::Deserialize;
-use shared_types::{ClaimSchemaId, CredentialSchemaId, OrganisationId, ProofSchemaId};
+use shared_types::{
+    ClaimSchemaId, CredentialFormat, CredentialSchemaId, OrganisationId, ProofSchemaId,
+    RevocationMethodId,
+};
 use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
-use crate::model::credential_schema::{
-    CredentialFormat, LayoutType, RevocationMethod, WalletStorageTypeEnum,
-};
-use crate::model::list_filter::{ListFilterValue, StringMatch};
+use crate::model::credential_schema::{KeyStorageSecurity, LayoutType};
+use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
 use crate::model::list_query::ListQuery;
 use crate::model::proof_schema::{ProofSchema, SortableProofSchemaColumn};
-use crate::service::credential::dto::CredentialSchemaType;
 use crate::service::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaListItemResponseDTO,
 };
@@ -22,6 +22,9 @@ pub enum ProofSchemaFilterValue {
     Name(StringMatch),
     OrganisationId(OrganisationId),
     ProofSchemaIds(Vec<ProofSchemaId>),
+    Formats(Vec<String>),
+    CreatedDate(ValueComparison<OffsetDateTime>),
+    LastModified(ValueComparison<OffsetDateTime>),
 }
 
 impl ListFilterValue for ProofSchemaFilterValue {}
@@ -57,7 +60,6 @@ pub struct GetProofSchemaResponseDTO {
 pub struct ProofInputSchemaResponseDTO {
     pub claim_schemas: Vec<ProofClaimSchemaResponseDTO>,
     pub credential_schema: CredentialSchemaListItemResponseDTO,
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug, From)]
@@ -88,7 +90,6 @@ pub struct CreateProofSchemaRequestDTO {
 #[derive(Clone, Debug)]
 pub struct ProofInputSchemaRequestDTO {
     pub credential_schema_id: CredentialSchemaId,
-    pub validity_constraint: Option<i64>,
     pub claim_schemas: Vec<CreateProofSchemaClaimRequestDTO>,
 }
 
@@ -119,7 +120,6 @@ pub struct ImportProofSchemaDTO {
 pub struct ImportProofSchemaInputSchemaDTO {
     pub claim_schemas: Vec<ImportProofSchemaClaimSchemaDTO>,
     pub credential_schema: ImportProofSchemaCredentialSchemaDTO,
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,15 +138,17 @@ pub struct ImportProofSchemaCredentialSchemaDTO {
     pub id: CredentialSchemaId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
+    pub deleted_at: Option<OffsetDateTime>,
     pub name: String,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub revocation_method: Option<RevocationMethodId>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
     pub imported_source_url: String,
-    pub schema_type: CredentialSchemaType,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesRequestDTO>,
+    pub allow_suspension: Option<bool>,
+    pub requires_wallet_instance_attestation: Option<bool>,
 }
 
 #[derive(Clone, Debug)]

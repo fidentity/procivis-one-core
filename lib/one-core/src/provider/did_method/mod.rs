@@ -23,15 +23,12 @@ pub mod jwk;
 pub mod key;
 pub mod key_helpers;
 pub mod keys;
-pub mod mdl;
 pub mod model;
 pub mod provider;
 pub mod resolver;
-pub mod sd_jwt_vc_issuer_metadata;
 pub mod universal;
 pub mod web;
 pub mod webvh;
-pub mod x509;
 
 /// Performs operations on DIDs and provides DID utilities.
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -56,11 +53,6 @@ pub trait DidMethod: Send + Sync {
         log: Option<String>,
     ) -> Result<DidUpdate, DidMethodError>;
 
-    /// Informs whether a DID can be deactivated or not.
-    ///
-    /// DID deactivation is useful if, for instance, a private key is leaked.
-    fn can_be_deactivated(&self) -> bool;
-
     /// See the [API docs][dmc] for a complete list of credential format capabilities.
     ///
     /// [dmc]: https://docs.procivis.ch/api/resources/dids#did-method-capabilities
@@ -71,8 +63,12 @@ pub trait DidMethod: Send + Sync {
     /// Different DID methods support different numbers of keys for verification relationships.
     /// This method validates whether the method of the DID supports the keys associated with it.
     fn validate_keys(&self, keys: AmountOfKeys) -> bool;
-    /// Returns the keys associated with a DID.
+
+    /// Returns the key restrictions associated with this DID method.
     fn get_keys(&self) -> Option<Keys>;
+
+    /// Provide reference value for verification method for the provided key
+    fn get_reference_for_key(&self, key: &Key) -> Result<String, DidMethodError>;
 }
 
 #[derive(Debug, Clone)]

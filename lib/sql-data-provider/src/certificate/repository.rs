@@ -5,12 +5,12 @@ use one_core::model::certificate::{
 };
 use one_core::repository::certificate_repository::CertificateRepository;
 use one_core::repository::error::DataLayerError;
-use sea_orm::{ActiveModelTrait, EntityTrait, PaginatorTrait, QueryOrder, Set, Unchanged};
+use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, Set, Unchanged};
 use shared_types::CertificateId;
 use time::OffsetDateTime;
 
 use super::CertificateProvider;
-use super::mapper::create_list_response;
+use crate::common::list_query_with_base_model;
 use crate::entity::{certificate, identifier};
 use crate::list_query_generic::SelectWithListQuery;
 use crate::mapper::{to_data_layer_error, to_update_data_layer_error};
@@ -23,18 +23,18 @@ impl CertificateProvider {
     ) -> Result<Certificate, DataLayerError> {
         let mut result: Certificate = model.clone().into();
 
-        if let Some(key_relations) = &relations.key {
-            if let Some(key_id) = &model.key_id {
-                result.key = Some(
-                    self.key_repository
-                        .get_key(key_id, key_relations)
-                        .await?
-                        .ok_or(DataLayerError::MissingRequiredRelation {
-                            relation: "certificate-key",
-                            id: key_id.to_string(),
-                        })?,
-                );
-            }
+        if let Some(key_relations) = &relations.key
+            && let Some(key_id) = &model.key_id
+        {
+            result.key = Some(
+                self.key_repository
+                    .get_key(key_id, key_relations)
+                    .await?
+                    .ok_or(DataLayerError::MissingRequiredRelation {
+                        relation: "certificate-key",
+                        id: key_id.to_string(),
+                    })?,
+            );
         }
 
         if let Some(organisation_relations) = &relations.organisation {
@@ -48,10 +48,11 @@ impl CertificateProvider {
                 })?;
 
             if let Some(organisation_id) = identifier.organisation_id {
-                result.organisation = Some(
+                result.organisation_id = Some(
                     self.organisation_repository
                         .get_organisation(&organisation_id, organisation_relations)
                         .await?
+                        .map(|o| o.id)
                         .ok_or(DataLayerError::MissingRequiredRelation {
                             relation: "certificate-organisation",
                             id: organisation_id.to_string(),
@@ -100,22 +101,7 @@ impl CertificateRepository for CertificateProvider {
             .order_by_desc(certificate::Column::CreatedDate)
             .order_by_desc(certificate::Column::Id);
 
-        let limit = query_params
-            .pagination
-            .map(|pagination| pagination.page_size as u64);
-
-        let items_count = query
-            .to_owned()
-            .count(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        let certificates: Vec<certificate::Model> = query
-            .all(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        Ok(create_list_response(certificates, limit, items_count))
+        list_query_with_base_model(query, query_params, &self.db).await
     }
 
     async fn update(

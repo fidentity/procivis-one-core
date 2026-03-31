@@ -1,14 +1,15 @@
 use one_core::model::identifier::{Identifier, IdentifierFilterValue, SortableIdentifierColumn};
+use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::organisation::Organisation;
 use sea_orm::sea_query::{Alias, ColumnRef, ExprTrait, IntoCondition, IntoIden, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, IntoSimpleExpr, JoinType, RelationTrait, Set};
 use time::OffsetDateTime;
 
 use crate::entity::identifier::ActiveModel;
-use crate::entity::{self, did, identifier, key, key_did};
+use crate::entity::{self, certificate, did, identifier, key, key_did};
 use crate::list_query_generic::{
-    IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation, get_equals_condition,
-    get_string_match_condition,
+    IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation,
+    get_comparison_condition, get_equals_condition, get_string_match_condition,
 };
 
 impl From<Identifier> for ActiveModel {
@@ -33,8 +34,8 @@ impl From<Identifier> for ActiveModel {
     }
 }
 
-impl From<entity::identifier::Model> for Identifier {
-    fn from(value: entity::identifier::Model) -> Self {
+impl From<identifier::Model> for Identifier {
+    fn from(value: identifier::Model) -> Self {
         Self {
             id: value.id,
             created_date: value.created_date,
@@ -49,6 +50,9 @@ impl From<entity::identifier::Model> for Identifier {
                 name: "".to_string(),
                 created_date: OffsetDateTime::now_utc(),
                 last_modified: OffsetDateTime::now_utc(),
+                deactivated_at: None,
+                wallet_provider: None,
+                wallet_provider_issuer: None,
             }),
             did: None,
             key: None,
@@ -70,13 +74,13 @@ impl IntoSortingColumn for SortableIdentifierColumn {
 }
 
 impl IntoFilterCondition for IdentifierFilterValue {
-    fn get_condition(self) -> Condition {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> Condition {
         match self {
-            IdentifierFilterValue::Ids(ids) => identifier::Column::Id.is_in(ids).into_condition(),
-            IdentifierFilterValue::Name(string_match) => {
+            Self::Ids(ids) => identifier::Column::Id.is_in(ids).into_condition(),
+            Self::Name(string_match) => {
                 get_string_match_condition(identifier::Column::Name, string_match)
             }
-            IdentifierFilterValue::Types(types) => identifier::Column::Type
+            Self::Types(types) => identifier::Column::Type
                 .is_in(
                     types
                         .into_iter()
@@ -84,43 +88,73 @@ impl IntoFilterCondition for IdentifierFilterValue {
                         .collect::<Vec<_>>(),
                 )
                 .into_condition(),
-            IdentifierFilterValue::State(state) => get_equals_condition(
-                identifier::Column::State,
-                identifier::IdentifierState::from(state),
-            ),
-            IdentifierFilterValue::OrganisationId(organisation_id) => {
+            Self::States(states) => identifier::Column::State
+                .is_in(states.into_iter().map(identifier::IdentifierState::from))
+                .into_condition(),
+            Self::OrganisationId(organisation_id) => {
                 get_equals_condition(identifier::Column::OrganisationId, organisation_id)
             }
-            IdentifierFilterValue::DidMethods(did_methods) => entity::did::Column::Method
+            Self::DidMethods(did_methods) => entity::did::Column::Method
                 .is_in(did_methods)
+                .or(identifier::Column::Type.ne(identifier::IdentifierType::Did))
                 .into_condition(),
-            IdentifierFilterValue::IsRemote(is_remote) => {
+            Self::IsRemote(is_remote) => {
                 get_equals_condition(identifier::Column::IsRemote, is_remote)
             }
-            IdentifierFilterValue::KeyAlgorithms(key_algorithms) => key::Column::KeyType
-                .is_in(key_algorithms.clone())
+            Self::KeyAlgorithms(key_algorithms) => key::Column::KeyType
+                .is_in(&key_algorithms)
                 .or(ColumnRef::TableColumn(
                     Alias::new("did_key").into_iden(),
                     key::Column::KeyType.into_iden(),
                 )
+                .is_in(&key_algorithms))
+                .or(ColumnRef::TableColumn(
+                    Alias::new("certificate_key").into_iden(),
+                    key::Column::KeyType.into_iden(),
+                )
                 .is_in(key_algorithms))
                 .into_condition(),
-            IdentifierFilterValue::KeyRoles(key_roles) => key_did::Column::Role
+            Self::KeyRoles(key_roles) => key_did::Column::Role
                 .is_in(
                     key_roles
                         .into_iter()
                         .map(key_did::KeyRole::from)
                         .collect::<Vec<_>>(),
                 )
+                .or(identifier::Column::Type.ne(identifier::IdentifierType::Did))
                 .into_condition(),
-            IdentifierFilterValue::KeyStorages(key_storages) => key::Column::StorageType
-                .is_in(key_storages.clone())
+            Self::KeyStorages(key_storages) => key::Column::StorageType
+                .is_in(&key_storages)
                 .or(ColumnRef::TableColumn(
                     Alias::new("did_key").into_iden(),
                     key::Column::StorageType.into_iden(),
                 )
+                .is_in(&key_storages))
+                .or(ColumnRef::TableColumn(
+                    Alias::new("certificate_key").into_iden(),
+                    key::Column::StorageType.into_iden(),
+                )
                 .is_in(key_storages))
                 .into_condition(),
+            Self::KeyIds(key_ids) => key::Column::Id
+                .is_in(&key_ids)
+                .or(ColumnRef::TableColumn(
+                    Alias::new("did_key").into_iden(),
+                    key::Column::Id.into_iden(),
+                )
+                .is_in(&key_ids))
+                .or(ColumnRef::TableColumn(
+                    Alias::new("certificate_key").into_iden(),
+                    key::Column::Id.into_iden(),
+                )
+                .is_in(key_ids))
+                .into_condition(),
+            Self::CreatedDate(value) => {
+                get_comparison_condition(identifier::Column::CreatedDate, value)
+            }
+            Self::LastModified(value) => {
+                get_comparison_condition(identifier::Column::LastModified, value)
+            }
         }
     }
 }
@@ -128,11 +162,32 @@ impl IntoFilterCondition for IdentifierFilterValue {
 impl IntoJoinRelations for IdentifierFilterValue {
     fn get_join(&self) -> Vec<JoinRelation> {
         match self {
-            IdentifierFilterValue::DidMethods(_)
-            | IdentifierFilterValue::KeyAlgorithms(_)
-            | IdentifierFilterValue::KeyStorages(_)
-            | IdentifierFilterValue::KeyRoles(_) => {
+            IdentifierFilterValue::DidMethods(_) => {
+                vec![JoinRelation {
+                    join_type: JoinType::LeftJoin,
+                    relation_def: identifier::Relation::Did.def(),
+                    alias: None,
+                }]
+            }
+            IdentifierFilterValue::KeyRoles(_) => {
                 vec![
+                    JoinRelation {
+                        join_type: JoinType::LeftJoin,
+                        relation_def: identifier::Relation::Did.def(),
+                        alias: None,
+                    },
+                    JoinRelation {
+                        join_type: JoinType::LeftJoin,
+                        relation_def: did::Relation::KeyDid.def(),
+                        alias: None,
+                    },
+                ]
+            }
+            IdentifierFilterValue::KeyAlgorithms(_)
+            | IdentifierFilterValue::KeyStorages(_)
+            | IdentifierFilterValue::KeyIds(_) => {
+                vec![
+                    // IdentifierType::Did
                     JoinRelation {
                         join_type: JoinType::LeftJoin,
                         relation_def: identifier::Relation::Did.def(),
@@ -148,10 +203,22 @@ impl IntoJoinRelations for IdentifierFilterValue {
                         relation_def: key_did::Relation::Key.def(),
                         alias: Some(Alias::new("did_key").into_iden()),
                     },
+                    // IdentifierType::Key
                     JoinRelation {
                         join_type: JoinType::LeftJoin,
                         relation_def: identifier::Relation::Key.def(),
                         alias: None,
+                    },
+                    // IdentifierType::Certificate
+                    JoinRelation {
+                        join_type: JoinType::LeftJoin,
+                        relation_def: identifier::Relation::Certificate.def(),
+                        alias: None,
+                    },
+                    JoinRelation {
+                        join_type: JoinType::LeftJoin,
+                        relation_def: certificate::Relation::Key.def(),
+                        alias: Some(Alias::new("certificate_key").into_iden()),
                     },
                 ]
             }

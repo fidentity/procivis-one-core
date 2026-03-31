@@ -4,10 +4,11 @@ use bit_vec::BitVec;
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
 use thiserror::Error;
 
+use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::provider::revocation::utils::{gzip_compress, gzip_decompress};
 
 #[derive(Debug, Error)]
-pub enum BitstringError {
+pub(crate) enum BitstringError {
     #[error("Bitstring encoding error: `{0}`")]
     Base64Encoding(ct_codecs::Error),
     #[error("Bitstring decoding error: `{0}`")]
@@ -22,23 +23,28 @@ pub enum BitstringError {
     InvalidPrefix(String),
 }
 
+impl ErrorCodeMixin for BitstringError {
+    fn error_code(&self) -> ErrorCode {
+        ErrorCode::BR_0049
+    }
+}
+
 const MULTIBASE_PREFIX: char = 'u';
 const GZIP_PREFIX: &str = "H4s";
 
-pub fn extract_bitstring_index(
+pub(crate) fn extract_bitstring_index(
     compressed_list: String,
     index: usize,
 ) -> Result<bool, BitstringError> {
-    // For backwards compatibility, we allow the compressed list to be passed without the 'u' multibase prefix.
-    // see ONE-3528
-    let compressed_list = compressed_list
-        .strip_prefix(MULTIBASE_PREFIX)
-        .unwrap_or(&compressed_list);
+    let Some(compressed_list) = compressed_list.strip_prefix(MULTIBASE_PREFIX) else {
+        return Err(BitstringError::InvalidPrefix(format!(
+            "expected multibase prefix: '{MULTIBASE_PREFIX}', input: {compressed_list}"
+        )));
+    };
 
     if !compressed_list.starts_with(GZIP_PREFIX) {
         return Err(BitstringError::InvalidPrefix(format!(
-            "expected gzip header: {GZIP_PREFIX}, input: {}",
-            compressed_list
+            "expected gzip header: {GZIP_PREFIX}, input: {compressed_list}"
         )));
     }
 
@@ -54,13 +60,14 @@ pub fn extract_bitstring_index(
     })?;
 
     let bits = BitVec::from_bytes(&bytes);
-    Ok(bits[index])
+    bits.get(index)
+        .ok_or(BitstringError::IndexOutOfBounds { index })
 }
 
-pub(super) fn generate_bitstring(input: Vec<bool>) -> Result<String, BitstringError> {
+pub(super) fn generate_bitstring(input: Vec<(usize, bool)>) -> Result<String, BitstringError> {
     let size = calculate_bitstring_size(input.len());
     let mut bits = BitVec::from_elem(size, false);
-    input.into_iter().enumerate().for_each(|(index, state)| {
+    input.into_iter().for_each(|(index, state)| {
         if state {
             bits.set(index, true)
         }
@@ -71,7 +78,7 @@ pub(super) fn generate_bitstring(input: Vec<bool>) -> Result<String, BitstringEr
 
     Base64UrlSafeNoPadding::encode_to_string(compressed)
         .map_err(BitstringError::Base64Encoding)
-        .map(|s| format!("{MULTIBASE_PREFIX}{}", s))
+        .map(|s| format!("{MULTIBASE_PREFIX}{s}"))
 }
 
 fn calculate_bitstring_size(input_size: usize) -> usize {
@@ -81,21 +88,36 @@ fn calculate_bitstring_size(input_size: usize) -> usize {
 
 #[cfg(test)]
 mod test {
+    use similar_asserts::assert_eq;
+
     use super::*;
 
     // test vector, no revocations, taken from: https://www.w3.org/TR/vc-status-list/#example-example-statuslist2021credential-0
     const BITSTRING_NO_REVOCATIONS: &str =
-        "H4sIAAAAAAAAA-3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAIC3AYbSVKsAQAAA";
+        "uH4sIAAAAAAAAA-3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAIC3AYbSVKsAQAAA";
 
     // test vector, one revocation on index 1
     const BITSTRING_ONE_REVOCATION: &str =
         "uH4sIAAAAAAAA_-3AsQAAAAACsNDypwqjZ2sAAAAAAAAAAAAAAAAAAACAtwE3F1_NAEAAAA";
 
+    // The test vectors below are generated with a newer version of the compression library producing
+    // slightly different bitstrings.
+
+    // test vector, no revocations
+    const BITSTRING_NO_REVOCATIONS_NEW: &str =
+        "uH4sIAAAAAAAA_-3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAIDOBobSVKsAQAAA";
+    const BITSTRING_ONE_REVOCATION_NEW: &str =
+        "uH4sIAAAAAAAA_-3BIQEAAAACIKf5f5UzLEADAAAAAAAAAAAAAAAAAAAA5Gw3F1_NAEAAAA";
+
     #[test]
     fn test_generate_bitstring() {
         assert_eq!(
-            generate_bitstring(vec![false, true, false, false]).unwrap(),
-            BITSTRING_ONE_REVOCATION
+            generate_bitstring(vec![]).unwrap(),
+            BITSTRING_NO_REVOCATIONS_NEW
+        );
+        assert_eq!(
+            generate_bitstring(vec![(0, false), (1, true), (2, false), (3, false)]).unwrap(),
+            BITSTRING_ONE_REVOCATION_NEW
         );
     }
 
@@ -104,8 +126,14 @@ mod test {
         assert!(!extract_bitstring_index(BITSTRING_ONE_REVOCATION.to_owned(), 0).unwrap());
         assert!(extract_bitstring_index(BITSTRING_ONE_REVOCATION.to_owned(), 1).unwrap());
 
+        assert!(!extract_bitstring_index(BITSTRING_ONE_REVOCATION_NEW.to_owned(), 0).unwrap());
+        assert!(extract_bitstring_index(BITSTRING_ONE_REVOCATION_NEW.to_owned(), 1).unwrap());
+
         assert!(!extract_bitstring_index(BITSTRING_NO_REVOCATIONS.to_owned(), 0).unwrap());
         assert!(!extract_bitstring_index(BITSTRING_NO_REVOCATIONS.to_owned(), 1).unwrap());
+
+        assert!(!extract_bitstring_index(BITSTRING_NO_REVOCATIONS_NEW.to_owned(), 0).unwrap());
+        assert!(!extract_bitstring_index(BITSTRING_NO_REVOCATIONS_NEW.to_owned(), 1).unwrap());
     }
 
     #[test]

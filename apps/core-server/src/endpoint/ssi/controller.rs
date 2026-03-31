@@ -6,15 +6,21 @@ use axum_extra::extract::WithRejection;
 use axum_extra::typed_header::TypedHeader;
 use headers::Authorization;
 use headers::authorization::Bearer;
-use one_core::service::error::{BusinessLogicError, EntityNotFoundError, ServiceError};
+use one_core::error::{ErrorCode, ErrorCodeMixin};
+use one_core::service::certificate::error::CertificateServiceError;
+use one_core::service::did::error::DidServiceError;
+use one_core::service::revocation_list::error::RevocationServiceError;
+use one_core::service::ssi_issuer::error::IssuerServiceError;
+use one_core::service::trust_list_publication::error::TrustListPublicationServiceError;
+use proc_macros::endpoint;
 use shared_types::{
-    CredentialId, CredentialSchemaId, DidId, DidValue, OrganisationId, ProofSchemaId, TrustAnchorId,
+    CertificateId, CredentialSchemaId, DidId, DidValue, OrganisationId, ProofSchemaId,
+    RevocationListId, TrustAnchorId, TrustListPublicationId,
 };
-use uuid::Uuid;
 
 use super::dto::{
     DidDocumentRestDTO, GetTrustAnchorResponseRestDTO, JsonLDContextResponseRestDTO,
-    LVVCIssuerResponseRestDTO, PatchTrustEntityRequestRestDTO, SSIPostTrustEntityRequestRestDTO,
+    PatchTrustEntityRequestRestDTO, SSIPostTrustEntityRequestRestDTO,
     SdJwtVcTypeMetadataResponseRestDTO,
 };
 use crate::dto::common::EntityResponseRestDTO;
@@ -25,7 +31,8 @@ use crate::endpoint::proof_schema::dto::GetProofSchemaResponseRestDTO;
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/did-web/v1/{id}/did.json",
     params(
@@ -35,8 +42,7 @@ use crate::router::AppState;
     tag = "ssi",
     summary = "Retrieve did:web document",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a `did:web` document by its UUID.
     "},
 )]
 pub(crate) async fn get_did_web_document(
@@ -47,7 +53,8 @@ pub(crate) async fn get_did_web_document(
     OkOrErrorResponse::from_result(result, state, "getting did:web document")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/did-webvh/v1/{id}/did.jsonl",
     params(
@@ -62,8 +69,7 @@ pub(crate) async fn get_did_web_document(
     tag = "ssi",
     summary = "Retrieve did:webvh(did:tdw) document",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a `did:webvh` (or `did:tdw`) document by its UUID.
     "},
 )]
 pub(crate) async fn get_did_webvh_log(
@@ -74,11 +80,11 @@ pub(crate) async fn get_did_webvh_log(
 
     match result {
         Ok(log) => (StatusCode::OK, [(header::CONTENT_TYPE, "text/jsonl")], log).into_response(),
-        Err(ServiceError::EntityNotFound(_)) => {
+        Err(DidServiceError::NotFound(_)) => {
             tracing::error!("did:webvh not found");
             (StatusCode::NOT_FOUND, "Did not found").into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::InvalidDidMethod { method })) => {
+        Err(DidServiceError::InvalidMethod { method }) => {
             tracing::error!("Expected did:webvh found {method}");
             (StatusCode::BAD_REQUEST, "Invalid did method").into_response()
         }
@@ -89,11 +95,12 @@ pub(crate) async fn get_did_webvh_log(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/revocation/v1/list/{id}",
     params(
-        ("id" = Uuid, Path, description = "Revocation list id")
+        ("id" = RevocationListId, Path, description = "Revocation list id")
     ),
     responses(
         (status = 200, description = "OK", content(
@@ -111,7 +118,8 @@ pub(crate) async fn get_did_webvh_log(
                   "statusPurpose": "revocation",
                   "encodedList": "uH4sIAAAAAAAAA-3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAIC3AYbSVKsAQAAA"
                 }
-              }))
+              })),
+            (String = "application/statuslist+jwt")
         )),
         (status = 404, description = "Revocation list not found"),
         (status = 500, description = "Server error"),
@@ -119,13 +127,12 @@ pub(crate) async fn get_did_webvh_log(
     tag = "ssi",
     summary = "Revocation - retrieve list",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a revocation list by its UUID.
     "},
 )]
 pub(crate) async fn get_revocation_list_by_id(
     state: State<AppState>,
-    WithRejection(Path(id), _): WithRejection<Path<Uuid>, ErrorResponseRestDTO>,
+    WithRejection(Path(id), _): WithRejection<Path<RevocationListId>, ErrorResponseRestDTO>,
 ) -> Response {
     let result = state
         .core
@@ -134,17 +141,23 @@ pub(crate) async fn get_revocation_list_by_id(
         .await;
 
     match result {
-        Ok(result) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, result.get_content_type())],
-            result.revocation_list,
-        )
-            .into_response(),
-        Err(ServiceError::ConfigValidationError(error)) => {
+        Ok(result) => match result.get_content_type() {
+            Some(content_type) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, content_type)],
+                result.revocation_list,
+            )
+                .into_response(),
+            None => {
+                tracing::warn!("No content type for revocation-list: {id}");
+                (StatusCode::OK, result.revocation_list).into_response()
+            }
+        },
+        Err(error) if error.error_code() == ErrorCode::BR_0089 => {
             tracing::error!("Config validation error: {}", error);
             StatusCode::BAD_REQUEST.into_response()
         }
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::RevocationList(_))) => {
+        Err(RevocationServiceError::NotFound(_)) => {
             tracing::error!("Missing revocation list");
             (StatusCode::NOT_FOUND, "Missing revocation list").into_response()
         }
@@ -155,52 +168,40 @@ pub(crate) async fn get_revocation_list_by_id(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
-    path = "/ssi/revocation/v1/lvvc/{id}",
+    path = "/ssi/revocation/v1/crl/{id}",
     params(
-        ("id" = CredentialId, Path, description = "Credential id")
+        ("id" = RevocationListId, Path, description = "Revocation list id")
     ),
     responses(
-        (status = 200, description = "OK", body = LVVCIssuerResponseRestDTO),
-        (status = 400, description = "Credential in PENDING, REQUESTED or CREATED state/Invalid holder token"),
-        (status = 404, description = "Credential not found"),
+        (status = 200, description = "OK", content_type = "application/pkix-crl"),
+        (status = 404, description = "Revocation list not found"),
         (status = 500, description = "Server error"),
     ),
-    security(
-        ("remote-agent" = [])
-    ),
     tag = "ssi",
-    summary = "Get LVVC by credential",
+    summary = "Revocation - retrieve CRL",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a CRL by its UUID.
     "},
 )]
-pub(crate) async fn get_lvvc_by_credential_id(
+pub(crate) async fn get_crl_by_id(
     state: State<AppState>,
-    WithRejection(Path(id), _): WithRejection<Path<CredentialId>, ErrorResponseRestDTO>,
-    TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
+    WithRejection(Path(id), _): WithRejection<Path<RevocationListId>, ErrorResponseRestDTO>,
 ) -> Response {
-    let result = state
-        .core
-        .revocation_list_service
-        .get_lvvc_by_credential_id(&id, bearer.token())
-        .await;
+    let result = state.core.revocation_list_service.get_crl_by_id(&id).await;
 
     match result {
         Ok(result) => (
             StatusCode::OK,
-            Json(LVVCIssuerResponseRestDTO::from(result)),
+            [(header::CONTENT_TYPE, "application/pkix-crl")],
+            result,
         )
             .into_response(),
-        Err(ServiceError::ConfigValidationError(error)) => {
-            tracing::error!("Config validation error: {}", error);
-            StatusCode::BAD_REQUEST.into_response()
-        }
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::Credential(_))) => {
-            tracing::error!("Missing credential");
-            (StatusCode::NOT_FOUND, "Missing credential").into_response()
+        Err(RevocationServiceError::NotFound(_)) => {
+            tracing::error!("Missing CRL");
+            (StatusCode::NOT_FOUND, "Missing CRL").into_response()
         }
         Err(e) => {
             tracing::error!("Error: {:?}", e);
@@ -209,7 +210,8 @@ pub(crate) async fn get_lvvc_by_credential_id(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/context/v1/{id}",
     params(
@@ -223,8 +225,8 @@ pub(crate) async fn get_lvvc_by_credential_id(
     tag = "ssi",
     summary = "Retrieve @context",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve the `@context` of a JSON-LD credential by the UUID of the
+        credential schema.
     "},
 )]
 pub(crate) async fn get_json_ld_context(
@@ -240,9 +242,13 @@ pub(crate) async fn get_json_ld_context(
             Json(JsonLDContextResponseRestDTO::from(value)),
         )
             .into_response(),
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::CredentialSchema(_))) => {
+        Err(IssuerServiceError::MissingCredentialSchema(_)) => {
             tracing::error!("Missing credential schema");
             (StatusCode::NOT_FOUND, "Missing credential schema").into_response()
+        }
+        Err(e @ (IssuerServiceError::InvalidInput | IssuerServiceError::InvalidFormat)) => {
+            tracing::error!("Validation error: {e}");
+            StatusCode::BAD_REQUEST.into_response()
         }
         Err(e) => {
             tracing::error!("Error: {:?}", e);
@@ -251,7 +257,8 @@ pub(crate) async fn get_json_ld_context(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/trust/v1/{trustAnchorId}",
     params(
@@ -266,10 +273,10 @@ pub(crate) async fn get_json_ld_context(
     tag = "ssi",
     summary = "Retrieve Trust List",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a trust list by the UUID of the trust anchor.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_list(
     state: State<AppState>,
     WithRejection(Path(trust_anchor_id), _): WithRejection<
@@ -286,7 +293,8 @@ pub(crate) async fn ssi_get_trust_list(
     OkOrErrorResponse::from_result(result, state, "getting trust list")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/trust-entity/v1/{didValue}",
     params(
@@ -298,8 +306,11 @@ pub(crate) async fn ssi_get_trust_list(
     ),
     tag = "ssi",
     summary = "Retrieve a trust entity",
-    description = "This endpoint handles an aspect of the SSI interactions between agents and should **not** be used.",
+    description = indoc::formatdoc! {"
+        Retrieve a trust entity by the value of the DID.
+    "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_entity(
     state: State<AppState>,
     WithRejection(Path(did_value), _): WithRejection<Path<DidValue>, ErrorResponseRestDTO>,
@@ -314,7 +325,8 @@ pub(crate) async fn ssi_get_trust_entity(
     OkOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     patch,
     path = "/ssi/trust-entity/v1/{didValue}",
     params(
@@ -327,8 +339,11 @@ pub(crate) async fn ssi_get_trust_entity(
     ),
     tag = "ssi",
     summary = "Update a trust entity",
-    description = "This endpoint handles an aspect of the SSI interactions between agents and should **not** be used.",
+    description = indoc::formatdoc! {"
+        Update a trust entity by its DID value.
+    "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_patch_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -341,10 +356,7 @@ pub(crate) async fn ssi_patch_trust_entity(
     let request = match request.try_into() {
         Ok(request) => request,
         Err(err) => {
-            return EmptyOrErrorResponse::from_service_error(
-                err,
-                state.config.hide_error_response_cause,
-            );
+            return EmptyOrErrorResponse::from_error(&err, state.config.hide_error_response_cause);
         }
     };
     let result = state
@@ -356,7 +368,8 @@ pub(crate) async fn ssi_patch_trust_entity(
     EmptyOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     post,
     path = "/ssi/trust-entity/v1",
     request_body = SSIPostTrustEntityRequestRestDTO,
@@ -366,8 +379,11 @@ pub(crate) async fn ssi_patch_trust_entity(
     ),
     tag = "ssi",
     summary = "Create a trust entity",
-    description = "This endpoint handles an aspect of the SSI interactions between agents and should **not** be used.",
+    description = indoc::formatdoc! {"
+        Add a trust entity to a trust anchor.
+    "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_post_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -379,8 +395,8 @@ pub(crate) async fn ssi_post_trust_entity(
     let request = match request.try_into() {
         Ok(request) => request,
         Err(err) => {
-            return CreatedOrErrorResponse::from_service_error(
-                err,
+            return CreatedOrErrorResponse::from_error(
+                &err,
                 state.config.hide_error_response_cause,
             );
         }
@@ -394,7 +410,8 @@ pub(crate) async fn ssi_post_trust_entity(
     CreatedOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/schema/v1/{id}",
     params(
@@ -408,8 +425,7 @@ pub(crate) async fn ssi_post_trust_entity(
     tag = "ssi",
     summary = "Retrieve credential schema service",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a credential schema by its UUID.
     "},
 )]
 pub(crate) async fn ssi_get_credential_schema(
@@ -425,7 +441,8 @@ pub(crate) async fn ssi_get_credential_schema(
     OkOrErrorResponse::from_result(result, state, "getting credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/proof-schema/v1/{id}",
     params(
@@ -439,8 +456,7 @@ pub(crate) async fn ssi_get_credential_schema(
     tag = "ssi",
     summary = "Retrieve proof schema service",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve a proof schema by its UUID.
     "},
 )]
 pub(crate) async fn ssi_get_proof_schema(
@@ -451,7 +467,8 @@ pub(crate) async fn ssi_get_proof_schema(
     OkOrErrorResponse::from_result(result, state, "getting proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/vct/v1/{organisationId}/{vctType}",
     params(
@@ -466,8 +483,7 @@ pub(crate) async fn ssi_get_proof_schema(
     tag = "ssi",
     summary = "Retrieve SD-JWT VC type metadata service",
     description = indoc::formatdoc! {"
-        This endpoint handles low-level mechanisms in interactions between agents.
-        Deep understanding of the involved protocols is recommended.
+        Retrieve the type metadata of an SD-JWT VC credential.
     "},
 )]
 pub(crate) async fn ssi_get_sd_jwt_vc_type_metadata(
@@ -483,4 +499,96 @@ pub(crate) async fn ssi_get_sd_jwt_vc_type_metadata(
         .get_vct_metadata(organisation_id, vct_type)
         .await;
     OkOrErrorResponse::from_result(result, state, "getting SD-JWT VC type metadata")
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/ca/{id}",
+    params(
+        ("id" = CertificateId, Path, description = "Certificate Authority id")
+    ),
+    responses(
+        (status = 200, description = "OK", content_type = "application/pkix-cert"),
+        (status = 404, description = "Certificate Authority not found"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "ssi",
+    summary = "Certificate Authority - retrieve certificate",
+    description = indoc::formatdoc! {"
+        Retrieve a Certificate Authority certificate by its UUID.
+    "},
+)]
+pub(crate) async fn ssi_get_certificate_authority(
+    state: State<AppState>,
+    WithRejection(Path(id), _): WithRejection<Path<CertificateId>, ErrorResponseRestDTO>,
+) -> Response {
+    let result = state
+        .core
+        .certificate_service
+        .get_certificate_authority(id)
+        .await;
+
+    match result {
+        Ok(result) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/pkix-cert")],
+            result,
+        )
+            .into_response(),
+        Err(CertificateServiceError::NotFound(_)) => {
+            tracing::warn!("Missing CA");
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/trust-list/v1/{id}",
+    params(
+        ("id" = TrustListPublicationId, Path, description = "Trust list publication id")
+    ),
+    responses(
+        (status = 200, description = "OK", content_type = "application/jwt"),
+        (status = 404, description = "Trust list publication not found"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "ssi",
+    summary = "Retrieve Trust list publication",
+    description = indoc::formatdoc! {"
+        Retrieve a Trust list publication by its UUID.
+    "},
+)]
+pub(crate) async fn ssi_get_trust_list_publication(
+    state: State<AppState>,
+    WithRejection(Path(id), _): WithRejection<Path<TrustListPublicationId>, ErrorResponseRestDTO>,
+) -> Response {
+    let result = state
+        .core
+        .trust_list_publication_service
+        .get_trust_list_publication_content(id)
+        .await;
+
+    match result {
+        Ok(result) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/jwt")],
+            result,
+        )
+            .into_response(),
+        Err(TrustListPublicationServiceError::TrustListPublicationNotFound(_)) => {
+            tracing::warn!("Missing trust list publication");
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }

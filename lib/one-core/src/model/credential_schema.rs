@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use shared_types::CredentialSchemaId;
+use shared_types::{CredentialFormat, CredentialSchemaId, RevocationMethodId};
 use strum::Display;
 use time::OffsetDateTime;
 
@@ -15,8 +15,6 @@ use crate::service::credential_schema::dto::{
 };
 
 pub type CredentialSchemaName = String;
-pub type CredentialFormat = String;
-pub type RevocationMethod = String;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialSchema {
@@ -26,52 +24,19 @@ pub struct CredentialSchema {
     pub last_modified: OffsetDateTime,
     pub name: CredentialSchemaName,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub revocation_method: Option<RevocationMethodId>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub layout_type: LayoutType,
     pub layout_properties: Option<LayoutProperties>,
     pub schema_id: String,
-    pub schema_type: CredentialSchemaType,
     pub imported_source_url: String,
     pub allow_suspension: bool,
-    pub external_schema: bool,
+    pub requires_wallet_instance_attestation: bool,
+    pub transaction_code: Option<TransactionCode>,
 
     // Relations
-    pub claim_schemas: Option<Vec<CredentialSchemaClaim>>,
+    pub claim_schemas: Option<Vec<ClaimSchema>>,
     pub organisation: Option<Organisation>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Display)]
-pub enum CredentialSchemaType {
-    #[strum(serialize = "ProcivisOneSchema2024")]
-    ProcivisOneSchema2024,
-    #[strum(serialize = "FallbackSchema2024")]
-    FallbackSchema2024,
-    #[strum(serialize = "mdoc")]
-    Mdoc,
-    #[strum(serialize = "SdJwtVc")]
-    SdJwtVc,
-    #[strum(serialize = "{0}")]
-    #[serde(untagged)]
-    Other(String),
-}
-
-impl From<String> for CredentialSchemaType {
-    fn from(value: String) -> Self {
-        match value.as_str() {
-            "ProcivisOneSchema2024" => CredentialSchemaType::ProcivisOneSchema2024,
-            "FallbackSchema2024" => CredentialSchemaType::FallbackSchema2024,
-            "SdJwtVc" => CredentialSchemaType::SdJwtVc,
-            "mdoc" => CredentialSchemaType::Mdoc,
-            _ => Self::Other(value),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CredentialSchemaClaim {
-    pub schema: ClaimSchema,
-    pub required: bool,
 }
 
 #[derive(Debug)]
@@ -87,13 +52,13 @@ pub enum Arrayed<T> {
 
 #[derive(Debug)]
 pub(crate) enum CredentialSchemaClaimsNestedTypeView {
-    Field(CredentialSchemaClaim),
+    Field(ClaimSchema),
     Object(CredentialSchemaClaimsNestedObjectView),
 }
 
 #[derive(Debug)]
 pub(crate) struct CredentialSchemaClaimsNestedObjectView {
-    pub claim: CredentialSchemaClaim,
+    pub claim: ClaimSchema,
     pub fields: HashMap<String, Arrayed<CredentialSchemaClaimsNestedTypeView>>,
 }
 
@@ -118,12 +83,31 @@ pub enum LayoutType {
     SingleAttribute,
 }
 
-#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
+#[derive(
+    Clone, Copy, Debug, Eq, Serialize, Deserialize, PartialEq, Display, Hash, PartialOrd, Ord,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum WalletStorageTypeEnum {
-    Hardware,
-    Software,
-    RemoteSecureElement,
+pub enum KeyStorageSecurity {
+    High,
+    Moderate,
+    EnhancedBasic,
+    Basic,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionCode {
+    pub r#type: TransactionCodeType,
+    pub length: u32,
+    pub description: Option<String>,
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, Serialize, Deserialize, PartialEq, Display, Hash, PartialOrd, Ord,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TransactionCodeType {
+    Numeric,
+    Alphanumeric,
 }
 
 #[skip_serializing_none]
@@ -138,14 +122,14 @@ pub struct LayoutProperties {
     pub code: Option<CodeProperties>,
 }
 
-#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundProperties {
     pub color: Option<String>,
     pub image: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LogoProperties {
     pub font_color: Option<String>,
@@ -178,9 +162,9 @@ pub type GetCredentialSchemaQuery = ListQuery<
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateCredentialSchemaRequest {
     pub id: CredentialSchemaId,
-    pub revocation_method: Option<RevocationMethod>,
-    pub format: Option<String>,
-    pub claim_schemas: Option<Vec<CredentialSchemaClaim>>,
+    pub revocation_method: Option<Option<RevocationMethodId>>,
+    pub format: Option<CredentialFormat>,
+    pub claim_schemas: Option<Vec<ClaimSchema>>,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<LayoutProperties>,
 }

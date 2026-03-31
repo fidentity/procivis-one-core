@@ -3,8 +3,10 @@ use std::env;
 use rusty_fork::rusty_fork_test;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use similar_asserts::assert_eq;
 
 use super::core_config::*;
+use crate::config::ConfigParsingError;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -73,11 +75,6 @@ rusty_fork_test! {
                         public:
                             useRequestUri: true
             revocation:
-                NONE:
-                    display: 'revocation.none'
-                    order: 0
-                    type: 'NONE'
-                    params: null
                 BITSTRINGSTATUSLIST:
                     display: 'display'
                     order: 1
@@ -110,9 +107,19 @@ rusty_fork_test! {
                     type: 'INTERNAL'
                     order: 0
                     params: null
+            keySecurityLevel: {}
             task: {}
             trustManagement: {}
             cacheEntities: {}
+            holderKeyStorage: {}
+            blobStorage: {}
+            walletProvider: {}
+            credentialIssuer: {}
+            verificationEngagement: {}
+            certificateValidation: {}
+            signer: {}
+            verifierProvider: {}
+            trustListPublisher: {}
         "};
 
         let config3 = indoc::indoc! {"
@@ -128,7 +135,6 @@ rusty_fork_test! {
                     display: 'display'
         "};
 
-        #[cfg(feature = "config_json")]
         let config5 = indoc::indoc! {"
         {
             \"keyAlgorithm\": {
@@ -143,15 +149,15 @@ rusty_fork_test! {
         // SAFETY: `rusty_fork` spawns each test as separate subprocess so that should be safe
         unsafe {
             env::set_var("ONE_keyAlgorithm__BBS_PLUS__display", "NewDisplay");
-            env::set_var("ONE_app__serverIp", "192.168.1.1") ;
+            env::set_var("ONE_app__serverIp", "192.168.1.1");
         };
 
         let config = AppConfig::<SystemConfig>::parse(vec![
-            InputFormat::yaml(config1),
-            InputFormat::yaml(config2),
-            InputFormat::yaml(config3),
-            InputFormat::yaml(config4),
-            InputFormat::yaml(config5),
+            InputFormat::yaml_str(config1),
+            InputFormat::yaml_str(config2),
+            InputFormat::yaml_str(config3),
+            InputFormat::yaml_str(config4),
+            InputFormat::json_str(config5),
         ])
         .unwrap();
 
@@ -161,7 +167,7 @@ rusty_fork_test! {
             assert_eq!(config.app.database_url, "test2"); // via config2
         }
 
-        let jwt = config.core.format.get_fields("JWT").unwrap();
+        let jwt = config.core.format.get_fields(&"JWT".into()).unwrap();
 
         assert_eq!(
             jwt.params.as_ref().unwrap().public,
@@ -187,5 +193,45 @@ rusty_fork_test! {
         assert_eq!(bbs_plus.display, ConfigEntryDisplay::from("NewDisplay")); // via env 2
 
         assert_eq!(config.app.server_ip, Some("192.168.1.1".into())); // via env 3
+    }
+}
+
+rusty_fork_test! {
+    #[test]
+    #[cfg(all(
+        feature = "config_yaml",
+        feature = "config_json",
+        feature = "config_env"
+    ))]
+    fn test_parse_config_missing_field() {
+        // given
+        let config1 = indoc::indoc! {"
+            app:
+                databaseUrl: 'test'
+            format:
+                JWT:
+                    type: 'JWT'
+                    display: 'display'
+                    order: 0
+                    params:
+                        public:
+                            leeway: 60
+            identifier:
+              DID:
+                enabled: true
+                order: 0
+        "};
+
+        // when
+        let config = AppConfig::<SystemConfig>::parse(vec![
+            InputFormat::yaml_str(config1),
+        ]);
+
+        // then
+        assert!(
+            matches!(
+                config,
+                Err(ConfigParsingError::ParsingError(m)) if m == "figment: missing field `display` for key \"default.identifier.DID\" in YAML source string")
+        )
     }
 }

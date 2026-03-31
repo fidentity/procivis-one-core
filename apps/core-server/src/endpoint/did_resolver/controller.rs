@@ -1,14 +1,14 @@
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use one_core::service::error::ServiceError;
-use shared_types::DidValue;
+use shared_types::{DidValue, Permission};
 
 use crate::dto::error::ErrorResponseRestDTO;
 use crate::dto::response::OkOrErrorResponse;
 use crate::endpoint::ssi::dto::DidDocumentRestDTO;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[proc_macros::endpoint(
+    permissions = [Permission::DidResolve],
     get,
     path = "/api/did-resolver/v1/{didvalue}",
     params(
@@ -28,11 +28,6 @@ pub(crate) async fn resolve_did(
     state: State<AppState>,
     WithRejection(Path(did_value), _): WithRejection<Path<DidValue>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<DidDocumentRestDTO> {
-    let result = state
-        .core
-        .did_service
-        .resolve_did(&did_value)
-        .await
-        .map_err(ServiceError::from);
+    let result = state.core.did_service.resolve_did(&did_value).await;
     OkOrErrorResponse::from_result(result, state, "resolving did document")
 }

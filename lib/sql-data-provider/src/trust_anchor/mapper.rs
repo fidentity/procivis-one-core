@@ -1,3 +1,4 @@
+use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::trust_anchor::TrustAnchor;
 use one_core::service::trust_anchor::dto::{SortableTrustAnchorColumn, TrustAnchorFilterValue};
 use sea_orm::sea_query::SimpleExpr;
@@ -5,7 +6,8 @@ use sea_orm::{IntoSimpleExpr, Set};
 
 use crate::entity::trust_anchor::{self};
 use crate::list_query_generic::{
-    IntoFilterCondition, IntoSortingColumn, get_equals_condition, get_string_match_condition,
+    IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_equals_condition,
+    get_string_match_condition,
 };
 
 impl From<TrustAnchor> for trust_anchor::ActiveModel {
@@ -47,7 +49,10 @@ impl IntoSortingColumn for SortableTrustAnchorColumn {
 }
 
 impl IntoFilterCondition for TrustAnchorFilterValue {
-    fn get_condition(self) -> sea_orm::Condition {
+    fn get_condition(
+        self,
+        _entire_filter: &ListFilterCondition<TrustAnchorFilterValue>,
+    ) -> sea_orm::Condition {
         match self {
             Self::Name(string_match) => {
                 get_string_match_condition(trust_anchor::Column::Name, string_match)
@@ -57,6 +62,12 @@ impl IntoFilterCondition for TrustAnchorFilterValue {
             }
             Self::Type(string_match) => {
                 get_string_match_condition(trust_anchor::Column::Type, string_match)
+            }
+            Self::CreatedDate(value) => {
+                get_comparison_condition(trust_anchor::Column::CreatedDate, value)
+            }
+            Self::LastModified(value) => {
+                get_comparison_condition(trust_anchor::Column::LastModified, value)
             }
         }
     }

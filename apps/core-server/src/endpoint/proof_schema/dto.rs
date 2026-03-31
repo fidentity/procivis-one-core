@@ -7,51 +7,56 @@ use one_core::service::proof_schema::dto::{
     ProofInputSchemaResponseDTO, ProofSchemaShareResponseDTO,
 };
 use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
 use shared_types::{OrganisationId, ProofSchemaId};
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use validator::Validate;
 
+use crate::deserialize::deserialize_timestamp;
 use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRestDTO, CredentialSchemaLayoutType,
-    CredentialSchemaListItemResponseRestDTO, CredentialSchemaType, WalletStorageTypeRestEnum,
+    CredentialSchemaListItemResponseRestDTO, KeyStorageSecurityRestEnum,
 };
 use crate::serialize::{front_time, front_time_option};
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema, Validate, Into)]
-#[into(CreateProofSchemaRequestDTO)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateProofSchemaRequestRestDTO {
+#[options_not_nullable]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema, Validate, TryInto)]
+#[try_into(T = CreateProofSchemaRequestDTO, Error = ServiceError)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateProofSchemaRequestRestDTO {
     #[validate(length(min = 1))]
     #[schema(min_length = 1)]
+    #[try_into(infallible)]
     pub name: String,
-    /// Specify the organization.
-    pub organisation_id: Uuid,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
+    pub organisation_id: Option<OrganisationId>,
     /// Defines the length of storage of received proofs, in seconds. After
     /// the defined duration, the received proof and its data are deleted
     /// from the system. If 0, the proofs received when using this proof
     /// schema will not be deleted.
+    #[try_into(infallible)]
     pub expire_duration: Option<u32>,
-    #[into(with_fn = convert_inner)]
+    #[try_into(with_fn = convert_inner, infallible)]
     #[schema(min_items = 1)]
     pub proof_input_schemas: Vec<ProofInputSchemaRequestRestDTO>,
 }
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema, Validate, Into)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema, Validate, Into)]
 #[into(ProofInputSchemaRequestDTO)]
-#[serde(rename_all = "camelCase")]
-pub struct ProofInputSchemaRequestRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProofInputSchemaRequestRestDTO {
     /// ID of the credential schema from which the `claimSchemas` object
     /// is assembled.
     pub credential_schema_id: Uuid,
-    /// Defines the maximum age at which an LVVC will be validated.
-    pub validity_constraint: Option<i64>,
     /// Defines the set of attributes being requested when making proof requests using this schema.
     #[into(with_fn = convert_inner)]
     #[schema(min_items = 1)]
@@ -60,36 +65,40 @@ pub struct ProofInputSchemaRequestRestDTO {
 
 /// Defines the set of attributes being requested when making proof requests
 /// using this schema.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, ToSchema, Into)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[into(CreateProofSchemaClaimRequestDTO)]
-pub struct ClaimProofSchemaRequestRestDTO {
+pub(crate) struct ClaimProofSchemaRequestRestDTO {
     /// The `id` of the attribute being requested, from the `claims` object.
     pub id: Uuid,
     /// Whether the attribute is required in the proof request.
     pub required: bool,
 }
 
+#[options_not_nullable]
 #[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
 #[try_into(T=ImportProofSchemaRequestDTO, Error=ServiceError)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportProofSchemaRequestRestDTO {
-    #[try_into(infallible)]
-    pub organisation_id: Uuid,
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportProofSchemaRequestRestDTO {
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
+    pub organisation_id: Option<OrganisationId>,
     pub schema: ImportProofSchemaRestDTO,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
 #[try_into(T=ImportProofSchemaDTO, Error=ServiceError)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportProofSchemaRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportProofSchemaRestDTO {
     #[try_into(infallible)]
     pub id: ProofSchemaId,
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     #[serde(deserialize_with = "time::serde::rfc3339::deserialize")]
     #[try_into(infallible)]
     pub created_date: OffsetDateTime,
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     #[serde(deserialize_with = "time::serde::rfc3339::deserialize")]
     #[try_into(infallible)]
     pub last_modified: OffsetDateTime,
@@ -105,21 +114,20 @@ pub struct ImportProofSchemaRestDTO {
     pub proof_input_schemas: Vec<ImportProofSchemaInputSchemaRestDTO>,
 }
 
+#[options_not_nullable]
 #[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
 #[try_into(T=ImportProofSchemaInputSchemaDTO, Error=ServiceError)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportProofSchemaInputSchemaRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportProofSchemaInputSchemaRestDTO {
     #[try_into(with_fn = convert_inner, infallible)]
     pub claim_schemas: Vec<ImportProofSchemaClaimSchemaRestDTO>,
     pub credential_schema: ImportProofSchemaCredentialSchemaRestDTO,
-    #[try_into(with_fn = convert_inner, infallible)]
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema, Into)]
 #[into(ImportProofSchemaClaimSchemaDTO)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportProofSchemaClaimSchemaRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportProofSchemaClaimSchemaRestDTO {
     pub id: Uuid,
     pub requested: bool,
     pub required: bool,
@@ -133,83 +141,119 @@ pub struct ImportProofSchemaClaimSchemaRestDTO {
     pub array: bool,
 }
 
+#[options_not_nullable]
 #[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
 #[try_into(T=ImportProofSchemaCredentialSchemaDTO, Error=ServiceError)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportProofSchemaCredentialSchemaRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportProofSchemaCredentialSchemaRestDTO {
     #[try_into(infallible)]
     pub id: Uuid,
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     #[serde(deserialize_with = "time::serde::rfc3339::deserialize")]
     #[try_into(infallible)]
     pub created_date: OffsetDateTime,
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     #[serde(deserialize_with = "time::serde::rfc3339::deserialize")]
     #[try_into(infallible)]
     pub last_modified: OffsetDateTime,
+    #[serde(
+        default,
+        deserialize_with = "time::serde::rfc3339::option::deserialize"
+    )]
+    #[try_into(infallible)]
+    pub deleted_at: Option<OffsetDateTime>,
     #[try_into(infallible)]
     pub name: String,
     #[try_into(infallible)]
     pub format: String,
-    #[try_into(infallible)]
-    pub revocation_method: String,
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub revocation_method: Option<String>,
     #[try_into(infallible)]
     pub imported_source_url: String,
     #[try_into(with_fn = convert_inner, infallible)]
-    pub wallet_storage_type: Option<WalletStorageTypeRestEnum>,
+    pub key_storage_security: Option<KeyStorageSecurityRestEnum>,
     #[try_into(infallible)]
     pub schema_id: String,
-    #[try_into(infallible)]
-    pub schema_type: CredentialSchemaType,
     #[try_into(with_fn = convert_inner, infallible)]
     pub layout_type: Option<CredentialSchemaLayoutType>,
     #[try_into(with_fn = try_convert_inner)]
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesRestDTO>,
+    #[try_into(infallible)]
+    pub allow_suspension: Option<bool>,
+    #[try_into(infallible)]
+    pub requires_wallet_instance_attestation: Option<bool>,
 }
 
 // list endpoint
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
 #[into("one_core::model::proof_schema::SortableProofSchemaColumn")]
-pub enum SortableProofSchemaColumnRestEnum {
+pub(crate) enum SortableProofSchemaColumnRestEnum {
     Name,
     CreatedDate,
 }
 
-pub type GetProofSchemaQuery =
+pub(crate) type GetProofSchemaQuery =
     ListQueryParamsRest<ProofSchemasFilterQueryParamsRest, SortableProofSchemaColumnRestEnum>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct ProofSchemasFilterQueryParamsRest {
-    /// Specify the organization from which to return proof schemas.
-    pub organisation_id: OrganisationId,
+#[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetProofSchemaQuery
+pub(crate) struct ProofSchemasFilterQueryParamsRest {
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[param(nullable = false)]
+    pub organisation_id: Option<OrganisationId>,
     /// Return only proof schemas with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
     pub name: Option<String>,
-    /// Specify proof schemas to be returned by their UUID.
+    /// Filter by specific UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
     pub ids: Option<Vec<ProofSchemaId>>,
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactColumn>>,
+    /// Return only proof schemas which use only the specified credential formats.
+    #[param(rename = "formats[]", inline, nullable = false)]
+    pub formats: Option<Vec<String>>,
+
+    /// Return only proof schemas created after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_after: Option<OffsetDateTime>,
+    /// Return only proof schemas created before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub created_date_before: Option<OffsetDateTime>,
+    /// Return only proof schemas last modified after this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_after: Option<OffsetDateTime>,
+    /// Return only proof schemas last modified before this time.
+    /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
+    #[serde(default, deserialize_with = "deserialize_timestamp")]
+    #[param(nullable = false)]
+    pub last_modified_before: Option<OffsetDateTime>,
 }
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(GetProofSchemaListItemDTO)]
-pub struct GetProofSchemaListItemResponseRestDTO {
+pub(crate) struct GetProofSchemaListItemResponseRestDTO {
     pub id: Uuid,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time_option")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(nullable = false, example = "2023-06-09T14:19:57.000Z")]
     pub deleted_at: Option<OffsetDateTime>,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     pub name: String,
     /// The duration of storage of received proofs, in seconds. After the defined duration, the received proof and its data are deleted from the system.
@@ -218,32 +262,32 @@ pub struct GetProofSchemaListItemResponseRestDTO {
 }
 
 // detail endpoint
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[from(GetProofSchemaResponseDTO)]
 #[serde(rename_all = "camelCase")]
-pub struct GetProofSchemaResponseRestDTO {
+pub(crate) struct GetProofSchemaResponseRestDTO {
     pub id: Uuid,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub expire_duration: u32,
     pub imported_source_url: Option<String>,
-    pub organisation_id: Uuid,
+    pub organisation_id: OrganisationId,
     #[from(with_fn = convert_inner)]
     pub proof_input_schemas: Vec<ProofInputSchemaResponseRestDTO>,
 }
 
 /// The set of attributes being requested when using this proof schema.
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(ProofClaimSchemaResponseDTO)]
-pub struct ProofClaimSchemaResponseRestDTO {
+pub(crate) struct ProofClaimSchemaResponseRestDTO {
     pub id: Uuid,
     /// Marking attributes that are targeted with proof request
     pub requested: bool,
@@ -259,22 +303,90 @@ pub struct ProofClaimSchemaResponseRestDTO {
     pub array: bool,
 }
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(ProofInputSchemaResponseDTO)]
-pub struct ProofInputSchemaResponseRestDTO {
+pub(crate) struct ProofInputSchemaResponseRestDTO {
     /// Defines the set of attributes being requested when making proof requests using this schema.
     #[from(with_fn = convert_inner)]
     pub claim_schemas: Vec<ProofClaimSchemaResponseRestDTO>,
     pub credential_schema: CredentialSchemaListItemResponseRestDTO,
-    /// Defines the maximum age at which an LVVC will be validated.
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(ProofSchemaShareResponseDTO)]
-pub struct ProofSchemaShareResponseRestDTO {
+pub(crate) struct ProofSchemaShareResponseRestDTO {
     pub url: String,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::endpoint::credential_schema::dto::{
+        CredentialSchemaBackgroundPropertiesRestDTO, CredentialSchemaCodePropertiesRestDTO,
+        CredentialSchemaCodeTypeRestEnum, CredentialSchemaLogoPropertiesRestDTO,
+    };
+
+    #[test]
+    fn test_shared_schema_deserializes_into_import_schema() {
+        let shared = GetProofSchemaResponseRestDTO {
+            id: Uuid::new_v4(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            name: "name".to_string(),
+            expire_duration: 42,
+            imported_source_url: Some("imported_source_url".to_string()),
+            organisation_id: Uuid::new_v4().into(),
+            proof_input_schemas: vec![ProofInputSchemaResponseRestDTO {
+                claim_schemas: vec![ProofClaimSchemaResponseRestDTO {
+                    id: Uuid::new_v4(),
+                    requested: true,
+                    required: true,
+                    key: "key".to_string(),
+                    data_type: "data_type".to_string(),
+                    claims: vec![],
+                    array: true,
+                }],
+                credential_schema: CredentialSchemaListItemResponseRestDTO {
+                    id: Uuid::new_v4(),
+                    created_date: OffsetDateTime::now_utc(),
+                    last_modified: OffsetDateTime::now_utc(),
+                    deleted_at: Some(OffsetDateTime::now_utc()),
+                    name: "name".to_string(),
+                    format: "format".into(),
+                    revocation_method: Some("method".into()),
+                    key_storage_security: Some(KeyStorageSecurityRestEnum::Basic),
+                    schema_id: "schema_id".to_string(),
+                    imported_source_url: "imported_source_url".to_string(),
+                    layout_type: Some(CredentialSchemaLayoutType::Card),
+                    layout_properties: Some(CredentialSchemaLayoutPropertiesRestDTO {
+                        background: Some(CredentialSchemaBackgroundPropertiesRestDTO {
+                            color: Some("color".to_string()),
+                            image: None,
+                        }),
+                        logo: Some(CredentialSchemaLogoPropertiesRestDTO {
+                            font_color: Some("font_color".to_string()),
+                            background_color: Some("background_color".to_string()),
+                            image: None,
+                        }),
+                        primary_attribute: Some("primary_attribute".to_string()),
+                        secondary_attribute: Some("secondary_attribute".to_string()),
+                        picture_attribute: Some("picture_attribute".to_string()),
+                        code: Some(CredentialSchemaCodePropertiesRestDTO {
+                            attribute: "attribute".to_string(),
+                            r#type: CredentialSchemaCodeTypeRestEnum::Barcode,
+                        }),
+                    }),
+                    allow_suspension: true,
+                    requires_wallet_instance_attestation: true,
+                },
+            }],
+        };
+
+        let serialized = serde_json::to_value(shared).unwrap();
+
+        serde_json::from_value::<ImportProofSchemaRestDTO>(serialized).unwrap();
+    }
 }

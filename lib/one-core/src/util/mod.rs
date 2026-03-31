@@ -1,14 +1,11 @@
-pub mod bearer_token;
-pub mod ble_resource;
-pub mod history;
 pub mod interactions;
-pub mod key_verification;
-pub mod oidc;
-pub mod params;
-pub mod revocation_update;
-pub mod timestamp;
+pub mod key_selection;
+pub mod logging;
+pub mod openid4vp;
+pub mod rdf_canonization;
 pub mod vcdm_jsonld_contexts;
-pub mod x509;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "mock"))]
+pub mod test_mdoc;
+#[cfg(any(test, feature = "mock"))]
 pub mod test_utilities;

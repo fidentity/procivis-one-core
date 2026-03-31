@@ -1,30 +1,31 @@
+#![allow(clippy::unwrap_used)]
+
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 use indoc::indoc;
 use serde::{Deserialize, Serialize};
 use shared_types::{DidValue, OrganisationId};
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::OffsetDateTime;
 use time::macros::datetime;
 use uuid::Uuid;
 
 use crate::config::core_config::{
-    AppConfig, IdentifierType as ConfigIdentifierType, IssuanceProtocolType, KeyAlgorithmType,
-    KeyStorageType, RevocationType, VerificationProtocolType,
+    AppConfig, IdentifierType as ConfigIdentifierType, InputFormat, IssuanceProtocolType,
+    KeyAlgorithmType, KeyStorageType, RevocationType, VerificationProtocolType,
 };
+use crate::model::blob::{Blob, BlobType};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType, LayoutType,
-    WalletStorageTypeEnum,
-};
+use crate::model::credential_schema::{CredentialSchema, KeyStorageSecurity, LayoutType};
 use crate::model::did::{Did, DidType};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
-use crate::model::interaction::Interaction;
-use crate::model::key::{Key, PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::interaction::{Interaction, InteractionType};
+use crate::model::key::Key;
 use crate::model::organisation::Organisation;
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::ProofSchema;
-use crate::provider::credential_formatter::model::FormatterCapabilities;
+use crate::provider::credential_formatter::model::{Features, FormatterCapabilities};
 use crate::provider::did_method::model::{DidDocument, DidVerificationMethod};
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +34,10 @@ pub struct CustomConfig {}
 
 pub fn generic_config() -> AppConfig<CustomConfig> {
     let config = indoc! {"
+        app:
+            auth:
+                mode: UNSAFE_STATIC
+                staticToken: \"test\"
         transport:
             HTTP:
                 type: 'HTTP'
@@ -48,6 +53,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 params:
                     public:
                         leeway: 60
+                        embedLayoutProperties: true
             SD_JWT:
                 type: 'SD_JWT'
                 display: 'format.sdjwt'
@@ -55,6 +61,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 params:
                     public:
                         leeway: 60
+                        embedLayoutProperties: true
             SD_JWT_VC:
                 type: 'SD_JWT_VC'
                 display: 'format.sdjwtvc'
@@ -62,16 +69,14 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 params:
                     public:
                         leeway: 60
-                        schemaIdRequired: true
+                        embedLayoutProperties: true
             JSON_LD_CLASSIC:
                 type: 'JSON_LD_CLASSIC'
                 display: 'display'
                 order: 2
-                params: null
-            PHYSICAL_CARD:
-                type: 'PHYSICAL_CARD'
-                display: 'format.physicalCard'
-                order: 5
+                params:
+                    public:
+                        leeway: 60
             MDOC:
               type: 'MDOC'
               display: 'format.mdoc'
@@ -110,6 +115,26 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                             allowedSchemes: [ https ]
                     private:
                         encryption: '93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e'
+            OPENID4VCI_FINAL1:
+                display: 'display.openid4vciFinal1'
+                order: 2
+                type: 'OPENID4VCI_FINAL1'
+                params:
+                    public:
+                        oauthAttestationLeeway: 60
+                        keyAttestationLeeway: 60
+                        preAuthorizedCodeExpiresIn: 300
+                        tokenExpiresIn: 86400
+                        refreshExpiresIn: 886400
+                        redirectUri:
+                            enabled: true
+                            allowedSchemes: [ https ]
+                    private:
+                        encryption: '93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e'
+                        nonce:
+                            signingKey: '93d9182795f0d1bec61329fc2d18c4b4c1b7e65e69e20ec30a2101a9875fff7e'
+                            expiration: 300
+                            leeway: 0
         verificationProtocol:
             OPENID4VP_DRAFT20:
                 display: 'display'
@@ -118,8 +143,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 params:
                     public:
                         verifier:
-                            supportedClientIdSchemes: [ redirect_uri, verifier_attestation, did ]
-                            defaultClientIdScheme: verifier_attestation
+                            supportedClientIdSchemes: [ verifier_attestation, redirect_uri, did ]
                         holder:
                             supportedClientIdSchemes: [ redirect_uri, verifier_attestation, did ]
                         redirectUri:
@@ -132,8 +156,20 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 params:
                     public:
                         verifier:
+                            supportedClientIdSchemes: [ verifier_attestation, redirect_uri, did ]
+                        holder:
                             supportedClientIdSchemes: [ redirect_uri, verifier_attestation, did ]
-                            defaultClientIdScheme: verifier_attestation
+                        redirectUri:
+                            enabled: true
+                            allowedSchemes: [ https ]
+            OPENID4VP_FINAL1:
+                display: 'display'
+                order: 3
+                type: 'OPENID4VP_FINAL1'
+                params:
+                    public:
+                        verifier:
+                            supportedClientIdSchemes: [ verifier_attestation, redirect_uri, did ]
                         holder:
                             supportedClientIdSchemes: [ redirect_uri, verifier_attestation, did ]
                         redirectUri:
@@ -142,13 +178,8 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
             ISO_MDL:
                 type: 'ISO_MDL'
                 display: 'exchange.isoMdl'
-                order: 3
+                order: 4
         revocation:
-            NONE:
-                display: 'revocation.none'
-                order: 0
-                type: 'NONE'
-                params: null
             BITSTRINGSTATUSLIST:
                 display: 'display'
                 order: 1
@@ -176,6 +207,16 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 type: 'OBJECT'
                 order: 300
                 params: null
+            SWIYU_PICTURE:
+                display: 'display'
+                type: 'SWIYU_PICTURE'
+                order: 403
+                params:
+                public:
+                    accept:
+                        - image/jpeg
+                    fileSize: 4194304
+                    showAs: IMAGE
         keyAlgorithm:
             EDDSA:
                 display: 'display'
@@ -195,12 +236,60 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 type: 'INTERNAL'
                 order: 0
                 params: null
+            SECURE_ELEMENT:
+                display: 'keyStorage.secureElement'
+                type: 'SECURE_ELEMENT'
+                order: 3
+                params:
+                  private:
+                    aliasPrefix: 'ch.procivis.one.wallet.keys'
+        keySecurityLevel:
+            BASIC:
+                display: keySecurityLevel.basic
+                order: 10
+                params:
+                    public:
+                        holder:
+                            priority: 10
+                            keyStorages: ['INTERNAL']
+        holderKeyStorage:
+            SOFTWARE:
+                display: 'display'
+                order: 10
+            HARDWARE:
+                display: 'display'
+                order: 14
+            REMOTE_SECURE_ELEMENT:
+                display: 'display'
+                order: 20
         task: {}
-        trustManagement: {}
+        trustManagement:
+              SIMPLE_TRUST_LIST:
+                  display: 'trustManagement.simpleTrustList'
+                  type: 'SIMPLE_TRUST_LIST'
+                  order: 1
+                  enabled: true
+                  params:
+                      public:
+                          enablePublishing: true
+                          proofOfPossessionLeeway: 60
         cacheEntities: {}
+        blobStorage: {}
+        walletProvider: {}
+        credentialIssuer: {}
+        verificationEngagement:
+            QR_CODE:
+                display: verificationEngagement.qrCode
+                order: 1
+                enabled: true
+        certificateValidation:
+            leeway: 60
+        signer: {}
+        verifierProvider: {}
+        trustListPublisher: {}
     "};
 
-    AppConfig::from_yaml(vec![config]).unwrap()
+    AppConfig::parse(vec![InputFormat::yaml_str(config)]).unwrap()
 }
 
 pub fn dummy_credential() -> Credential {
@@ -218,22 +307,23 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
     Credential {
         id: credential_id,
         created_date: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
+        issuance_date: None,
         last_modified: OffsetDateTime::now_utc(),
         deleted_at: None,
-        credential: b"credential".to_vec(),
-        exchange: exchange.to_owned(),
+        protocol: exchange.to_owned(),
         redirect_uri: None,
         role: CredentialRole::Issuer,
         state: CredentialStateEnum::Pending,
         suspend_end_date: None,
+        profile: None,
         claims: Some(vec![Claim {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            value: "claim value".to_string(),
+            value: Some("claim value".to_string()),
             path: "key".to_string(),
+            selectively_disclosable: false,
             schema: Some(ClaimSchema {
                 id: claim_schema_id,
                 key: "key".to_string(),
@@ -241,52 +331,69 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
                 created_date: OffsetDateTime::now_utc(),
                 last_modified: OffsetDateTime::now_utc(),
                 array: false,
+                metadata: false,
+                required: true,
             }),
         }]),
         issuer_identifier: Some(Identifier {
             did: Some(dummy_did()),
             ..dummy_identifier()
         }),
+        issuer_certificate: None,
         holder_identifier: None,
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
             deleted_at: None,
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            external_schema: false,
             name: "schema".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "format".to_string(),
+            key_storage_security: Some(KeyStorageSecurity::Basic),
+            format: "format".into(),
             imported_source_url: "CORE_URL".to_string(),
-            revocation_method: "revocation method".to_string(),
-            claim_schemas: Some(vec![CredentialSchemaClaim {
-                schema: ClaimSchema {
-                    id: claim_schema_id,
-                    key: "key".to_string(),
-                    data_type: "STRING".to_string(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                    array: false,
-                },
+            revocation_method: Some("revocation method".into()),
+            claim_schemas: Some(vec![ClaimSchema {
+                id: claim_schema_id,
+                key: "key".to_string(),
+                data_type: "STRING".to_string(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                array: false,
+                metadata: false,
                 required: true,
             }]),
             organisation: Some(dummy_organisation(None)),
             layout_type: LayoutType::Card,
             layout_properties: None,
-            schema_type: CredentialSchemaType::ProcivisOneSchema2024,
             schema_id: "CredentialSchemaId".to_owned(),
             allow_suspension: true,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         }),
         interaction: Some(Interaction {
-            id: Uuid::new_v4(),
+            id: Uuid::new_v4().into(),
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            host: Some("http://www.host.co".parse().unwrap()),
             data: Some(b"interaction data".to_vec()),
             organisation: None,
+            nonce_id: None,
+            interaction_type: InteractionType::Issuance,
+            expires_at: None,
         }),
-        revocation_list: None,
         key: None,
+        credential_blob_id: None,
+        wallet_unit_attestation_blob_id: None,
+        wallet_instance_attestation_blob_id: None,
+        webhook_url: None,
+    }
+}
+
+pub fn dummy_blob() -> Blob {
+    Blob {
+        id: Uuid::new_v4().into(),
+        created_date: get_dummy_date(),
+        last_modified: get_dummy_date(),
+        value: vec![1, 2, 3, 4, 5],
+        r#type: BlobType::Credential,
     }
 }
 
@@ -332,8 +439,7 @@ pub fn dummy_proof_with_protocol(protocol: &str) -> Proof {
         id: Uuid::new_v4().into(),
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: protocol.to_string(),
+        protocol: protocol.to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Created,
@@ -353,9 +459,13 @@ pub fn dummy_proof_with_protocol(protocol: &str) -> Proof {
         }),
         claims: None,
         verifier_identifier: None,
-        holder_identifier: None,
         verifier_key: None,
+        verifier_certificate: None,
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     }
 }
 
@@ -366,7 +476,7 @@ pub fn dummy_key() -> Key {
         last_modified: OffsetDateTime::now_utc(),
         public_key: vec![],
         name: "dummy".into(),
-        key_reference: vec![],
+        key_reference: None,
         storage_type: "foo".into(),
         key_type: "EDDSA".into(),
         organisation: None,
@@ -380,6 +490,9 @@ pub fn dummy_organisation(id: Option<OrganisationId>) -> Organisation {
         id,
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
+        deactivated_at: None,
+        wallet_provider: None,
+        wallet_provider_issuer: None,
     }
 }
 
@@ -404,18 +517,18 @@ pub fn dummy_credential_schema() -> CredentialSchema {
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
         name: "name".to_string(),
-        wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-        external_schema: false,
+        key_storage_security: None,
         imported_source_url: "CORE_URL".to_string(),
-        format: "format".to_string(),
-        revocation_method: "format".to_string(),
+        format: "format".into(),
+        revocation_method: Some("mock".into()),
         claim_schemas: None,
         organisation: None,
         layout_type: LayoutType::Card,
         layout_properties: None,
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         schema_id: "CredentialSchemaId".to_owned(),
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     }
 }
 
@@ -427,35 +540,36 @@ pub fn dummy_claim_schema() -> ClaimSchema {
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
         array: false,
+        metadata: false,
+        required: true,
     }
 }
 
 pub fn generic_formatter_capabilities() -> FormatterCapabilities {
     FormatterCapabilities {
         signing_key_algorithms: vec![KeyAlgorithmType::Eddsa],
-        features: vec![],
-        allowed_schema_ids: vec![],
+        features: vec![Features::SupportsTxCode],
+        ecosystem_schema_ids: vec![],
         selective_disclosure: vec![],
         issuance_did_methods: vec![
             crate::config::core_config::DidType::Key,
             crate::config::core_config::DidType::Web,
             crate::config::core_config::DidType::Jwk,
-            crate::config::core_config::DidType::X509,
             crate::config::core_config::DidType::WebVh,
         ],
-        issuance_exchange_protocols: vec![IssuanceProtocolType::OpenId4VciDraft13],
+        issuance_exchange_protocols: vec![
+            IssuanceProtocolType::OpenId4VciDraft13,
+            IssuanceProtocolType::OpenId4VciFinal1_0,
+        ],
         proof_exchange_protocols: vec![
             VerificationProtocolType::OpenId4VpDraft20,
             VerificationProtocolType::OpenId4VpDraft25,
+            VerificationProtocolType::OpenId4VpFinal1_0,
         ],
-        revocation_methods: vec![
-            RevocationType::None,
-            RevocationType::BitstringStatusList,
-            RevocationType::Lvvc,
-        ],
+        revocation_methods: vec![RevocationType::BitstringStatusList],
         verification_key_algorithms: vec![KeyAlgorithmType::Eddsa],
         verification_key_storages: vec![KeyStorageType::Internal],
-        datatypes: vec![],
+        datatypes: vec!["STRING".into(), "OBJECT".into()],
         forbidden_claim_names: vec![],
         issuance_identifier_types: vec![ConfigIdentifierType::Did],
         verification_identifier_types: vec![ConfigIdentifierType::Did],
@@ -463,7 +577,7 @@ pub fn generic_formatter_capabilities() -> FormatterCapabilities {
         holder_key_algorithms: vec![
             KeyAlgorithmType::Ecdsa,
             KeyAlgorithmType::Eddsa,
-            KeyAlgorithmType::Dilithium,
+            KeyAlgorithmType::MlDsa,
         ],
         holder_did_methods: vec![
             crate::config::core_config::DidType::Web,
@@ -494,8 +608,9 @@ pub fn dummy_did_document(did: &DidValue) -> DidDocument {
     }
 }
 
-pub fn dummy_jwk() -> PublicKeyJwk {
-    PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
+pub fn dummy_jwk() -> PublicJwk {
+    PublicJwk::Ec(PublicJwkEc {
+        alg: None,
         r#use: None,
         kid: None,
         crv: "P-256".to_string(),

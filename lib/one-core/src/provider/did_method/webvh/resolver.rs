@@ -4,13 +4,13 @@ use itertools::Itertools;
 use shared_types::DidValue;
 use url::Url;
 
+use crate::proto::http_client::HttpClient;
 use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::model::DidDocument;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::did_method::webvh::Params;
 use crate::provider::did_method::webvh::deserialize::DidLogEntry;
 use crate::provider::did_method::webvh::verification::verify_did_log;
-use crate::provider::http_client::HttpClient;
 
 pub async fn resolve(
     did: &DidValue,
@@ -21,6 +21,7 @@ pub async fn resolve(
 ) -> Result<DidDocument, DidMethodError> {
     let TransformedDid { mut url, .. } = transform_did_to_https(did.as_str())?;
     if use_http {
+        #[allow(clippy::expect_used)]
         url.set_scheme("http").expect("http is a valid scheme");
     }
 
@@ -46,7 +47,7 @@ pub async fn resolve(
 
             Ok((entry, line))
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<_, DidMethodError>>()?;
 
     verify_did_log(&entries, did_method_provider, params).await?;
 
@@ -73,7 +74,7 @@ struct TransformedDid<'a> {
 }
 
 // https://identity.foundation/didwebvh/v0.3/#the-did-to-https-transformation
-fn transform_did_to_https(did: &str) -> Result<TransformedDid, DidMethodError> {
+fn transform_did_to_https(did: &str) -> Result<TransformedDid<'_>, DidMethodError> {
     const METHOD_PREFIX: &str = "did:tdw:";
 
     let Some(did_suffix) = did.strip_prefix(METHOD_PREFIX) else {
@@ -119,40 +120,37 @@ fn transform_did_to_https(did: &str) -> Result<TransformedDid, DidMethodError> {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
     use std::fs;
     use std::fs::{File, ReadDir};
     use std::io::Read;
     use std::sync::Arc;
 
-    use indexmap::IndexMap;
     use maplit::hashmap;
+    use mockall::predicate::eq;
     use serde_json::json;
     use serde_json_path::JsonPath;
-    use time::Duration;
+    use similar_asserts::assert_eq;
+    use standardized_types::jwk::{PublicJwk, PublicJwkEc};
     use time::macros::datetime;
 
     use super::*;
     use crate::config::core_config::KeyAlgorithmType;
-    use crate::model::key::{PublicKeyJwk, PublicKeyJwkEllipticData};
+    use crate::proto::http_client::{Method, MockHttpClient, Request, Response, StatusCode};
     use crate::provider::credential_formatter::vcdm::VcdmProof;
     use crate::provider::did_method::DidMethod;
     use crate::provider::did_method::dto::DidDocumentDTO;
     use crate::provider::did_method::error::DidMethodError::{Deactivated, ResolutionError};
-    use crate::provider::did_method::jwk::JWKDidMethod;
+    use crate::provider::did_method::error::DidMethodProviderError;
     use crate::provider::did_method::key::KeyDidMethod;
     use crate::provider::did_method::keys::Keys;
     use crate::provider::did_method::model::DidVerificationMethod;
-    use crate::provider::did_method::provider::DidMethodProviderImpl;
-    use crate::provider::did_method::resolver::DidCachingLoader;
     use crate::provider::did_method::webvh::common::DidLogParameters;
     use crate::provider::did_method::webvh::deserialize::DidMethodVersion;
-    use crate::provider::http_client::{Method, MockHttpClient, Request, Response, StatusCode};
-    use crate::provider::key_algorithm::KeyAlgorithm;
+    use crate::provider::key_algorithm::ecdsa::Ecdsa;
     use crate::provider::key_algorithm::eddsa::Eddsa;
-    use crate::provider::key_algorithm::provider::KeyAlgorithmProviderImpl;
-    use crate::provider::remote_entity_storage::RemoteEntityType;
-    use crate::provider::remote_entity_storage::in_memory::InMemoryStorage;
+    use crate::provider::key_algorithm::provider::{
+        KeyAlgorithmProvider, MockKeyAlgorithmProvider,
+    };
     use crate::util::test_utilities::mock_http_get_request;
 
     #[test]
@@ -293,13 +291,14 @@ mod test {
                     headers: Default::default(),
                     method: Method::Get,
                     url: url.to_string(),
+                    timeout: None,
                 },
             },
         );
         let document = resolve(
             &did,
             &http_client,
-            &did_method_provider,
+            did_method_provider.as_ref(),
             false,
             &Default::default(),
         )
@@ -310,7 +309,8 @@ mod test {
             id: format!("{did}#auth-key-01"),
             r#type: "JsonWebKey2020".to_string(),
             controller: did.to_string(),
-            public_key_jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
+            public_key_jwk: PublicJwk::Ec(PublicJwkEc {
+                alg: None,
                 r#use: None,
                 kid: Some("auth-key-01".to_string()),
                 crv: "P-256".to_string(),
@@ -360,6 +360,7 @@ mod test {
                     headers: Default::default(),
                     method: Method::Get,
                     url: url.to_string(),
+                    timeout: None,
                 },
             },
         );
@@ -367,12 +368,13 @@ mod test {
         let document = resolve(
             &did,
             &http_client,
-            &did_method_provider,
+            did_method_provider.as_ref(),
             false,
             &Params {
                 keys: Keys::default(),
                 max_did_log_entry_check: Some(2),
                 resolve_to_insecure_http: false,
+                leeway: Default::default(),
             },
         )
         .await;
@@ -397,6 +399,7 @@ mod test {
                     headers: Default::default(),
                     method: Method::Get,
                     url: url.to_string(),
+                    timeout: None,
                 },
             },
         );
@@ -409,7 +412,7 @@ mod test {
         let document = resolve(
             &mismatched_did,
             &http_client,
-            &did_method_provider,
+            did_method_provider.as_ref(),
             false,
             &Default::default(),
         )
@@ -432,9 +435,7 @@ mod test {
         resolve_log_files(folder, |result, file_name| {
             assert!(
                 result.is_ok(),
-                "Failed resolving did! Did log file: {}, result: {:#?}",
-                file_name,
-                result
+                "Failed resolving did! Did log file: {file_name}, result: {result:#?}"
             )
         })
         .await;
@@ -446,7 +447,7 @@ mod test {
             "entry_hash_mismatch.jsonl" => ResolutionError("Entry hash mismatch, expected QmQikVGn3cLzaQ8PwqS4KNXtrfCr9Rbf5kTz9ayWXDAZZo, got QmVdZgk73vwTHX7wbNd7bd6jcMZeae88gxCuNqwMTT6PCQ.".to_owned()),
             "invalid_proof_verification_method_key.jsonl" => ResolutionError("Proof verification failed: verification method did:key:z6MkkuVyV9TbCGwhoJyJfhsFwFZjJ1833oWYtbh5mXGZxDTH#z6MkkuVyV9TbCGwhoJyJfhsFwFZjJ1833oWYtbh5mXGZxDTH is not allowed update_key".to_owned()),
             "wrong_index.jsonl" => ResolutionError("Unexpected versionId '1-QmUcfiZ4jTAYXuMjo4Fxoi3BHP2fjyZVeXCyugYYgdA4hW', expected index 2, got 1.".to_owned()),
-            "invalid_sig.jsonl" => ResolutionError("Failed to verify integrity proof for log entry 1-QmQ5sMLi5vKyHhdaL1LaD3b2C1JY2rCckr2uyGN9KyxMy2: Invalid signature".to_owned()),
+            "invalid_sig.jsonl" => ResolutionError("Failed to verify integrity proof for log entry 1-QmQ5sMLi5vKyHhdaL1LaD3b2C1JY2rCckr2uyGN9KyxMy2: Signer error: `Invalid signature`".to_owned()),
             "invalid_scid.jsonl" => ResolutionError("Invalid SCID: expected QmRXEKqsStiagD4DBZG1gwrtpoNfxSUwHd8vxQMBytR5zY, got QmRXEKqsStiagD4DBZG1gwrtpoNfxSUwHd8vxQMBytR5zW".to_owned()),
             "proof_too_old.jsonl" => ResolutionError("Invalid proof: created time is before entry time.".to_owned()),
             "portable_true_after_first_entry.jsonl" => ResolutionError("portable flag can only be set to true in first entry".to_owned()),
@@ -462,7 +463,11 @@ mod test {
                 "Failed resolving did! Did log file: {file_name}"
             );
             let expected_error = *expected_errors.get(&file_name as &str).as_ref().unwrap();
-            assert_eq!(&error, expected_error, "Failed for file: {file_name}");
+            assert_eq!(
+                error.to_string(),
+                expected_error.to_string(),
+                "Failed for file: {file_name}"
+            );
         })
         .await;
     }
@@ -504,6 +509,7 @@ mod test {
                         headers: Default::default(),
                         method: Method::Get,
                         url,
+                        timeout: None,
                     },
                 },
             );
@@ -511,7 +517,7 @@ mod test {
             let result = resolve(
                 &did.parse().unwrap(),
                 &http_client,
-                &did_method_provider,
+                did_method_provider.as_ref(),
                 false,
                 &Default::default(),
             )
@@ -524,32 +530,48 @@ mod test {
         }
     }
 
-    fn test_did_method_provider() -> DidMethodProviderImpl {
-        let caching_loader = DidCachingLoader::new(
-            RemoteEntityType::DidDocument,
-            Arc::new(InMemoryStorage::new(HashMap::new())),
-            100,
-            Duration::minutes(1),
-            Duration::minutes(1),
-        );
-        let key_algorithm_provider =
-            Arc::new(KeyAlgorithmProviderImpl::new(HashMap::from_iter(vec![(
-                KeyAlgorithmType::Eddsa,
-                Arc::new(Eddsa) as Arc<dyn KeyAlgorithm>,
-            )])));
-        DidMethodProviderImpl::new(
-            caching_loader,
-            IndexMap::from_iter(vec![
-                (
-                    "JWK".to_owned(),
-                    Arc::new(JWKDidMethod::new(key_algorithm_provider.clone()))
-                        as Arc<dyn DidMethod>,
-                ),
-                (
-                    "KEY".to_owned(),
-                    Arc::new(KeyDidMethod::new(key_algorithm_provider)) as Arc<dyn DidMethod>,
-                ),
-            ]),
-        )
+    struct FakeDidMethodProvider(Arc<dyn KeyAlgorithmProvider>);
+
+    #[async_trait::async_trait]
+    impl DidMethodProvider for FakeDidMethodProvider {
+        async fn resolve(&self, did: &DidValue) -> Result<DidDocument, DidMethodProviderError> {
+            Ok(KeyDidMethod::new(self.0.clone())
+                .resolve(did)
+                .await
+                .unwrap())
+        }
+
+        fn get_did_method(&self, _did_method_id: &str) -> Option<Arc<dyn DidMethod>> {
+            unimplemented!()
+        }
+
+        fn get_did_method_id(&self, _did: &DidValue) -> Option<String> {
+            unimplemented!()
+        }
+
+        fn get_did_method_by_method_name(
+            &self,
+            _method_name: &str,
+        ) -> Option<(String, Arc<dyn DidMethod>)> {
+            unimplemented!()
+        }
+
+        fn supported_method_names(&self) -> Vec<String> {
+            unimplemented!()
+        }
+    }
+
+    fn test_did_method_provider() -> Arc<dyn DidMethodProvider> {
+        let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+        key_algorithm_provider
+            .expect_key_algorithm_from_type()
+            .with(eq(KeyAlgorithmType::Ecdsa))
+            .returning(|_| Some(Arc::new(Ecdsa)));
+        key_algorithm_provider
+            .expect_key_algorithm_from_type()
+            .with(eq(KeyAlgorithmType::Eddsa))
+            .returning(|_| Some(Arc::new(Eddsa)));
+
+        Arc::new(FakeDidMethodProvider(Arc::new(key_algorithm_provider)))
     }
 }

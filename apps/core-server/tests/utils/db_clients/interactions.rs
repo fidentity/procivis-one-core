@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use one_core::model::interaction::{Interaction, InteractionId};
+use one_core::model::interaction::{Interaction, InteractionType};
 use one_core::model::organisation::Organisation;
 use one_core::repository::interaction_repository::InteractionRepository;
+use shared_types::InteractionId;
 use time::OffsetDateTime;
-use url::Url;
 use uuid::Uuid;
 
 pub struct InteractionsDB {
@@ -18,18 +18,21 @@ impl InteractionsDB {
 
     pub async fn create(
         &self,
-        id: Option<Uuid>,
-        host: &str,
+        id: Option<InteractionId>,
         data: &[u8],
         organisation: &Organisation,
+        interaction_type: InteractionType,
+        expires_at: Option<OffsetDateTime>,
     ) -> Interaction {
         let interaction = Interaction {
-            id: id.unwrap_or_else(Uuid::new_v4),
+            id: id.unwrap_or(Uuid::new_v4().into()),
             created_date: OffsetDateTime::now_utc(),
             last_modified: OffsetDateTime::now_utc(),
-            host: Some(Url::parse(host).unwrap()),
             data: Some(data.into()),
             organisation: Some(organisation.to_owned()),
+            nonce_id: None,
+            interaction_type,
+            expires_at,
         };
 
         self.repository
@@ -42,7 +45,7 @@ impl InteractionsDB {
 
     pub async fn get(&self, id: impl Into<InteractionId>) -> Option<Interaction> {
         self.repository
-            .get_interaction(&id.into(), &Default::default())
+            .get_interaction(&id.into(), &Default::default(), None)
             .await
             .unwrap()
     }

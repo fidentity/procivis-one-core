@@ -1,18 +1,21 @@
+use one_dto_mapper::{From, Into};
 use sea_orm::entity::prelude::*;
-use shared_types::OrganisationId;
+use shared_types::{InteractionId, NonceId, OrganisationId};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "interaction")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub id: String,
+    pub id: InteractionId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub host: Option<String>,
     #[sea_orm(column_type = "Blob")]
     pub data: Option<Vec<u8>>,
     pub organisation_id: OrganisationId,
+    pub nonce_id: Option<NonceId>,
+    pub interaction_type: InteractionType,
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -50,3 +53,14 @@ impl Related<super::organisation::Entity> for Entity {
 }
 
 impl ActiveModelBehavior for ActiveModel {}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+#[from(one_core::model::interaction::InteractionType)]
+#[into(one_core::model::interaction::InteractionType)]
+pub enum InteractionType {
+    #[sea_orm(string_value = "ISSUANCE")]
+    Issuance,
+    #[sea_orm(string_value = "VERIFICATION")]
+    Verification,
+}

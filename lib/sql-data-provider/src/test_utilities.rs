@@ -1,38 +1,50 @@
+#![expect(clippy::unwrap_used)]
+
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 
 use one_core::model::credential::{Credential, CredentialStateEnum};
-use one_core::model::did::Did;
-use one_core::model::interaction::InteractionId;
 use one_core::model::organisation::Organisation;
+use one_core::model::wallet_unit::WalletProviderType;
+use one_core::provider::key_algorithm::KeyAlgorithm;
+use one_core::provider::key_algorithm::ecdsa::Ecdsa;
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait, Set};
 use shared_types::{
-    ClaimId, ClaimSchemaId, CredentialId, CredentialSchemaId, DidId, DidValue, EntityId, HistoryId,
-    IdentifierId, KeyId, OrganisationId, ProofId, ProofSchemaId,
+    BlobId, CertificateId, ClaimId, ClaimSchemaId, CredentialId, CredentialSchemaId, DidId,
+    DidValue, EntityId, HistoryId, IdentifierId, InteractionId, KeyId, NonceId, OrganisationId,
+    ProofId, ProofSchemaId, RevocationListEntryId, RevocationListId, RevocationMethodId,
+    WalletUnitAttestedKeyId, WalletUnitId,
 };
+use similar_asserts::assert_eq;
+use standardized_types::jwk::PublicJwk;
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::entity::credential_schema::{CredentialSchemaType, LayoutType, WalletStorageType};
+use crate::entity::blob::BlobType;
+use crate::entity::credential::CredentialRole;
+use crate::entity::credential_schema::{KeyStorageSecurity, LayoutType};
 use crate::entity::did::DidType;
 use crate::entity::history::{self, HistoryAction, HistoryEntityType};
+use crate::entity::interaction::InteractionType;
 use crate::entity::key_did::KeyRole;
 use crate::entity::proof::{ProofRequestState, ProofRole};
+use crate::entity::revocation_list::{RevocationListFormat, RevocationListPurpose};
+use crate::entity::revocation_list_entry::{RevocationListEntryStatus, RevocationListEntryType};
 use crate::entity::{
-    claim, claim_schema, credential, credential_schema, credential_schema_claim_schema, did,
-    identifier, interaction, key, key_did, organisation, proof, proof_claim,
-    proof_input_claim_schema, proof_input_schema, proof_schema,
+    blob, claim, claim_schema, credential, credential_schema, did, identifier, interaction, key,
+    key_did, organisation, proof, proof_claim, proof_input_claim_schema, proof_input_schema,
+    proof_schema, revocation_list, revocation_list_entry, wallet_unit, wallet_unit_attested_key,
 };
 use crate::{DataLayer, db_conn};
 
 pub fn get_dummy_date() -> OffsetDateTime {
-    datetime!(2005-04-02 21:37 +1)
+    datetime!(2005-04-02 21:37 UTC)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn insert_credential(
     db: &DatabaseConnection,
     credential_schema_id: &CredentialSchemaId,
@@ -41,27 +53,43 @@ pub async fn insert_credential(
     issuer_identifier_id: IdentifierId,
     deleted_at: Option<OffsetDateTime>,
     suspend_end_date: Option<OffsetDateTime>,
+    credential_blob_id: BlobId,
+    role: CredentialRole,
 ) -> Result<Credential, DbErr> {
     let now = OffsetDateTime::now_utc();
+
+    blob::ActiveModel {
+        id: Set(credential_blob_id),
+        created_date: Set(now),
+        last_modified: Set(now),
+        value: Set(vec![0, 0, 0, 0]),
+        r#type: Set(BlobType::Credential),
+    }
+    .insert(db)
+    .await?;
 
     let credential = credential::ActiveModel {
         id: Set(Uuid::new_v4().into()),
         credential_schema_id: Set(*credential_schema_id),
         created_date: Set(now),
         last_modified: Set(now),
-        issuance_date: Set(now),
+        issuance_date: Set(None),
         redirect_uri: Set(None),
         deleted_at: Set(deleted_at),
-        exchange: Set(protocol.to_owned()),
-        credential: Set(vec![0, 0, 0, 0]),
-        role: Set(credential::CredentialRole::Issuer),
+        protocol: Set(protocol.to_owned()),
+        role: Set(role),
         issuer_identifier_id: Set(Some(issuer_identifier_id)),
+        issuer_certificate_id: Set(None),
         holder_identifier_id: Set(None),
         interaction_id: Set(None),
-        revocation_list_id: Set(None),
         key_id: Set(None),
         state: Set(state.into()),
         suspend_end_date: Set(suspend_end_date),
+        profile: Set(None),
+        credential_blob_id: Set(Some(credential_blob_id)),
+        wallet_unit_attestation_blob_id: Set(None),
+        wallet_instance_attestation_blob_id: Set(None),
+        webhook_url: Set(None),
     }
     .insert(db)
     .await?;
@@ -95,39 +123,50 @@ pub async fn insert_credential_schema_to_database(
     organisation_id: OrganisationId,
     name: &str,
     format: &str,
-    revocation_method: &str,
+    revocation_method: impl Into<Option<RevocationMethodId>>,
+    key_storage_security: Option<KeyStorageSecurity>,
 ) -> Result<CredentialSchemaId, DbErr> {
     let new_id: CredentialSchemaId = Uuid::new_v4().into();
     let schema = credential_schema::ActiveModel {
         id: Set(new_id.to_owned()),
         imported_source_url: Set("CORE_URL".to_string()),
         created_date: Set(get_dummy_date()),
-        external_schema: Set(false),
         last_modified: Set(get_dummy_date()),
-        format: Set(format.to_owned()),
+        format: Set(format.into()),
         name: Set(name.to_owned()),
-        revocation_method: Set(revocation_method.to_owned()),
+        revocation_method: Set(revocation_method.into()),
         organisation_id: Set(organisation_id),
-        wallet_storage_type: Set(Some(WalletStorageType::Software)),
+        key_storage_security: Set(key_storage_security),
         deleted_at: Set(deleted_at),
         layout_type: Set(LayoutType::Card),
         layout_properties: Set(None),
-        schema_type: Set(CredentialSchemaType::ProcivisOneSchema2024),
         schema_id: Set(new_id.to_string()),
         allow_suspension: Set(true),
+        requires_wallet_instance_attestation: Set(key_storage_security.is_some()),
+        transaction_code_type: Set(None),
+        transaction_code_length: Set(None),
+        transaction_code_description: Set(None),
     }
     .insert(database)
     .await?;
     Ok(schema.id)
 }
 
+pub type ClaimList<'a> = &'a [(
+    ClaimId,
+    ClaimSchemaId,
+    CredentialId,
+    Option<Vec<u8>>,
+    String,
+    bool,
+)];
 pub async fn insert_many_claims_to_database(
     database: &DatabaseConnection,
-    claims: &[(ClaimId, ClaimSchemaId, CredentialId, Vec<u8>, String)],
+    claims: ClaimList<'_>,
 ) -> Result<(), DbErr> {
-    let models =
-        claims.iter().map(
-            |(id, claim_schema_id, credential_id, value, path)| claim::ActiveModel {
+    let models = claims.iter().map(
+        |(id, claim_schema_id, credential_id, value, path, selectively_disclosable)| {
+            claim::ActiveModel {
                 id: Set(*id),
                 claim_schema_id: Set(*claim_schema_id),
                 credential_id: Set(*credential_id),
@@ -135,14 +174,15 @@ pub async fn insert_many_claims_to_database(
                 created_date: Set(get_dummy_date()),
                 last_modified: Set(get_dummy_date()),
                 path: Set(path.to_owned()),
-            },
-        );
+                selectively_disclosable: Set(*selectively_disclosable),
+            }
+        },
+    );
 
     claim::Entity::insert_many(models).exec(database).await?;
     Ok(())
 }
 
-#[allow(clippy::ptr_arg)]
 pub async fn insert_many_claims_schema_to_database<'a>(
     database: &DatabaseConnection,
     claim_input: &'a ProofInput<'a>,
@@ -155,13 +195,8 @@ pub async fn insert_many_claims_schema_to_database<'a>(
             key: Set(claim_schema.key.to_string()),
             datatype: Set(claim_schema.datatype.to_string()),
             array: Set(claim_schema.array),
-        }
-        .insert(database)
-        .await?;
-
-        credential_schema_claim_schema::ActiveModel {
-            claim_schema_id: Set(claim_schema.id),
-            credential_schema_id: Set(claim_input.credential_schema_id.to_string()),
+            metadata: Set(claim_schema.metadata),
+            credential_schema_id: Set(claim_input.credential_schema_id),
             required: Set(claim_schema.required),
             order: Set(claim_schema.order),
         }
@@ -179,31 +214,37 @@ pub async fn get_proof_by_id(
     proof::Entity::find_by_id(id).one(database).await
 }
 
+#[expect(clippy::too_many_arguments)]
 pub async fn insert_proof_request_to_database(
     database: &DatabaseConnection,
     verifier_identifier_id: IdentifierId,
-    holder_identifier_id: Option<IdentifierId>,
     proof_schema_id: &ProofSchemaId,
     verifier_key_id: KeyId,
-    interaction_id: Option<String>,
+    interaction_id: Option<InteractionId>,
+    proof_blob_id: Option<BlobId>,
+    engagement: Option<String>,
+    role: ProofRole,
 ) -> Result<ProofId, DbErr> {
     let proof = proof::ActiveModel {
         id: Set(Uuid::new_v4().into()),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        issuance_date: Set(get_dummy_date()),
-        exchange: Set("OPENID4VP_DRAFT20".to_string()),
+        protocol: Set("OPENID4VP_DRAFT20".to_string()),
         transport: Set("HTTP".to_string()),
         redirect_uri: Set(None),
         state: Set(ProofRequestState::Created),
-        role: Set(ProofRole::Verifier),
+        role: Set(role),
         requested_date: Set(None),
         completed_date: Set(None),
         verifier_identifier_id: Set(Some(verifier_identifier_id)),
-        holder_identifier_id: Set(holder_identifier_id),
         proof_schema_id: Set(Some(*proof_schema_id)),
         verifier_key_id: Set(Some(verifier_key_id)),
+        verifier_certificate_id: Set(None),
         interaction_id: Set(interaction_id),
+        profile: Set(None),
+        proof_blob_id: Set(proof_blob_id),
+        engagement: Set(engagement),
+        webhook_url: Set(None),
     }
     .insert(database)
     .await?;
@@ -217,6 +258,7 @@ pub struct ClaimInsertInfo<'a> {
     pub order: u32,
     pub datatype: &'a str,
     pub array: bool,
+    pub metadata: bool,
 }
 
 pub struct ProofInput<'a> {
@@ -250,8 +292,7 @@ pub async fn insert_proof_schema_with_claims_to_database(
             created_date: Set(get_dummy_date()),
             last_modified: Set(get_dummy_date()),
             order: Set(i as _),
-            validity_constraint: NotSet,
-            credential_schema: Set(input.credential_schema_id.to_string()),
+            credential_schema: Set(input.credential_schema_id),
             proof_schema: Set(schema.id),
         }
         .insert(database)
@@ -260,7 +301,7 @@ pub async fn insert_proof_schema_with_claims_to_database(
         for claim in input.claims {
             proof_input_claim_schema::ActiveModel {
                 proof_input_schema_id: Set(input_id.id),
-                claim_schema_id: Set(claim.id.to_string()),
+                claim_schema_id: Set(claim.id),
                 required: Set(claim.required),
                 order: Set(claim.order as _),
             }
@@ -300,8 +341,8 @@ pub async fn insert_many_proof_claim_to_database(
     let models = proof_claims
         .iter()
         .map(|(proof_id, claim_id)| proof_claim::ActiveModel {
-            claim_id: Set(claim_id.to_string()),
-            proof_id: Set(proof_id.to_string()),
+            claim_id: Set(*claim_id),
+            proof_id: Set(*proof_id),
         });
 
     proof_claim::Entity::insert_many(models)
@@ -322,6 +363,9 @@ pub async fn insert_organisation_to_database(
         name: Set(name.unwrap_or(id.to_string())),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
+        deactivated_at: NotSet,
+        wallet_provider: NotSet,
+        wallet_provider_issuer: NotSet,
     }
     .insert(database)
     .await?;
@@ -345,9 +389,9 @@ pub async fn insert_key_to_database(
         id: Set(id.into()),
         created_date: Set(get_dummy_date()),
         last_modified: Set(get_dummy_date()),
-        name: Set("test_key".to_string()),
+        name: Set(format!("{}-key", id).to_owned()),
         public_key: Set(public_key),
-        key_reference: Set(key_reference),
+        key_reference: Set(Some(key_reference)),
         storage_type: Set("INTERNAL".to_string()),
         key_type: Set(key_type),
         organisation_id: Set(organisation_id),
@@ -392,7 +436,7 @@ pub async fn insert_did_key(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn insert_did(
     database: &DatabaseConnection,
     name: &str,
@@ -434,6 +478,7 @@ pub async fn insert_key_did(
         did_id: Set(did_id),
         key_id: Set(key_id),
         role: Set(role),
+        reference: Set("1".to_string()),
     }
     .insert(database)
     .await?;
@@ -472,19 +517,22 @@ pub async fn insert_identifier(
 
 pub async fn insert_interaction(
     database: &DatabaseConnection,
-    host: &str,
     data: &[u8],
     organisation_id: OrganisationId,
-) -> Result<String, DbErr> {
+    nonce_id: Option<NonceId>,
+    interaction_type: InteractionType,
+) -> Result<InteractionId, DbErr> {
     let now = OffsetDateTime::now_utc();
 
     let interaction = interaction::ActiveModel {
-        id: Set(Uuid::new_v4().to_string()),
+        id: Set(Uuid::new_v4().into()),
         created_date: Set(now),
         last_modified: Set(now),
-        host: Set(Some(host.to_owned())),
         data: Set(Some(data.to_owned())),
         organisation_id: Set(organisation_id),
+        nonce_id: Set(nonce_id),
+        interaction_type: Set(interaction_type),
+        expires_at: Set(None),
     }
     .insert(database)
     .await?;
@@ -496,7 +544,7 @@ pub async fn get_interaction(
     database: &DatabaseConnection,
     id: &InteractionId,
 ) -> Result<interaction::Model, DbErr> {
-    interaction::Entity::find_by_id(id.to_string())
+    interaction::Entity::find_by_id(id)
         .one(database)
         .await?
         .ok_or(DbErr::RecordNotFound(String::default()))
@@ -528,13 +576,73 @@ pub async fn insert_history(
         entity_id: Set(Some(entity_id)),
         entity_type: Set(entity_type),
         metadata: Set(None),
-        organisation_id: Set(organisation_id),
+        organisation_id: Set(Some(organisation_id)),
+        source: Set(history::HistorySource::Core),
         target: Set(None),
+        //TODO: pass user
+        user: Set(None),
     }
     .insert(database)
     .await?;
 
     Ok(model.id)
+}
+
+pub async fn insert_revocation_list(
+    database: &DatabaseConnection,
+    purpose: RevocationListPurpose,
+    format: RevocationListFormat,
+    issuer_identifier_id: IdentifierId,
+    r#type: RevocationMethodId,
+    issuer_certificate_id: Option<CertificateId>,
+) -> Result<RevocationListId, DbErr> {
+    let id = Uuid::new_v4().into();
+    let now = OffsetDateTime::now_utc();
+
+    let _model = revocation_list::ActiveModel {
+        id: Set(id),
+        created_date: Set(now),
+        last_modified: Set(now),
+        formatted_list: Set(vec![]),
+        purpose: Set(purpose),
+        format: Set(format),
+        r#type: Set(r#type),
+        issuer_identifier_id: Set(issuer_identifier_id),
+        issuer_certificate_id: Set(issuer_certificate_id),
+    }
+    .insert(database)
+    .await?;
+
+    Ok(id)
+}
+
+pub async fn insert_revocation_list_entry(
+    database: &DatabaseConnection,
+    list_id: RevocationListId,
+    index: usize,
+    credential_id: Option<CredentialId>,
+) -> Result<RevocationListEntryId, DbErr> {
+    let id = Uuid::new_v4().into();
+    let now = OffsetDateTime::now_utc();
+
+    let _model = revocation_list_entry::ActiveModel {
+        id: Set(id),
+        created_date: Set(now),
+        last_modified: Set(now),
+        revocation_list_id: Set(list_id),
+        index: Set(Some(index as _)),
+        credential_id: Set(credential_id),
+        r#type: Set(credential_id
+            .map(|_| RevocationListEntryType::Credential)
+            .unwrap_or(RevocationListEntryType::WalletUnitAttestedKey)),
+        signature_type: Set(None),
+        status: Set(RevocationListEntryStatus::Active),
+        serial: Set(None),
+    }
+    .insert(database)
+    .await?;
+
+    Ok(id)
 }
 
 pub fn assert_eq_unordered<T: Hash + Eq + Debug, K: Into<T>>(
@@ -554,23 +662,72 @@ pub fn dummy_organisation(id: Option<OrganisationId>) -> Organisation {
         id,
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
+        deactivated_at: None,
+        wallet_provider: None,
+        wallet_provider_issuer: None,
     }
 }
 
-pub fn dummy_did() -> Did {
-    Did {
-        id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
-        name: "John".to_string(),
-        did: "did:example:123".parse().unwrap(),
-        did_type: one_core::model::did::DidType::Local,
-        did_method: "INTERNAL".to_string(),
-        keys: None,
-        organisation: Some(dummy_organisation(None)),
-        deactivated: false,
-        log: None,
+pub async fn insert_wallet_unit_to_database(
+    db: &DatabaseConnection,
+    organisation_id: OrganisationId,
+    name: String,
+) -> WalletUnitId {
+    let id: WalletUnitId = Uuid::new_v4().into();
+    let now = get_dummy_date();
+
+    wallet_unit::ActiveModel {
+        id: Set(id),
+        created_date: Set(now),
+        last_modified: Set(now),
+        last_issuance: Set(Some(now)),
+        name: Set(name),
+        os: Set(wallet_unit::WalletUnitOs::Android),
+        status: Set(wallet_unit::WalletUnitStatus::Active),
+        wallet_provider_type: Set(WalletProviderType::ProcivisOne.into()),
+        wallet_provider_name: Set("Test Provider Name".to_string()),
+        // Generate unique public key to avoid constraint violations
+        authentication_key_jwk: Set(Some(random_jwk_string())),
+        nonce: Set(None),
+        organisation_id: Set(organisation_id),
     }
+    .insert(db)
+    .await
+    .unwrap();
+
+    id
+}
+
+pub async fn insert_wallet_unit_attested_key_to_database(
+    db: &DatabaseConnection,
+    wallet_unit_id: WalletUnitId,
+    revocation_list_entry_id: Option<Uuid>,
+    expiration_date: OffsetDateTime,
+) -> WalletUnitAttestedKeyId {
+    let id = Uuid::new_v4().into();
+    wallet_unit_attested_key::ActiveModel {
+        id: Set(id),
+        created_date: Set(get_dummy_date()),
+        last_modified: Set(get_dummy_date()),
+        expiration_date: Set(expiration_date),
+        public_key_jwk: Set(random_jwk_string()),
+        wallet_unit_id: Set(wallet_unit_id),
+        revocation_list_entry_id: Set(revocation_list_entry_id.map(|id| id.into())),
+    }
+    .insert(db)
+    .await
+    .unwrap();
+
+    id
+}
+
+pub fn random_jwk_string() -> String {
+    serde_json::to_string(&random_jwk()).unwrap()
+}
+
+pub fn random_jwk() -> PublicJwk {
+    let unique_suffix = Ecdsa.generate_key().unwrap();
+    unique_suffix.key.public_key_as_jwk().unwrap()
 }
 
 #[test]

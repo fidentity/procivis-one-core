@@ -5,31 +5,69 @@ use super::dto::{
     CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, GetIdentifierListResponseDTO,
     GetIdentifierResponseDTO,
 };
+use super::error::IdentifierServiceError;
+use crate::error::ContextWithErrorCode;
 use crate::model::identifier::{GetIdentifierList, Identifier, IdentifierType};
 use crate::service::did::dto::CreateDidRequestDTO;
-use crate::service::error::ServiceError;
 
 impl TryFrom<Identifier> for GetIdentifierResponseDTO {
-    type Error = ServiceError;
+    type Error = IdentifierServiceError;
     fn try_from(value: Identifier) -> Result<Self, Self::Error> {
         let organisation_id = value.organisation.map(|org| org.id);
 
+        let mut certificates = None;
+        let mut certificate_authorities = None;
         match value.r#type {
             IdentifierType::Did => {
                 if value.did.is_none() {
-                    return Err(ServiceError::MappingError(
+                    return Err(IdentifierServiceError::MappingError(
                         "DID is required for identifier type Did".to_string(),
                     ));
                 }
             }
             IdentifierType::Key => {
                 if value.key.is_none() {
-                    return Err(ServiceError::MappingError(
+                    return Err(IdentifierServiceError::MappingError(
                         "Key is required for identifier type Key".to_string(),
                     ));
                 }
             }
-            IdentifierType::Certificate => {}
+            IdentifierType::Certificate => {
+                let mut certs = vec![];
+                for certificate in
+                    value
+                        .certificates
+                        .ok_or(IdentifierServiceError::MappingError(format!(
+                            "Certificates required for identifier type {}",
+                            value.r#type
+                        )))?
+                {
+                    certs.push(
+                        certificate
+                            .try_into()
+                            .error_while("converting certificate")?,
+                    );
+                }
+                certificates = Some(certs);
+            }
+            IdentifierType::CertificateAuthority => {
+                let mut certs = vec![];
+                for certificate in
+                    value
+                        .certificates
+                        .ok_or(IdentifierServiceError::MappingError(format!(
+                            "Certificates required for identifier type {}",
+                            value.r#type
+                        )))?
+                {
+                    certs.push(
+                        certificate
+                            .try_into()
+                            .error_while("converting certificate")?,
+                    );
+                }
+                certificate_authorities = Some(certs);
+            }
         }
 
         Ok(Self {
@@ -41,9 +79,18 @@ impl TryFrom<Identifier> for GetIdentifierResponseDTO {
             r#type: value.r#type,
             is_remote: value.is_remote,
             state: value.state,
-            did: value.did.map(TryInto::try_into).transpose()?,
-            key: value.key.map(TryInto::try_into).transpose()?,
-            certificates: None,
+            did: value
+                .did
+                .map(TryInto::try_into)
+                .transpose()
+                .error_while("converting DID")?,
+            key: value
+                .key
+                .map(TryInto::try_into)
+                .transpose()
+                .error_while("converting key")?,
+            certificates,
+            certificate_authorities,
         })
     }
 }

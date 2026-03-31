@@ -3,15 +3,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
+use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
+use one_crypto::Signer;
 use one_crypto::encryption::EncryptionError;
-use one_crypto::jwe::{PrivateKeyAgreementHandle, RemoteJwk};
+use one_crypto::jwe::PrivateKeyAgreementHandle;
 use one_crypto::signer::ecdsa::ECDSASigner;
-use one_crypto::{Signer, SignerError};
-use secrecy::SecretSlice;
+use secrecy::{ExposeSecret, SecretSlice};
+use standardized_types::jwk::{JwkUse, PrivateJwk, PublicJwk, PublicJwkEc};
 
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::PublicKeyJwk;
 use crate::provider::key_algorithm::error::KeyAlgorithmError;
 use crate::provider::key_algorithm::key::{
     KeyAgreementHandle, KeyHandle, KeyHandleError, PublicKeyAgreementHandle, SignatureKeyHandle,
@@ -19,7 +19,6 @@ use crate::provider::key_algorithm::key::{
 };
 use crate::provider::key_algorithm::model::{Features, GeneratedKey, KeyAlgorithmCapabilities};
 use crate::provider::key_algorithm::{KeyAlgorithm, parse_multibase_with_tag};
-use crate::provider::key_utils::{ecdsa_public_key_as_jwk, ecdsa_public_key_as_multibase};
 
 pub struct Ecdsa;
 
@@ -67,7 +66,7 @@ impl KeyAlgorithm for Ecdsa {
         &self,
         public_key: &[u8],
         private_key: Option<SecretSlice<u8>>,
-        r#use: Option<String>,
+        r#use: Option<JwkUse>,
     ) -> Result<KeyHandle, KeyAlgorithmError> {
         if let Some(private_key) = private_key {
             let private_handle =
@@ -106,17 +105,15 @@ impl KeyAlgorithm for Ecdsa {
         todo!()
     }
 
-    fn parse_jwk(&self, key: &PublicKeyJwk) -> Result<KeyHandle, KeyAlgorithmError> {
-        if let PublicKeyJwk::Ec(data) = key {
-            let x = Base64UrlSafeNoPadding::decode_to_vec(&data.x, None)
-                .map_err(|e| KeyAlgorithmError::Failed(e.to_string()))?;
+    fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
+        if let PublicJwk::Ec(data) = key {
+            let x = Base64UrlSafeNoPadding::decode_to_vec(&data.x, None)?;
             let y = Base64UrlSafeNoPadding::decode_to_vec(
                 data.y
                     .as_ref()
-                    .ok_or(KeyAlgorithmError::Failed("Y is missing".to_string()))?,
+                    .ok_or(KeyAlgorithmError::MissingParameter("Y".to_string()))?,
                 None,
-            )
-            .map_err(|e| KeyAlgorithmError::Failed(e.to_string()))?;
+            )?;
 
             let public_key = ECDSASigner::parse_public_key_coordinates(&x, &y, true)?;
             let handle = Arc::new(EcdsaPublicKeyHandle::new(public_key, data.r#use.clone()));
@@ -126,7 +123,29 @@ impl KeyAlgorithm for Ecdsa {
                 key_agreement: KeyAgreementHandle::PublicKeyOnly(handle),
             })
         } else {
-            Err(KeyAlgorithmError::Failed("invalid kty".to_string()))
+            Err(KeyAlgorithmError::InvalidKeyType)
+        }
+    }
+
+    fn parse_private_jwk(&self, jwk: PrivateJwk) -> Result<GeneratedKey, KeyAlgorithmError> {
+        match jwk {
+            PrivateJwk::Ec(data) => {
+                if data.crv != "P-256" {
+                    return Err(KeyAlgorithmError::NotSupported(format!("crv {}", data.crv)));
+                }
+                let d: SecretSlice<u8> =
+                    Base64UrlSafeNoPadding::decode_to_vec(data.d.expose_secret(), None)?.into();
+
+                let (private, public) = ECDSASigner::parse_private_key_coordinates(&d, true)?;
+
+                let key = self.reconstruct_key(&public, Some(private.clone()), data.r#use)?;
+                Ok(GeneratedKey {
+                    key,
+                    public,
+                    private,
+                })
+            }
+            _ => Err(KeyAlgorithmError::InvalidKeyType),
         }
     }
 
@@ -147,11 +166,11 @@ impl KeyAlgorithm for Ecdsa {
 
 struct EcdsaPublicKeyHandle {
     public_key: Vec<u8>,
-    r#use: Option<String>,
+    r#use: Option<JwkUse>,
 }
 
 impl EcdsaPublicKeyHandle {
-    fn new(public_key: Vec<u8>, r#use: Option<String>) -> Self {
+    fn new(public_key: Vec<u8>, r#use: Option<JwkUse>) -> Self {
         Self { public_key, r#use }
     }
 }
@@ -171,7 +190,7 @@ impl EcdsaPrivateKeyHandle {
 }
 
 impl SignaturePublicKeyHandle for EcdsaPublicKeyHandle {
-    fn as_jwk(&self) -> Result<PublicKeyJwk, KeyHandleError> {
+    fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
         ecdsa_public_key_as_jwk(&self.public_key, self.r#use.clone())
     }
 
@@ -183,21 +202,21 @@ impl SignaturePublicKeyHandle for EcdsaPublicKeyHandle {
         self.public_key.clone()
     }
 
-    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), SignerError> {
-        ECDSASigner {}.verify(message, signature, &self.public_key)
+    fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
+        Ok(ECDSASigner.verify(message, signature, &self.public_key)?)
     }
 }
 
 #[async_trait::async_trait]
 impl SignaturePrivateKeyHandle for EcdsaPrivateKeyHandle {
-    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignerError> {
-        ECDSASigner {}.sign(message, &self.public_key, &self.private_key)
+    async fn sign(&self, message: &[u8]) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(ECDSASigner.sign(message, &self.public_key, &self.private_key)?)
     }
 }
 
 impl PublicKeyAgreementHandle for EcdsaPublicKeyHandle {
-    fn as_jwk(&self) -> Result<RemoteJwk, KeyHandleError> {
-        ECDSASigner::bytes_as_jwk(&self.public_key).map_err(KeyHandleError::Encryption)
+    fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
+        ecdsa_public_key_as_jwk(&self.public_key, self.r#use.clone())
     }
 
     fn as_multibase(&self) -> Result<String, KeyHandleError> {
@@ -213,8 +232,37 @@ impl PublicKeyAgreementHandle for EcdsaPublicKeyHandle {
 impl PrivateKeyAgreementHandle for EcdsaPrivateKeyHandle {
     async fn shared_secret(
         &self,
-        remote_jwk: &RemoteJwk,
+        remote_jwk: &PublicJwk,
     ) -> Result<SecretSlice<u8>, EncryptionError> {
         ECDSASigner::shared_secret_p256(&self.private_key, remote_jwk)
     }
+}
+
+pub(crate) fn ecdsa_public_key_as_jwk(
+    public_key: &[u8],
+    r#use: Option<JwkUse>,
+) -> Result<PublicJwk, KeyHandleError> {
+    let (x, y) = ECDSASigner::get_public_key_coordinates(public_key)?;
+
+    let alg = match r#use {
+        Some(JwkUse::Encryption) => Some("ECDH-ES".to_string()),
+        Some(JwkUse::Signature) => Some("ES256".to_string()),
+        _ => None,
+    };
+
+    Ok(PublicJwk::Ec(PublicJwkEc {
+        alg,
+        r#use,
+        kid: None,
+        crv: "P-256".to_string(),
+        x: Base64UrlSafeNoPadding::encode_to_string(x)?,
+        y: Some(Base64UrlSafeNoPadding::encode_to_string(y)?),
+    }))
+}
+
+pub(crate) fn ecdsa_public_key_as_multibase(public_key: &[u8]) -> Result<String, KeyHandleError> {
+    let codec = &[0x80, 0x24];
+    let key = ECDSASigner::parse_public_key(public_key, true)?;
+    let data = [codec, key.as_slice()].concat();
+    Ok(format!("z{}", bs58::encode(data).into_string()))
 }

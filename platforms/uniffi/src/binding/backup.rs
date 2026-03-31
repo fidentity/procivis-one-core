@@ -1,5 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use one_core::service::backup::BackupService;
 use one_core::service::backup::dto::{
     BackupCreateResponseDTO, MetadataDTO, UnexportableEntitiesResponseDTO,
 };
@@ -82,15 +83,12 @@ impl OneCoreBinding {
         }
 
         let metadata: MetadataBindingDTO = {
-            let core = self.use_core().await?;
-            core.backup_service
-                .unpack_backup(
-                    SecretString::from(password),
-                    input_path,
-                    self.backup_db_path.clone(),
-                )
-                .await?
-                .into()
+            BackupService::unpack_backup(
+                SecretString::from(password),
+                PathBuf::from(input_path),
+                PathBuf::from(self.backup_db_path.clone()),
+            )?
+            .into()
         };
 
         self.initialize(self.backup_db_path.clone()).await?;
@@ -146,4 +144,162 @@ pub struct KeyListItemBindingDTO {
     pub public_key: Vec<u8>,
     pub key_type: String,
     pub storage_type: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use similar_asserts::assert_eq;
+
+    use crate::binding::backup::BackupCreateBindingDTO;
+    use crate::binding::history::{
+        HistoryActionBindingEnum, HistoryEntityTypeBindingEnum, HistoryListQueryBindingDTO,
+    };
+    use crate::error::{BindingError, ErrorResponseBindingDTO};
+    use crate::test::TestContextWithOrganisation;
+
+    #[tokio::test]
+    async fn test_create_backup() {
+        let TestContextWithOrganisation { core, data_dir, .. } =
+            TestContextWithOrganisation::create().await;
+        let backup_file_path = data_dir.random_file();
+
+        let BackupCreateBindingDTO {
+            file,
+            unexportable,
+            history_id,
+        } = core
+            .create_backup("password".to_string(), backup_file_path.to_owned())
+            .await
+            .unwrap();
+
+        assert_eq!(file, backup_file_path);
+
+        assert_eq!(unexportable.total_credentials, 0);
+        assert_eq!(unexportable.total_identifiers, 0);
+        assert_eq!(unexportable.total_dids, 0);
+        assert_eq!(unexportable.total_keys, 0);
+        assert!(unexportable.credentials.is_empty());
+        assert!(unexportable.identifiers.is_empty());
+        assert!(unexportable.dids.is_empty());
+        assert!(unexportable.keys.is_empty());
+
+        let history = core.get_history_entry(history_id).await.unwrap();
+        assert_eq!(history.entity_type, HistoryEntityTypeBindingEnum::Backup);
+        assert_eq!(history.action, HistoryActionBindingEnum::Created);
+    }
+
+    #[tokio::test]
+    async fn test_backup_info() {
+        let TestContextWithOrganisation { core, .. } = TestContextWithOrganisation::create().await;
+
+        let info = core.backup_info().await.unwrap();
+
+        assert_eq!(info.total_credentials, 0);
+        assert_eq!(info.total_identifiers, 0);
+        assert_eq!(info.total_dids, 0);
+        assert_eq!(info.total_keys, 0);
+        assert!(info.credentials.is_empty());
+        assert!(info.identifiers.is_empty());
+        assert!(info.dids.is_empty());
+        assert!(info.keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_unpack_backup_success() {
+        let TestContextWithOrganisation { core, data_dir, .. } =
+            TestContextWithOrganisation::create().await;
+
+        let BackupCreateBindingDTO { file, .. } = core
+            .create_backup("password".to_string(), data_dir.random_file())
+            .await
+            .unwrap();
+
+        core.unpack_backup("password".to_string(), file)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unpack_backup_wrong_password() {
+        let TestContextWithOrganisation { core, data_dir, .. } =
+            TestContextWithOrganisation::create().await;
+
+        let BackupCreateBindingDTO { file, .. } = core
+            .create_backup("password".to_string(), data_dir.random_file())
+            .await
+            .unwrap();
+
+        let Err(BindingError::ErrorResponse {
+            data: ErrorResponseBindingDTO { cause, .. },
+        }) = core.unpack_backup("wrong".to_string(), file).await
+        else {
+            panic!("invalid result");
+        };
+
+        assert!(
+            cause.as_ref().unwrap().message.contains("Encryption error"),
+            "cause = {cause:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_import() {
+        let TestContextWithOrganisation {
+            core,
+            data_dir,
+            organisation_id,
+        } = TestContextWithOrganisation::create().await;
+
+        let BackupCreateBindingDTO { file, .. } = core
+            .create_backup("password".to_string(), data_dir.random_file())
+            .await
+            .unwrap();
+
+        core.unpack_backup("password".to_string(), file)
+            .await
+            .unwrap();
+
+        core.finalize_import().await.unwrap();
+
+        let history = core
+            .get_history_list(HistoryListQueryBindingDTO {
+                page: 0,
+                page_size: 1,
+                organisation_id,
+                entity_ids: None,
+                entity_types: Some(vec![HistoryEntityTypeBindingEnum::Backup]),
+                actions: None,
+                created_date_after: None,
+                created_date_before: None,
+                identifier_id: None,
+                credential_id: None,
+                credential_schema_id: None,
+                proof_schema_id: None,
+                search: None,
+                users: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            history.values.first().unwrap().action,
+            HistoryActionBindingEnum::Restored
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rollback_import() {
+        let TestContextWithOrganisation { core, data_dir, .. } =
+            TestContextWithOrganisation::create().await;
+
+        let BackupCreateBindingDTO { file, .. } = core
+            .create_backup("password".to_string(), data_dir.random_file())
+            .await
+            .unwrap();
+
+        core.unpack_backup("password".to_string(), file)
+            .await
+            .unwrap();
+
+        core.rollback_import().await.unwrap();
+    }
 }

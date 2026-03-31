@@ -1,12 +1,20 @@
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use shared_types::DidValue;
+use standardized_types::jwk::PublicJwk;
 use time::OffsetDateTime;
+use tokio_util::either::Either;
 
+use crate::error::ContextWithErrorCode;
+use crate::proto::jwt::model::{DecomposedJwt, JWTPayload};
+use crate::proto::jwt::{Jwt, JwtPublicKeyInfo};
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::Jwt;
-use crate::provider::credential_formatter::jwt::model::{DecomposedToken, JWTPayload};
-use crate::provider::credential_formatter::model::{AuthenticationFn, TokenVerifier};
-use crate::service::key::dto::PublicKeyJwkDTO;
+use crate::provider::credential_formatter::model::{
+    AuthenticationFn, PublicKeySource, TokenVerifier,
+};
+use crate::provider::did_method::error::DidMethodError;
+use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 
 const JWT_PROOF_TYPE: &str = "openid4vci-proof+jwt";
 
@@ -21,14 +29,14 @@ impl OpenID4VCIProofJWTFormatter {
     pub async fn verify_proof(
         jwt: &str,
         verifier: Box<dyn TokenVerifier>,
-        expected_nonce: Option<String>,
-    ) -> Result<(DidValue, String), FormatterError> {
-        let DecomposedToken::<ProofOfPossession> {
+        expected_nonce: &Option<String>,
+    ) -> Result<Either<(DidValue, String), PublicJwk>, FormatterError> {
+        let DecomposedJwt::<ProofOfPossession> {
             header,
             payload,
             signature,
             unverified_jwt,
-        } = Jwt::decompose_token(jwt)?;
+        } = Jwt::decompose_token(jwt).error_while("parsing proof token")?;
 
         match header.r#type.as_deref() {
             Some(JWT_PROOF_TYPE) => {}
@@ -42,13 +50,14 @@ impl OpenID4VCIProofJWTFormatter {
                     "Missing proof.jwt type".to_string(),
                 ));
             }
-        }
-        if let Some(expected_nonce) = expected_nonce {
-            if payload.custom.nonce.as_ref() != Some(&expected_nonce) {
-                return Err(FormatterError::CouldNotVerify(format!(
-                    "invalid or missing nonce: expected: {expected_nonce}"
-                )));
-            }
+        };
+
+        if let Some(expected_nonce) = expected_nonce
+            && payload.custom.nonce.as_ref() != Some(expected_nonce)
+        {
+            return Err(FormatterError::CouldNotVerify(format!(
+                "invalid or missing nonce: expected: {expected_nonce}"
+            )));
         }
 
         let result = match (header.key_id.as_ref(), header.jwk.clone()) {
@@ -71,57 +80,44 @@ impl OpenID4VCIProofJWTFormatter {
 
                 let did: DidValue = did
                     .parse()
-                    .map_err(|e| FormatterError::CouldNotVerify(format!("Invalid did: {e}")))?;
+                    .map_err(DidMethodError::DidValueError)
+                    .error_while("parsing issuer DID")?;
 
                 let (_, key_algorithm) = verifier
                     .key_algorithm_provider()
                     .key_algorithm_from_jose_alg(&header.algorithm)
-                    .ok_or(FormatterError::CouldNotVerify(
-                        "Invalid key algorithm".to_string(),
-                    ))?;
+                    .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                        header.algorithm.to_string(),
+                    ))
+                    .error_while("getting key algorithm")?;
 
+                let params = PublicKeySource::Did {
+                    did: Cow::Borrowed(&did),
+                    key_id: fragment,
+                };
                 verifier
                     .verify(
-                        Some(did.clone()),
-                        fragment,
+                        params,
                         key_algorithm.algorithm_type(),
                         unverified_jwt.as_bytes(),
                         &signature,
                     )
                     .await
-                    .map_err(|e| {
-                        FormatterError::CouldNotVerify(format!("Failed to verify proof.jwt: {e}"))
-                    })?;
-                (did, key_id.clone())
+                    .error_while("verifying issuer signature")?;
+                Either::Left((did, key_id.clone()))
             }
             (None, Some(jwk)) => {
-                let jwk = jwk.into();
-
-                let key_handle =
-                    verifier
-                        .key_algorithm_provider()
-                        .parse_jwk(&jwk)
-                        .map_err(|e| {
-                            FormatterError::CouldNotVerify(format!(
-                                "Could not parse jwk from proof.jwt: {e}"
-                            ))
-                        })?;
+                let key_handle = verifier
+                    .key_algorithm_provider()
+                    .parse_jwk(&jwk)
+                    .error_while("parsing JWK")?;
 
                 key_handle
                     .key
                     .verify(unverified_jwt.as_bytes(), &signature)
-                    .map_err(|_| FormatterError::CouldNotVerify("Invalid signature".to_string()))?;
-                let multibase = key_handle.key.public_key_as_multibase().map_err(|err| {
-                    FormatterError::CouldNotVerify(format!(
-                        "Failed to encode public key as multibase: {err}"
-                    ))
-                })?;
-                let did_value = format!("did:key:{multibase}");
-                let key_id = format!("{did_value}#{multibase}");
-                let did_value = did_value
-                    .parse()
-                    .map_err(|e| FormatterError::CouldNotVerify(format!("Invalid did: {e}")))?;
-                (did_value, key_id)
+                    .error_while("verifying issuer signature")?;
+
+                Either::Right(jwk)
             }
         };
         Ok(result)
@@ -130,7 +126,7 @@ impl OpenID4VCIProofJWTFormatter {
     pub async fn format_proof(
         issuer_url: String,
         holder_key_id: Option<String>,
-        jwk: Option<PublicKeyJwkDTO>,
+        jwk: Option<PublicJwk>,
         nonce: Option<String>,
         auth_fn: AuthenticationFn,
     ) -> Result<String, FormatterError> {
@@ -151,6 +147,7 @@ impl OpenID4VCIProofJWTFormatter {
             Some(_) => None,
             None => holder_key_id,
         };
+        let jwk = jwk.map(JwtPublicKeyInfo::Jwk);
 
         let jwt = Jwt::new(
             JWT_PROOF_TYPE.to_string(),
@@ -162,13 +159,16 @@ impl OpenID4VCIProofJWTFormatter {
             payload,
         );
 
-        jwt.tokenize(Some(auth_fn)).await
+        Ok(jwt
+            .tokenize(Some(&*auth_fn))
+            .await
+            .error_while("creating proof token")?)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+
     use std::sync::Arc;
 
     use uuid::Uuid;
@@ -176,15 +176,16 @@ mod test {
     use super::*;
     use crate::config::core_config::KeyAlgorithmType;
     use crate::model::did::KeyRole;
-    use crate::model::key::{Key, PublicKeyJwk};
+    use crate::model::key::Key;
+    use crate::proto::certificate_validator::MockCertificateValidator;
+    use crate::proto::key_verification::KeyVerification;
     use crate::provider::credential_formatter::model::SignatureProvider;
     use crate::provider::did_method::model::{DidDocument, DidVerificationMethod};
     use crate::provider::did_method::provider::MockDidMethodProvider;
     use crate::provider::key_algorithm::KeyAlgorithm;
     use crate::provider::key_algorithm::eddsa::Eddsa;
-    use crate::provider::key_algorithm::provider::KeyAlgorithmProviderImpl;
+    use crate::provider::key_algorithm::provider::{MockKeyAlgorithmProvider, ParsedKey};
     use crate::provider::key_storage::provider::SignatureProviderImpl;
-    use crate::util::key_verification::KeyVerification;
 
     #[tokio::test]
     async fn test_format_then_verify_proof_with_holder_key_id() {
@@ -201,7 +202,7 @@ mod test {
         .await
         .unwrap();
 
-        OpenID4VCIProofJWTFormatter::verify_proof(&proof, verifier(), None)
+        OpenID4VCIProofJWTFormatter::verify_proof(&proof, verifier(), &None)
             .await
             .unwrap();
     }
@@ -214,14 +215,14 @@ mod test {
         let proof = OpenID4VCIProofJWTFormatter::format_proof(
             "https://example.com".to_string(),
             None,
-            Some(jwk.into()),
+            Some(jwk),
             Some("nonce".to_string()),
             auth_fn,
         )
         .await
         .unwrap();
 
-        OpenID4VCIProofJWTFormatter::verify_proof(&proof, verifier(), Some("nonce".to_string()))
+        OpenID4VCIProofJWTFormatter::verify_proof(&proof, verifier(), &Some("nonce".to_string()))
             .await
             .unwrap();
     }
@@ -234,7 +235,7 @@ mod test {
         let proof = OpenID4VCIProofJWTFormatter::format_proof(
             "https://example.com".to_string(),
             None,
-            Some(jwk.into()),
+            Some(jwk),
             Some("nonce".to_string()),
             auth_fn,
         )
@@ -244,7 +245,7 @@ mod test {
         let result = OpenID4VCIProofJWTFormatter::verify_proof(
             &proof,
             verifier(),
-            Some("invalid_nonce".to_string()),
+            &Some("invalid_nonce".to_string()),
         )
         .await;
         assert!(matches!(result, Err(FormatterError::CouldNotVerify(_))));
@@ -276,16 +277,25 @@ mod test {
             })
         });
 
-        let key_algorithm_provider =
-            Arc::new(KeyAlgorithmProviderImpl::new(HashMap::from_iter([(
-                KeyAlgorithmType::Eddsa,
-                Arc::new(Eddsa) as _,
-            )])));
+        let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+        key_algorithm_provider
+            .expect_key_algorithm_from_type()
+            .returning(|_| Some(Arc::new(Eddsa)));
+        key_algorithm_provider
+            .expect_key_algorithm_from_jose_alg()
+            .returning(|_| Some((KeyAlgorithmType::Eddsa, Arc::new(Eddsa))));
+        key_algorithm_provider.expect_parse_jwk().returning(|key| {
+            Ok(ParsedKey {
+                algorithm_type: KeyAlgorithmType::Eddsa,
+                key: Eddsa.parse_jwk(key).unwrap(),
+            })
+        });
 
         let key_verification = KeyVerification {
             did_method_provider: Arc::new(did_method_provider),
-            key_algorithm_provider,
+            key_algorithm_provider: Arc::new(key_algorithm_provider),
             key_role: KeyRole::Authentication,
+            certificate_validator: Arc::new(MockCertificateValidator::default()),
         };
 
         Box::new(key_verification)
@@ -297,6 +307,11 @@ mod test {
             .reconstruct_key(&public_key(), Some(private_key().into()), None)
             .unwrap();
 
+        let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+        key_algorithm_provider
+            .expect_key_algorithm_from_type()
+            .returning(|_| Some(Arc::new(Eddsa)));
+
         let provider = SignatureProviderImpl {
             key: Key {
                 id: Uuid::new_v4().into(),
@@ -304,16 +319,14 @@ mod test {
                 last_modified: OffsetDateTime::now_utc(),
                 public_key: key_handle.public_key_as_raw(),
                 name: "test".to_string(),
-                key_reference: vec![],
+                key_reference: None,
                 storage_type: "test".to_string(),
                 key_type: "EDDSA".to_string(),
                 organisation: None,
             },
             key_handle,
             jwk_key_id: None,
-            key_algorithm_provider: Arc::new(KeyAlgorithmProviderImpl::new(HashMap::from_iter([
-                (KeyAlgorithmType::Eddsa, Arc::new(key_algorithm) as _),
-            ]))),
+            key_algorithm_provider: Arc::new(key_algorithm_provider),
         };
 
         Box::new(provider)
@@ -330,7 +343,7 @@ mod test {
             .unwrap()
     }
 
-    fn pk_jwk() -> PublicKeyJwk {
+    fn pk_jwk() -> PublicJwk {
         let key_algorithm = Eddsa;
         let key_handle = key_algorithm
             .reconstruct_key(&public_key(), None, None)

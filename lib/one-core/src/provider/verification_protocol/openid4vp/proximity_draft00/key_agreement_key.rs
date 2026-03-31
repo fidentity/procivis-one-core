@@ -8,7 +8,7 @@ use x25519_dalek::{PublicKey, ReusableSecret};
 
 // Ephemeral x25519 key pair, discarded after the symmetric keys are derived
 #[derive(Clone)]
-pub(super) struct KeyAgreementKey {
+pub(crate) struct KeyAgreementKey {
     secret_key: ReusableSecret,
 }
 
@@ -24,7 +24,7 @@ impl KeyAgreementKey {
     // Messages to the wallet are encrypted using the session key SKWallet
     // Messages to the verifier are encrypted using the session key SKVerifier
     pub(crate) fn derive_session_secrets(
-        self,
+        &self,
         their_public_key: [u8; 32],
         nonce: [u8; 12],
     ) -> anyhow::Result<(SecretSlice<u8>, SecretSlice<u8>)> {

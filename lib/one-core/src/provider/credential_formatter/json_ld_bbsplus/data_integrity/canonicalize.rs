@@ -13,9 +13,11 @@ use super::NQuadLines;
 use super::selection::{SelectionResult, select_canonical_nquads};
 use super::skolemize::{skolemize_compact_json_ld, to_deskolemized_nquads};
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::json_ld::canonization::TermAdapter;
+use crate::util::rdf_canonization::TermAdapter;
 
-static BLANK_NODE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(_:([^\s]+))"#).unwrap());
+#[allow(clippy::expect_used)]
+static BLANK_NODE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(_:([^\s]+))"#).expect("Failed to compile regex"));
 
 pub struct CanonicializeAndGroupOutput {
     pub groups: HashMap<String, GroupEntry>,
@@ -31,7 +33,9 @@ pub struct GroupEntry {
 }
 
 pub async fn canonicalize_and_group(
-    label_map_factory_function: impl FnMut(C14nIdMap) -> BTreeMap<String, String>,
+    label_map_factory_function: impl FnMut(
+        C14nIdMap,
+    ) -> Result<BTreeMap<String, String>, FormatterError>,
     group_definitions: HashMap<String, &[String]>,
     document: json_syntax::Value,
     loader: &impl Loader,
@@ -98,50 +102,83 @@ pub async fn canonicalize_and_group(
 
 pub fn label_replacement_canonicalize_nquads(
     nquads: HashSet<Spog<TermAdapter>>,
-    label_map_factory_function: impl FnMut(C14nIdMap) -> BTreeMap<String, String>,
+    label_map_factory_function: impl FnMut(
+        C14nIdMap,
+    ) -> Result<BTreeMap<String, String>, FormatterError>,
 ) -> Result<(Vec<String>, BTreeMap<String, String>), FormatterError> {
-    let (_, canonical_id_map) = sophia_c14n::rdfc10::relabel(&nquads)
-        .map_err(|e| FormatterError::Failed(format!("Failed to relabel nquads: {e}")))?;
+    let (_, canonical_id_map) = sophia_c14n::rdfc10::relabel(&nquads)?;
 
     let mut label_map_factory_function = label_map_factory_function;
-    let label_map = label_map_factory_function(canonical_id_map.clone());
+    let label_map = label_map_factory_function(canonical_id_map.clone())?;
     let c14n_label_map: BTreeMap<String, String> = label_map
         .iter()
         .map(|(key, new_label)| {
-            let key = &canonical_id_map[key.as_str()];
-            (key.to_string(), new_label.to_string())
+            let key = canonical_id_map
+                .get(key.as_str())
+                .ok_or(FormatterError::CouldNotFormat(format!(
+                    "Failed to find key: {key}"
+                )))?;
+            Ok((key.to_string(), new_label.to_string()))
         })
-        .collect();
+        .collect::<Result<_, FormatterError>>()?;
 
     let canonical_nquads = {
         let mut canonical_nquads = Vec::<u8>::new();
-        sophia_c14n::rdfc10::normalize(&nquads, &mut canonical_nquads)
-            .map_err(|e| FormatterError::Failed(format!("Failed to normalize nquads: {e}")))?;
-        String::from_utf8(canonical_nquads).map_err(|e| {
-            FormatterError::Failed(format!("Failed to convert nquads to string: {e}"))
-        })?
+        sophia_c14n::rdfc10::normalize(&nquads, &mut canonical_nquads)?;
+        String::from_utf8(canonical_nquads)?
     };
 
     let canonical_nquads: Vec<String> = canonical_nquads
         .split_inclusive('\n')
         .map(|quad| {
-            BLANK_NODE_REGEX
-                .replace_all(quad, |capture: &Captures<'_>| {
-                    let old_label = &capture[2];
-                    let new_label = &c14n_label_map[old_label];
-                    format!("_:{new_label}")
-                })
-                .into_owned()
+            replace_all(&BLANK_NODE_REGEX, quad, |capture: &Captures<'_>| {
+                let old_label = capture
+                    .get(2)
+                    .ok_or(FormatterError::CouldNotVerify(
+                        "Failed to find old_label".to_string(),
+                    ))?
+                    .as_str();
+                let new_label =
+                    c14n_label_map
+                        .get(old_label)
+                        .ok_or(FormatterError::CouldNotVerify(format!(
+                            "Failed to find old_label: {old_label}"
+                        )))?;
+                Ok(format!("_:{new_label}"))
+            })
         })
+        .collect::<Result<Vec<_>, FormatterError>>()?
+        .into_iter()
         .sorted()
         .collect();
 
     Ok((canonical_nquads, label_map))
 }
 
+fn replace_all<E>(
+    re: &Regex,
+    haystack: &str,
+    replacement: impl Fn(&Captures) -> Result<String, E>,
+) -> Result<String, E> {
+    let mut new = String::with_capacity(haystack.len());
+    let mut last_match = 0;
+    for caps in re.captures_iter(haystack) {
+        let Some(m) = caps.get(0) else {
+            continue;
+        };
+        new.push_str(&haystack[last_match..m.start()]);
+        new.push_str(&replacement(&caps)?);
+        last_match = m.end();
+    }
+    new.push_str(&haystack[last_match..]);
+    Ok(new)
+}
+
 pub async fn label_replacement_canonicalize_json_ld(
     document: json_syntax::Value,
-    label_map_factory_function: impl FnMut(C14nIdMap) -> BTreeMap<String, String>,
+    label_map_factory_function: impl FnMut(
+        C14nIdMap,
+    ) -> Result<BTreeMap<String, String>, FormatterError>,
     loader: &impl Loader,
     json_ld_processor_options: json_ld::Options,
 ) -> Result<Vec<String>, FormatterError> {
@@ -149,12 +186,7 @@ pub async fn label_replacement_canonicalize_json_ld(
     let labeler = rdf_types::generator::Blank::new_with_prefix("b".to_string());
     let quads: HashSet<Spog<TermAdapter>> = document
         .to_rdf_using(labeler, &loader, json_ld_processor_options)
-        .await
-        .map_err(|e| {
-            FormatterError::Failed(format!(
-                "Failed to expand document during label replacement step: {e}"
-            ))
-        })?
+        .await?
         .cloned_quads()
         .map(|quad| {
             let (subject, predicate, object, maybe_graph) = quad.into_parts();
@@ -171,51 +203,61 @@ pub async fn label_replacement_canonicalize_json_ld(
 // https://www.w3.org/TR/vc-di-bbs/#createshuffledidlabelmapfunction
 pub fn create_shuffled_id_label_map_function(
     hmac: impl FnMut(&[u8]) -> Vec<u8>,
-) -> impl FnMut(C14nIdMap) -> BTreeMap<String, String> {
+) -> impl FnMut(C14nIdMap) -> Result<BTreeMap<String, String>, FormatterError> {
     let mut hmac = hmac;
     move |canonical_id_map| {
         let mut bnode_id_map = Vec::new();
 
         for (input, c14n_label) in canonical_id_map {
             let digest = hmac(c14n_label.as_bytes());
-            let b64url_digest = Base64UrlSafeNoPadding::encode_to_string(&digest).unwrap();
+            let b64url_digest = Base64UrlSafeNoPadding::encode_to_string(&digest)?;
             bnode_id_map.push((input, format!("u{b64url_digest}")));
         }
         // Derive the shuffled mapping from the bnode_id_map
         // sort by hmac ids.
         bnode_id_map.sort_by(|(_, v1), (_, v2)| v1.cmp(v2));
 
-        bnode_id_map
+        Ok(bnode_id_map
             .into_iter()
             .enumerate()
             .map(|(index, (key, _))| (key.to_string(), format!("b{index}")))
-            .collect()
+            .collect())
     }
 }
 // https://www.w3.org/TR/vc-di-ecdsa/#createlabelmapfunction
 pub fn create_label_map_function(
     label_map: BTreeMap<String, String>,
-) -> impl FnMut(C14nIdMap) -> BTreeMap<String, String> {
+) -> impl FnMut(C14nIdMap) -> Result<BTreeMap<String, String>, FormatterError> {
     move |canonical_id_map| {
         let mut bnode_id_map = BTreeMap::new();
 
         for (input, c14n_label) in canonical_id_map {
-            bnode_id_map.insert(input.to_string(), label_map[c14n_label.as_str()].clone());
+            bnode_id_map.insert(
+                input.to_string(),
+                label_map
+                    .get(c14n_label.as_str())
+                    .ok_or(FormatterError::CouldNotVerify(format!(
+                        "Failed to find c14n_label: {}",
+                        c14n_label.as_str()
+                    )))?
+                    .clone(),
+            );
         }
 
-        bnode_id_map
+        Ok(bnode_id_map)
     }
 }
 
 #[cfg(test)]
 mod test {
     use one_crypto::utilities::build_hmac_sha256;
+    use similar_asserts::assert_eq;
 
     use super::*;
-    use crate::provider::credential_formatter::json_ld::json_ld_processor_options;
     use crate::provider::credential_formatter::json_ld_bbsplus::data_integrity::test_data::{
         document_loader, vc_permanent_resident_card,
     };
+    use crate::util::rdf_canonization::json_ld_processor_options;
 
     #[tokio::test]
     // test using data from basic test vector https://www.w3.org/TR/vc-di-bbs/#base-proof

@@ -1,6 +1,7 @@
 use one_core::model::trust_entity::TrustEntity;
 use one_dto_mapper::{From, Into};
 use sea_orm::entity::prelude::*;
+use serde::Deserialize;
 use shared_types::{DidId, OrganisationId, TrustAnchorId, TrustEntityId};
 use time::OffsetDateTime;
 
@@ -11,6 +12,7 @@ pub struct Model {
     pub id: TrustEntityId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
+    pub deactivated_at: Option<OffsetDateTime>,
     #[sea_orm(column_type = "Text")]
     pub name: String,
     #[sea_orm(column_type = "Blob", nullable)]
@@ -24,19 +26,25 @@ pub struct Model {
     pub role: TrustEntityRole,
     pub state: TrustEntityState,
     pub trust_anchor_id: TrustAnchorId,
-    pub did_id: DidId,
+    pub r#type: TrustEntityType,
+    #[sea_orm(column_type = "Text")]
+    pub entity_key: String,
+    #[sea_orm(column_type = "Blob", nullable)]
+    pub content: Option<Vec<u8>>,
+    #[sea_orm(nullable)]
+    pub organisation_id: Option<OrganisationId>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(
-        belongs_to = "super::did::Entity",
-        from = "Column::DidId",
-        to = "super::did::Column::Id",
+        belongs_to = "super::organisation::Entity",
+        from = "Column::OrganisationId",
+        to = "super::organisation::Column::Id",
         on_update = "Restrict",
         on_delete = "Restrict"
     )]
-    Did,
+    Organisation,
     #[sea_orm(
         belongs_to = "super::trust_anchor::Entity",
         from = "Column::TrustAnchorId",
@@ -53,15 +61,15 @@ impl Related<super::trust_anchor::Entity> for Entity {
     }
 }
 
-impl Related<super::did::Entity> for Entity {
+impl Related<super::organisation::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Did.def()
+        Relation::Organisation.def()
     }
 }
 
 impl ActiveModelBehavior for ActiveModel {}
 
-#[derive(Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into)]
+#[derive(Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
 #[into(one_core::model::trust_entity::TrustEntityRole)]
 #[from(one_core::model::trust_entity::TrustEntityRole)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
@@ -74,7 +82,7 @@ pub enum TrustEntityRole {
     Both,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into)]
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
 #[into(one_core::model::trust_entity::TrustEntityState)]
 #[from(one_core::model::trust_entity::TrustEntityState)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
@@ -87,4 +95,15 @@ pub enum TrustEntityState {
     Withdrawn,
     #[sea_orm(string_value = "REMOVED_AND_WITHDRAWN")]
     RemovedAndWithdrawn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
+#[into(one_core::model::trust_entity::TrustEntityType)]
+#[from(one_core::model::trust_entity::TrustEntityType)]
+#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
+pub enum TrustEntityType {
+    #[sea_orm(string_value = "DID")]
+    Did,
+    #[sea_orm(string_value = "CA")]
+    CertificateAuthority,
 }

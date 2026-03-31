@@ -3,56 +3,55 @@ use std::str::FromStr;
 use indexmap::IndexMap;
 use one_crypto::utilities;
 use secrecy::SecretString;
-use shared_types::{CredentialSchemaId, DidValue};
+use shared_types::{CredentialSchemaId, InteractionId};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use super::error::{OpenID4VCIError, OpenIDIssuanceError};
-use super::mapper::{
-    credentials_supported_mdoc, map_cryptographic_binding_methods_supported,
-    prepare_nested_representation,
-};
+use super::mapper::{credentials_supported_mdoc, prepare_nested_representation};
 use super::model::{
     ExtendedSubjectDTO, OpenID4VCICredentialDefinitionRequestDTO, OpenID4VCICredentialOfferDTO,
-    OpenID4VCICredentialSubjectItem, OpenID4VCIDiscoveryResponseDTO, OpenID4VCIGrant,
-    OpenID4VCIGrants, OpenID4VCIIssuerInteractionDataDTO,
-    OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO,
+    OpenID4VCICredentialSubjectItem, OpenID4VCIDiscoveryResponseDTO, OpenID4VCIGrants,
+    OpenID4VCIIssuerInteractionDataDTO, OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO,
     OpenID4VCIIssuerMetadataDisplayResponseDTO, OpenID4VCIIssuerMetadataResponseDTO,
-    OpenID4VCIProofTypeSupported, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO, Timestamp,
+    OpenID4VCIPreAuthorizedCodeGrant, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
+    Timestamp, WalletStorageTypeEnum,
 };
 use super::validator::throw_if_credential_state_not_eq;
-use crate::config::core_config::CoreConfig;
+use crate::config::core_config::{CoreConfig, FormatType};
 use crate::model::credential::{Credential, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaType, WalletStorageTypeEnum,
-};
-use crate::model::interaction::{Interaction, InteractionId};
+use crate::model::credential_schema::CredentialSchema;
+use crate::model::identifier::IdentifierType;
+use crate::model::interaction::Interaction;
+use crate::provider::issuance_protocol::error::{OpenID4VCIError, OpenIDIssuanceError};
+use crate::provider::issuance_protocol::model::{OpenID4VCIProofTypeSupported, OpenID4VCITxCode};
 use crate::provider::issuance_protocol::openid4vci_draft13::model::OpenID4VCICredentialConfigurationData;
 use crate::provider::issuance_protocol::openid4vci_draft13::validator::{
     throw_if_interaction_created_date, throw_if_interaction_pre_authorized_code_used,
-    throw_if_token_request_invalid, validate_refresh_token,
+    throw_if_token_request_invalid, throw_if_tx_code_invalid, validate_refresh_token,
 };
 
 pub(crate) fn create_issuer_metadata_response(
     schema_base_url: &str,
-    oidc_format: &str,
+    format_type: &FormatType,
     schema: &CredentialSchema,
     config: &CoreConfig,
-    supported_did_methods: &[String],
+    cryptographic_binding_methods_supported: Vec<String>,
     proof_types_supported: Option<IndexMap<String, OpenID4VCIProofTypeSupported>>,
     credential_signing_alg_values_supported: Vec<String>,
 ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCIError> {
     let credential_configurations_supported = credential_configurations_supported(
-        oidc_format,
+        format_type,
         schema,
         config,
-        supported_did_methods,
+        cryptographic_binding_methods_supported,
         proof_types_supported,
         credential_signing_alg_values_supported,
     )?;
     Ok(OpenID4VCIIssuerMetadataResponseDTO {
         credential_issuer: schema_base_url.to_owned(),
+        authorization_servers: None,
         credential_endpoint: format!("{schema_base_url}/credential"),
+        notification_endpoint: Some(format!("{schema_base_url}/notification")),
         credential_configurations_supported,
         display: Some(vec![OpenID4VCIIssuerMetadataDisplayResponseDTO {
             name: schema
@@ -69,67 +68,61 @@ pub(crate) fn create_issuer_metadata_response(
 }
 
 fn credential_configurations_supported(
-    oidc_format: &str,
+    format_type: &FormatType,
     credential_schema: &CredentialSchema,
     config: &CoreConfig,
-    supported_did_methods: &[String],
+    cryptographic_binding_methods_supported: Vec<String>,
     proof_types_supported: Option<IndexMap<String, OpenID4VCIProofTypeSupported>>,
     credential_signing_alg_values_supported: Vec<String>,
 ) -> Result<IndexMap<String, OpenID4VCICredentialConfigurationData>, OpenID4VCIError> {
-    let wallet_storage_type = credential_schema.wallet_storage_type.to_owned();
+    let wallet_storage_type = Some(
+        credential_schema
+            .key_storage_security
+            .to_owned()
+            .map(Into::into)
+            .unwrap_or(WalletStorageTypeEnum::Software),
+    );
     let schema_id = credential_schema.schema_id.to_owned();
 
     let claims = prepare_nested_representation(credential_schema, config)?;
-    let cryptographic_binding_methods_supported =
-        map_cryptographic_binding_methods_supported(supported_did_methods);
 
     Ok(IndexMap::from([(
         schema_id.clone(),
-        match oidc_format {
-            "ldp_vc" => jsonld_configuration(
+        match format_type {
+            FormatType::JsonLdClassic | FormatType::JsonLdBbsPlus => jsonld_configuration(
                 wallet_storage_type,
-                oidc_format,
+                "ldp_vc",
                 claims,
                 credential_schema,
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
             ),
-            "jwt_vc_json" => jwt_configuration(
+            FormatType::Jwt => jwt_configuration(
                 wallet_storage_type,
-                oidc_format,
+                "jwt_vc_json",
                 claims,
                 credential_schema,
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
                 credential_signing_alg_values_supported,
             ),
-            "vc+sd-jwt" => sdjwt_configuration(
+            FormatType::SdJwt | FormatType::SdJwtVc => sdjwt_configuration(
                 wallet_storage_type,
-                oidc_format,
+                "vc+sd-jwt",
                 claims,
                 credential_schema,
-                (credential_schema.schema_type == CredentialSchemaType::SdJwtVc)
-                    .then_some(schema_id),
+                (*format_type == FormatType::SdJwtVc).then_some(schema_id),
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
                 credential_signing_alg_values_supported,
             ),
-            "mso_mdoc" => credentials_supported_mdoc(
+            FormatType::Mdoc => credentials_supported_mdoc(
                 credential_schema.clone(),
                 config,
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
             )
             .map_err(|e| OpenID4VCIError::RuntimeError(e.to_string()))?,
-            _ => jwt_configuration(
-                wallet_storage_type,
-                oidc_format,
-                claims,
-                credential_schema,
-                cryptographic_binding_methods_supported,
-                proof_types_supported,
-                credential_signing_alg_values_supported,
-            ),
         },
     )]))
 }
@@ -187,7 +180,7 @@ fn jwt_configuration(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn sdjwt_configuration(
     wallet_storage_type: Option<WalletStorageTypeEnum>,
     oidc_format: &str,
@@ -256,21 +249,63 @@ pub(crate) fn get_credential_schema_base_url(
 pub(crate) fn create_credential_offer(
     protocol_base_url: &str,
     pre_authorized_code: &str,
-    issuer_did: DidValue,
-    credential_schema_uuid: &CredentialSchemaId,
-    credential_schema_id: &str,
+    credential: &Credential,
     credential_subject: ExtendedSubjectDTO,
 ) -> Result<OpenID4VCICredentialOfferDTO, OpenIDIssuanceError> {
+    let issuer_identifier =
+        credential
+            .issuer_identifier
+            .as_ref()
+            .ok_or(OpenID4VCIError::RuntimeError(
+                "Missing issuer_identifier".to_owned(),
+            ))?;
+    let (issuer_did, issuer_certificate) = match issuer_identifier.r#type {
+        IdentifierType::Key => (None, None),
+        IdentifierType::Did => (
+            issuer_identifier.did.as_ref().map(|did| did.did.clone()),
+            None,
+        ),
+        IdentifierType::Certificate => (
+            None,
+            credential
+                .issuer_certificate
+                .as_ref()
+                .map(|issuer_certificate| issuer_certificate.chain.clone()),
+        ),
+        IdentifierType::CertificateAuthority => {
+            return Err(OpenIDIssuanceError::ValidationError(format!(
+                "Invalid issuer identifier type {}",
+                issuer_identifier.r#type
+            )));
+        }
+    };
+
+    let credential_schema = credential
+        .schema
+        .as_ref()
+        .ok_or(OpenID4VCIError::RuntimeError(
+            "Missing credential_schema".to_owned(),
+        ))?;
+
+    let tx_code = credential_schema
+        .transaction_code
+        .as_ref()
+        .map(|code| OpenID4VCITxCode {
+            input_mode: code.r#type.into(),
+            length: Some(code.length as _),
+            description: code.description.to_owned(),
+        });
+
     Ok(OpenID4VCICredentialOfferDTO {
-        credential_issuer: format!("{protocol_base_url}/{credential_schema_uuid}"),
-        issuer_did: Some(issuer_did),
-        credential_configuration_ids: vec![credential_schema_id.to_string()],
-        grants: OpenID4VCIGrants {
-            code: OpenID4VCIGrant {
-                pre_authorized_code: pre_authorized_code.to_owned(),
-                tx_code: None,
-            },
-        },
+        credential_issuer: format!("{protocol_base_url}/{}", credential_schema.id),
+        issuer_did,
+        issuer_certificate,
+        credential_configuration_ids: vec![credential_schema.schema_id.to_owned()],
+        grants: OpenID4VCIGrants::PreAuthorizedCode(OpenID4VCIPreAuthorizedCodeGrant {
+            pre_authorized_code: pre_authorized_code.to_owned(),
+            tx_code,
+            authorization_server: None,
+        }),
         credential_subject: Some(credential_subject),
     })
 }
@@ -285,6 +320,7 @@ pub(crate) fn oidc_issuer_create_token(
     refresh_token_expires_in: Duration,
 ) -> Result<OpenID4VCITokenResponseDTO, OpenIDIssuanceError> {
     throw_if_token_request_invalid(request)?;
+    throw_if_tx_code_invalid(interaction_data.transaction_code.as_ref(), request)?;
 
     let generate_new_token = || {
         SecretString::from(format!(
@@ -328,6 +364,11 @@ pub(crate) fn oidc_issuer_create_token(
                 c_nonce: None,
             }
         }
+        OpenID4VCITokenRequestDTO::AuthorizationCode { .. } => {
+            return Err(OpenIDIssuanceError::OpenID4VCI(
+                OpenID4VCIError::InvalidGrant,
+            ));
+        }
     })
 }
 
@@ -341,6 +382,9 @@ pub(crate) fn parse_access_token(access_token: &str) -> Result<InteractionId, Op
         return Err(OpenID4VCIError::InvalidToken);
     }
 
-    Uuid::from_str(splitted_token.next().ok_or(OpenID4VCIError::InvalidToken)?)
-        .map_err(|_| OpenID4VCIError::RuntimeError("Could not parse UUID".to_owned()))
+    Ok(
+        Uuid::from_str(splitted_token.next().ok_or(OpenID4VCIError::InvalidToken)?)
+            .map_err(|_| OpenID4VCIError::RuntimeError("Could not parse UUID".to_owned()))?
+            .into(),
+    )
 }

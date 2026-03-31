@@ -9,6 +9,7 @@ use one_core::repository::organisation_repository::MockOrganisationRepository;
 use sea_orm::ActiveValue::NotSet;
 use sea_orm::{ActiveModelTrait, Set};
 use shared_types::KeyId;
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -17,6 +18,7 @@ use crate::entity::key;
 use crate::test_utilities::{
     dummy_organisation, insert_organisation_to_database, setup_test_data_layer_and_connection,
 };
+use crate::transaction_context::TransactionManagerImpl;
 
 struct TestSetup {
     pub db: sea_orm::DatabaseConnection,
@@ -42,7 +44,7 @@ async fn setup() -> TestSetup {
         last_modified: Set(now),
         name: Set("test".to_string()),
         public_key: Set(vec![]),
-        key_reference: Set(vec![]),
+        key_reference: Set(None),
         storage_type: Set("test".to_string()),
         key_type: Set("test".to_string()),
         organisation_id: Set(organisation_id),
@@ -80,7 +82,7 @@ async fn setup_list() -> TestListSetup {
         last_modified: Set(now),
         name: Set("test2".to_string()),
         public_key: Set(vec![]),
-        key_reference: Set(vec![]),
+        key_reference: Set(None),
         storage_type: Set("test2".to_string()),
         key_type: Set("test2".to_string()),
         organisation_id: Set(organisation.id),
@@ -106,7 +108,7 @@ async fn test_create_key_success() {
     } = setup().await;
 
     let provider = KeyProvider {
-        db: db.clone(),
+        db: TransactionManagerImpl::new(db.clone()),
         organisation_repository: Arc::new(organisation_repository),
     };
 
@@ -120,7 +122,7 @@ async fn test_create_key_success() {
             last_modified: now,
             public_key: vec![],
             name: "name".to_string(),
-            key_reference: vec![],
+            key_reference: None,
             storage_type: "INTERNAL".to_string(),
             key_type: "RSA_4096".to_string(),
             organisation: Some(organisation),
@@ -138,7 +140,7 @@ async fn test_get_key_success() {
     let TestSetup { db, key_id, .. } = setup().await;
 
     let provider = KeyProvider {
-        db: db.clone(),
+        db: TransactionManagerImpl::new(db.clone()),
         organisation_repository: Arc::new(organisation_repository),
     };
 
@@ -162,7 +164,7 @@ async fn test_get_key_list_success() {
     } = setup_list().await;
 
     let provider = KeyProvider {
-        db: db.clone(),
+        db: TransactionManagerImpl::new(db.clone()),
         organisation_repository: Arc::new(organisation_repository),
     };
 

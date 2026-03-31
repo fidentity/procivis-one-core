@@ -1,67 +1,88 @@
 use std::sync::Arc;
 use std::vec;
 
+use assert2::let_assert;
 use mockall::predicate::*;
-use shared_types::CredentialSchemaId;
+use shared_types::{CredentialSchemaId, RevocationMethodId};
+use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::dto::CredentialSchemaLayoutPropertiesRequestDTO;
+use super::CredentialSchemaService;
+use super::dto::{
+    CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
+    CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
+    CredentialSchemaCodeTypeEnum, CredentialSchemaFilterValue,
+    CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaLogoPropertiesRequestDTO,
+    CredentialSchemaTransactionCodeRequestDTO, GetCredentialSchemaQueryDTO,
+    ImportCredentialSchemaClaimSchemaDTO, ImportCredentialSchemaRequestDTO,
+    ImportCredentialSchemaRequestSchemaDTO,
+};
+use super::error::CredentialSchemaServiceError;
+use super::mapper::{renest_claim_schemas, unnest_claim_schemas};
 use super::validator::{
     check_background_properties, check_claims_presence_in_layout_properties, check_logo_properties,
 };
-use crate::config::ConfigValidationError;
-use crate::config::core_config::{CoreConfig, RevocationType};
+use crate::config::core_config::CoreConfig;
+use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaRelations, CredentialSchemaType,
-    GetCredentialSchemaList, LayoutType, WalletStorageTypeEnum,
+    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, KeyStorageSecurity,
+    LayoutType, TransactionCodeType,
 };
 use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
+use crate::proto::credential_schema::importer::{
+    CredentialSchemaImporterProto, MockCredentialSchemaImporter,
+};
+use crate::proto::credential_schema::parser::{
+    CredentialSchemaImportParserImpl, MockCredentialSchemaImportParser,
+};
+use crate::proto::session_provider::NoSessionProvider;
+use crate::proto::session_provider::test::StaticSessionProvider;
 use crate::provider::credential_formatter::MockCredentialFormatter;
 use crate::provider::credential_formatter::model::{Features, FormatterCapabilities};
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
 use crate::provider::revocation::MockRevocationMethod;
-use crate::provider::revocation::model::{Operation, RevocationMethodCapabilities};
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
-use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
-use crate::service::credential_schema::CredentialSchemaService;
-use crate::service::credential_schema::dto::{
-    CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
-    CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
-    CredentialSchemaCodeTypeEnum, CredentialSchemaFilterValue,
-    CredentialSchemaLogoPropertiesRequestDTO, GetCredentialSchemaQueryDTO,
-    ImportCredentialSchemaClaimSchemaDTO, ImportCredentialSchemaRequestDTO,
-    ImportCredentialSchemaRequestSchemaDTO,
-};
-use crate::service::credential_schema::mapper::{renest_claim_schemas, unnest_claim_schemas};
-use crate::service::error::{
-    BusinessLogicError, EntityNotFoundError, ServiceError, ValidationError,
-};
 use crate::service::test_utilities::{
-    dummy_organisation, generic_config, generic_formatter_capabilities,
+    dummy_organisation, generic_config, generic_formatter_capabilities, get_dummy_date,
 };
 
 fn setup_service(
     credential_schema_repository: MockCredentialSchemaRepository,
-    history_repository: MockHistoryRepository,
     organisation_repository: MockOrganisationRepository,
     formatter_provider: MockCredentialFormatterProvider,
     revocation_method_provider: MockRevocationMethodProvider,
     config: CoreConfig,
 ) -> CredentialSchemaService {
+    let formatter_provider = Arc::new(formatter_provider);
+    let credential_schema_repository = Arc::new(credential_schema_repository);
+    let revocation_method_provider = Arc::new(revocation_method_provider);
+    let import_parser = CredentialSchemaImportParserImpl::new(
+        Arc::new(generic_config().core),
+        formatter_provider.clone(),
+        revocation_method_provider.clone(),
+    );
+
+    let importer = CredentialSchemaImporterProto::new(
+        formatter_provider.clone(),
+        credential_schema_repository.clone(),
+    );
+
     CredentialSchemaService::new(
         Some("http://127.0.0.1:4321".to_string()),
-        Arc::new(credential_schema_repository),
-        Arc::new(history_repository),
+        credential_schema_repository,
         Arc::new(organisation_repository),
-        Arc::new(formatter_provider),
-        Arc::new(revocation_method_provider),
+        formatter_provider,
+        revocation_method_provider,
         Arc::new(config),
+        Arc::new(NoSessionProvider),
+        Arc::new(import_parser),
+        Arc::new(importer),
     )
 }
 
@@ -73,35 +94,33 @@ fn generic_credential_schema() -> CredentialSchema {
         imported_source_url: "CORE_URL".to_string(),
         created_date: now,
         last_modified: now,
-        wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-        name: "".to_string(),
-        format: "".to_string(),
-        revocation_method: "".to_string(),
-        external_schema: false,
-        claim_schemas: Some(vec![CredentialSchemaClaim {
-            schema: ClaimSchema {
-                id: Uuid::new_v4().into(),
-                key: "".to_string(),
-                data_type: "".to_string(),
-                created_date: now,
-                last_modified: now,
-                array: false,
-            },
+        key_storage_security: None,
+        name: "testName".to_string(),
+        format: "".into(),
+        revocation_method: None,
+        claim_schemas: Some(vec![ClaimSchema {
+            id: Uuid::new_v4().into(),
+            key: "".to_string(),
+            data_type: "".to_string(),
+            created_date: now,
+            last_modified: now,
+            array: false,
+            metadata: false,
             required: true,
         }]),
         organisation: Some(dummy_organisation(None)),
         layout_type: LayoutType::Card,
         layout_properties: None,
-        schema_type: CredentialSchemaType::ProcivisOneSchema2024,
         schema_id: "CredentialSchemaId".to_owned(),
         allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     }
 }
 
 #[tokio::test]
 async fn test_get_credential_schema_success() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
 
     let relations = CredentialSchemaRelations {
@@ -121,7 +140,6 @@ async fn test_get_credential_schema_success() {
 
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         MockCredentialFormatterProvider::default(),
         MockRevocationMethodProvider::default(),
@@ -138,7 +156,6 @@ async fn test_get_credential_schema_success() {
 #[tokio::test]
 async fn test_get_credential_schema_deleted() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
     let schema = CredentialSchema {
         deleted_at: Some(OffsetDateTime::now_utc()),
@@ -153,7 +170,6 @@ async fn test_get_credential_schema_deleted() {
 
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         MockCredentialFormatterProvider::default(),
         MockRevocationMethodProvider::default(),
@@ -162,17 +178,12 @@ async fn test_get_credential_schema_deleted() {
 
     let result = service.get_credential_schema(&schema.id).await;
 
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::EntityNotFound(EntityNotFoundError::CredentialSchema(_))
-    )));
+    assert!(result.is_err_and(|e| matches!(e, CredentialSchemaServiceError::NotFound(_))));
 }
 
 #[tokio::test]
-async fn test_get_credential_schema_fail() {
+async fn test_get_credential_schema_fail_organisation_missing() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
-    let organisation_repository = MockOrganisationRepository::default();
     let relations = CredentialSchemaRelations {
         claim_schemas: Some(ClaimSchemaRelations::default()),
         organisation: Some(OrganisationRelations::default()),
@@ -191,21 +202,19 @@ async fn test_get_credential_schema_fail() {
 
     let service = setup_service(
         repository,
-        history_repository,
-        organisation_repository,
+        MockOrganisationRepository::default(),
         MockCredentialFormatterProvider::default(),
         MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
-    let organisation_is_none = service.get_credential_schema(&schema.id).await;
-    assert!(organisation_is_none.is_err_and(|e| matches!(e, ServiceError::MappingError(_))));
+    let result = service.get_credential_schema(&schema.id).await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0047);
 }
 
 #[tokio::test]
 async fn test_get_credential_schema_list_success() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
 
     let response = GetCredentialSchemaList {
@@ -228,24 +237,27 @@ async fn test_get_credential_schema_list_success() {
 
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         MockCredentialFormatterProvider::default(),
         MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
+    let organisation_id = Uuid::new_v4().into();
     let result = service
-        .get_credential_schema_list(GetCredentialSchemaQueryDTO {
-            pagination: Some(ListPagination {
-                page: 0,
-                page_size: 5,
-            }),
-            filtering: Some(
-                CredentialSchemaFilterValue::OrganisationId(Uuid::new_v4().into()).condition(),
-            ),
-            ..Default::default()
-        })
+        .get_credential_schema_list(
+            &organisation_id,
+            GetCredentialSchemaQueryDTO {
+                pagination: Some(ListPagination {
+                    page: 0,
+                    page_size: 5,
+                }),
+                filtering: Some(
+                    CredentialSchemaFilterValue::OrganisationId(organisation_id).condition(),
+                ),
+                ..Default::default()
+            },
+        )
         .await;
 
     assert!(result.is_ok());
@@ -260,7 +272,6 @@ async fn test_get_credential_schema_list_success() {
 #[tokio::test]
 async fn test_delete_credential_schema() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
 
     let credential_schema = generic_credential_schema();
@@ -276,13 +287,8 @@ async fn test_delete_credential_schema() {
         .withf(move |schema| schema.id == schema_id)
         .returning(move |_| Ok(()));
 
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         MockCredentialFormatterProvider::default(),
         MockRevocationMethodProvider::default(),
@@ -296,15 +302,9 @@ async fn test_delete_credential_schema() {
 #[tokio::test]
 async fn test_create_credential_schema_success() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    history_repository
-        .expect_create_history()
-        .times(1)
-        .returning(|history| Ok(history.id));
 
     let organisation = dummy_organisation(None);
     let schema_id: CredentialSchemaId = Uuid::new_v4().into();
@@ -332,13 +332,7 @@ async fn test_create_credential_schema_success() {
         repository
             .expect_create_credential_schema()
             .times(1)
-            .returning(move |request| {
-                assert_eq!(
-                    CredentialSchemaType::ProcivisOneSchema2024,
-                    request.schema_type
-                );
-                Ok(schema_id)
-            });
+            .returning(move |_| Ok(schema_id));
         let clone = response.clone();
         repository
             .expect_get_credential_schema_list()
@@ -349,47 +343,34 @@ async fn test_create_credential_schema_success() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
             ..Default::default()
         });
     formatter
         .expect_credential_schema_id()
         .returning(|_, _, _| Ok("schema id".to_string()));
+    formatter.expect_get_metadata_claims().returning(Vec::new);
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: organisation.id.to_owned(),
-            external_schema: false,
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
                 datatype: "STRING".to_string(),
@@ -400,25 +381,20 @@ async fn test_create_credential_schema_success() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: None,
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(result.is_ok());
     assert_eq!(schema_id, result.unwrap());
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_success_mdoc_with_custom_schema_id() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    history_repository
-        .expect_create_history()
-        .times(1)
-        .returning(|history| Ok(history.id));
 
     let organisation = dummy_organisation(None);
     let schema_id: CredentialSchemaId = Uuid::new_v4().into();
@@ -449,7 +425,6 @@ async fn test_create_credential_schema_success_mdoc_with_custom_schema_id() {
             .times(1)
             .returning(move |request| {
                 assert_eq!(custom_schema_id, request.schema_id);
-                assert_eq!(CredentialSchemaType::Mdoc, request.schema_type);
                 Ok(schema_id.to_owned())
             });
         let clone = response.clone();
@@ -462,48 +437,35 @@ async fn test_create_credential_schema_success_mdoc_with_custom_schema_id() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
-            features: vec![Features::SelectiveDisclosure, Features::RequiresSchemaId],
+            revocation_methods: vec![],
+            features: vec![Features::SelectiveDisclosure, Features::SupportsSchemaId],
+            datatypes: vec!["STRING".into(), "OBJECT".into()],
             ..Default::default()
         });
     formatter
         .expect_credential_schema_id()
         .returning(|_, _, _| Ok(custom_schema_id.to_string()));
+    formatter.expect_get_metadata_claims().returning(Vec::new);
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "MDOC".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "MDOC".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: organisation.id.to_owned(),
-            external_schema: false,
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
                 datatype: "OBJECT".to_string(),
@@ -520,7 +482,9 @@ async fn test_create_credential_schema_success_mdoc_with_custom_schema_id() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: Some(custom_schema_id.to_string()),
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap();
@@ -528,133 +492,11 @@ async fn test_create_credential_schema_success_mdoc_with_custom_schema_id() {
 }
 
 #[tokio::test]
-async fn test_create_credential_schema_success_sdjwtvc_external() {
-    let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
-    let mut organisation_repository = MockOrganisationRepository::default();
-    let mut formatter = MockCredentialFormatter::default();
-    let mut formatter_provider = MockCredentialFormatterProvider::default();
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    let mut revocation_method = MockRevocationMethod::default();
-
-    const VCT: &str = "example.vct.test:1";
-
-    formatter
-        .expect_get_capabilities()
-        .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
-            features: [Features::RequiresSchemaId].into(),
-            ..Default::default()
-        });
-
-    formatter
-        .expect_credential_schema_id()
-        .withf(|_, request, _| {
-            assert!(request.external_schema);
-            assert_eq!(request.schema_id, Some(VCT.to_string()));
-            true
-        })
-        .returning(|_, _, _| Ok(VCT.to_string()));
-
-    formatter_provider
-        .expect_get_formatter()
-        .with(eq("SD_JWT_VC"))
-        .once()
-        .return_once(|_| Some(Arc::new(formatter)));
-
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities { operations: vec![] });
-
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .with(eq("NONE"))
-        .once()
-        .return_once(|_| Some(Arc::new(revocation_method)));
-
-    history_repository
-        .expect_create_history()
-        .times(1)
-        .returning(|history| Ok(history.id));
-
-    repository
-        .expect_create_credential_schema()
-        .times(1)
-        .returning(move |request| {
-            assert_eq!(CredentialSchemaType::SdJwtVc, request.schema_type);
-            Ok(Uuid::new_v4().into())
-        });
-
-    repository
-        .expect_get_credential_schema_list()
-        .times(1)
-        .returning(move |_, _| {
-            Ok(GetCredentialSchemaList {
-                values: vec![],
-                total_pages: 0,
-                total_items: 0,
-            })
-        });
-
-    let organisation = dummy_organisation(None);
-
-    {
-        let organisation = organisation.clone();
-        organisation_repository
-            .expect_get_organisation()
-            .times(1)
-            .with(
-                eq(organisation.id.to_owned()),
-                eq(OrganisationRelations::default()),
-            )
-            .returning(move |_, _| Ok(Some(organisation.clone())));
-    }
-
-    let service: CredentialSchemaService = setup_service(
-        repository,
-        history_repository,
-        organisation_repository,
-        formatter_provider,
-        revocation_method_provider,
-        generic_config().core,
-    );
-
-    service
-        .create_credential_schema(CreateCredentialSchemaRequestDTO {
-            name: "external credential".to_string(),
-            format: "SD_JWT_VC".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: true,
-            organisation_id: organisation.id.to_owned(),
-            claims: vec![CredentialClaimSchemaRequestDTO {
-                key: "claim".to_string(),
-                datatype: "STRING".to_string(),
-                required: true,
-                array: Some(false),
-                claims: vec![],
-            }],
-            layout_type: LayoutType::Card,
-            layout_properties: None,
-            schema_id: Some(VCT.to_string()),
-            allow_suspension: Some(false),
-        })
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn test_create_credential_schema_success_nested_claims() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    history_repository
-        .expect_create_history()
-        .times(1)
-        .returning(|history| Ok(history.id));
 
     let organisation = dummy_organisation(None);
     let schema_id = Uuid::new_v4();
@@ -693,46 +535,33 @@ async fn test_create_credential_schema_success_nested_claims() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into(), "OBJECT".into()],
             ..Default::default()
         });
     formatter
         .expect_credential_schema_id()
         .returning(|_, _, _| Ok("some schema id".to_string()));
+    formatter.expect_get_metadata_claims().returning(Vec::new);
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: organisation.id.to_owned(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "location".to_string(),
@@ -759,23 +588,24 @@ async fn test_create_credential_schema_success_nested_claims() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: None,
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap();
-    assert_eq!(schema_id, result.into());
+    assert_eq!(schema_id, Uuid::from(result));
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_failed_slash_in_claim_name() {
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(MockCredentialFormatter::default())));
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -785,10 +615,9 @@ async fn test_create_credential_schema_failed_slash_in_claim_name() {
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "location/x".to_string(),
@@ -801,14 +630,14 @@ async fn test_create_credential_schema_failed_slash_in_claim_name() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         result,
-        ServiceError::Validation(ValidationError::CredentialSchemaClaimSchemaSlashInKeyName(
-            _
-        ))
+        CredentialSchemaServiceError::ClaimSchemaSlashInKeyName(_)
     ));
 }
 
@@ -816,12 +645,11 @@ async fn test_create_credential_schema_failed_slash_in_claim_name() {
 async fn test_create_credential_schema_failed_nested_claims_not_in_object_type() {
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(MockCredentialFormatter::default())));
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -831,11 +659,10 @@ async fn test_create_credential_schema_failed_nested_claims_not_in_object_type()
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
-            external_schema: false,
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "location".to_string(),
                 datatype: "STRING".to_string(),
@@ -862,14 +689,14 @@ async fn test_create_credential_schema_failed_nested_claims_not_in_object_type()
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         result,
-        ServiceError::Validation(ValidationError::CredentialSchemaNestedClaimsShouldBeEmpty(
-            _
-        ))
+        CredentialSchemaServiceError::NestedClaimsShouldBeEmpty(_)
     ));
 }
 
@@ -877,12 +704,11 @@ async fn test_create_credential_schema_failed_nested_claims_not_in_object_type()
 async fn test_create_credential_schema_failed_nested_claims_object_type_has_empty_claims() {
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(MockCredentialFormatter::default())));
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -892,10 +718,9 @@ async fn test_create_credential_schema_failed_nested_claims_object_type_has_empt
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "location".to_string(),
@@ -908,25 +733,35 @@ async fn test_create_credential_schema_failed_nested_claims_object_type_has_empt
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         result,
-        ServiceError::Validation(ValidationError::CredentialSchemaMissingNestedClaims(_))
+        CredentialSchemaServiceError::MissingNestedClaims(_)
     ));
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_failed_nested_claim_fails_validation() {
+    let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
+
+    formatter
+        .expect_get_capabilities()
+        .returning(|| FormatterCapabilities {
+            datatypes: vec!["STRING".into(), "OBJECT".into()],
+            ..Default::default()
+        });
+
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
-        .return_once(|_| Some(Arc::new(MockCredentialFormatter::default())));
+        .return_once(|_| Some(Arc::new(formatter)));
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -936,10 +771,9 @@ async fn test_create_credential_schema_failed_nested_claim_fails_validation() {
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "location".to_string(),
@@ -958,19 +792,18 @@ async fn test_create_credential_schema_failed_nested_claim_fails_validation() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::ConfigValidationError(ConfigValidationError::EntryNotFound(_))
-    ));
+
+    assert_eq!(result.error_code(), ErrorCode::BR_0089);
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_unique_name_error() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
 
@@ -996,43 +829,29 @@ async fn test_create_credential_schema_unique_name_error() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
             ..Default::default()
         });
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         repository,
-        history_repository,
         MockOrganisationRepository::default(),
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
-            name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            name: "testName".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: organisation.id.to_owned(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1044,25 +863,29 @@ async fn test_create_credential_schema_unique_name_error() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: None,
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::BusinessLogic(BusinessLogicError::CredentialSchemaAlreadyExists)
-    )));
+    match result {
+        Err(CredentialSchemaServiceError::AlreadyExists) => { /* Expected */ }
+        other => panic!(
+            "Expected Err(CredentialSchemaServiceError::AlreadyExists), got {:?}",
+            other
+        ),
+    }
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_failed_unique_claims_error() {
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .times(2)
         .returning(|_| Some(Arc::new(MockCredentialFormatter::default())));
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -1072,10 +895,9 @@ async fn test_create_credential_schema_failed_unique_claims_error() {
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: None,
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![
                 CredentialClaimSchemaRequestDTO {
@@ -1097,21 +919,22 @@ async fn test_create_credential_schema_failed_unique_claims_error() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         result,
-        ServiceError::Validation(ValidationError::CredentialSchemaDuplicitClaim)
+        CredentialSchemaServiceError::DuplicitClaim
     ));
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: None,
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "parent".to_string(),
@@ -1139,29 +962,29 @@ async fn test_create_credential_schema_failed_unique_claims_error() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await
         .unwrap_err();
     assert!(matches!(
         result,
-        ServiceError::Validation(ValidationError::CredentialSchemaDuplicitClaim)
+        CredentialSchemaServiceError::DuplicitClaim
     ));
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_fail_validation() {
     let repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .times(4)
         .returning(|_| Some(Arc::new(MockCredentialFormatter::default())));
 
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
         MockRevocationMethodProvider::default(),
@@ -1171,10 +994,9 @@ async fn test_create_credential_schema_fail_validation() {
     let non_existing_format = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "NON_EXISTING_FORMAT".to_string(),
-            revocation_method: "NONE".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
+            format: "NON_EXISTING_FORMAT".into(),
+            revocation_method: None,
+            key_storage_security: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1187,19 +1009,21 @@ async fn test_create_credential_schema_fail_validation() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(
-        non_existing_format.is_err_and(|e| matches!(e, ServiceError::ConfigValidationError(_)))
+    assert_eq!(
+        non_existing_format.unwrap_err().error_code(),
+        ErrorCode::BR_0089
     );
 
     let non_existing_revocation_method = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            revocation_method: "TEST".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
+            format: "JWT".into(),
+            revocation_method: Some("TEST".into()),
+            key_storage_security: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1212,20 +1036,21 @@ async fn test_create_credential_schema_fail_validation() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(
-        non_existing_revocation_method
-            .is_err_and(|e| matches!(e, ServiceError::ConfigValidationError(_)))
+    assert_eq!(
+        non_existing_revocation_method.unwrap_err().error_code(),
+        ErrorCode::BR_0089
     );
 
     let wrong_datatype = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            external_schema: false,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1238,35 +1063,116 @@ async fn test_create_credential_schema_fail_validation() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(wrong_datatype.is_err_and(|e| matches!(e, ServiceError::ConfigValidationError(_))));
+    assert_eq!(wrong_datatype.unwrap_err().error_code(), ErrorCode::BR_0089);
 
     let no_claims = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            format: "JWT".to_string(),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            key_storage_security: None,
+            format: "JWT".into(),
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![],
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
-    assert!(no_claims.is_err_and(|e| matches!(
+    assert!(
+        no_claims.is_err_and(|e| matches!(e, CredentialSchemaServiceError::MissingClaimSchemas))
+    );
+}
+
+#[tokio::test]
+async fn test_create_credential_schema_fail_unsupported_wallet_storage_type() {
+    let config = generic_config().core;
+    let mut repository = MockCredentialSchemaRepository::default();
+    let organisation_repository = MockOrganisationRepository::default();
+    let mut formatter = MockCredentialFormatter::default();
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+
+    let organisation = dummy_organisation(None);
+
+    let response = GetCredentialSchemaList {
+        values: vec![
+            generic_credential_schema(),
+            generic_credential_schema(),
+            generic_credential_schema(),
+        ],
+        total_pages: 0,
+        total_items: 0,
+    };
+
+    {
+        let clone = response.clone();
+        repository
+            .expect_get_credential_schema_list()
+            .times(1)
+            .returning(move |_, _| Ok(clone.clone()));
+    }
+
+    formatter
+        .expect_get_capabilities()
+        .returning(|| FormatterCapabilities {
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
+            ..Default::default()
+        });
+    formatter
+        .expect_credential_schema_id()
+        .returning(|_, _, _| Ok("schema id".to_string()));
+    formatter_provider
+        .expect_get_credential_formatter()
+        .once()
+        .return_once(|_| Some(Arc::new(formatter)));
+
+    let service = setup_service(
+        repository,
+        organisation_repository,
+        formatter_provider,
+        MockRevocationMethodProvider::default(),
+        config,
+    );
+
+    let result = service
+        .create_credential_schema(CreateCredentialSchemaRequestDTO {
+            name: "cred".to_string(),
+            format: "JWT".into(),
+            key_storage_security: Some(KeyStorageSecurity::EnhancedBasic),
+            revocation_method: None,
+            organisation_id: organisation.id.to_owned(),
+            claims: vec![CredentialClaimSchemaRequestDTO {
+                key: "test".to_string(),
+                datatype: "STRING".to_string(),
+                array: Some(false),
+                required: true,
+                claims: vec![],
+            }],
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id: None,
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
+        })
+        .await;
+
+    assert!(result.is_err_and(|e| matches!(
         e,
-        ServiceError::Validation(ValidationError::CredentialSchemaMissingClaims)
+        CredentialSchemaServiceError::KeyStorageSecurityDisabled(_)
     )));
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_fail_missing_organisation() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let history_repository = MockHistoryRepository::default();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
@@ -1296,43 +1202,29 @@ async fn test_create_credential_schema_fail_missing_organisation() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
             ..Default::default()
         });
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1344,14 +1236,19 @@ async fn test_create_credential_schema_fail_missing_organisation() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: None,
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
 
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::BusinessLogic(BusinessLogicError::MissingOrganisation(_))
-    )));
+    match result {
+        Err(CredentialSchemaServiceError::MissingOrganisation(_)) => { /* Expected */ }
+        other => panic!(
+            "Expected Err(CredentialSchemaServiceError::MissingOrganisation(_)), got {:?}",
+            other
+        ),
+    }
 }
 
 #[tokio::test]
@@ -1361,9 +1258,12 @@ async fn test_create_credential_schema_fail_incompatible_revocation_and_format()
 
     formatter
         .expect_get_capabilities()
-        .returning(FormatterCapabilities::default);
+        .returning(|| FormatterCapabilities {
+            datatypes: vec!["STRING".into()],
+            ..Default::default()
+        });
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
@@ -1372,12 +1272,12 @@ async fn test_create_credential_schema_fail_incompatible_revocation_and_format()
     let mut revocation_method_provider = MockRevocationMethodProvider::new();
     revocation_method_provider
         .expect_get_revocation_method()
+        .with(eq::<RevocationMethodId>("BITSTRINGSTATUSLIST".into()))
         .once()
         .return_once(move |_| Some(Arc::new(revocation_method)));
 
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
         revocation_method_provider,
@@ -1387,10 +1287,9 @@ async fn test_create_credential_schema_fail_incompatible_revocation_and_format()
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: Some("BITSTRINGSTATUSLIST".into()),
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1403,15 +1302,19 @@ async fn test_create_credential_schema_fail_incompatible_revocation_and_format()
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(
-            BusinessLogicError::RevocationMethodNotCompatibleWithSelectedFormat
-        )
-    ));
+        .await;
+
+    match result {
+        Err(CredentialSchemaServiceError::RevocationMethodNotCompatibleWithSelectedFormat) => { /* Expected */
+        }
+        other => panic!(
+            "Expected Err(CredentialSchemaServiceError::RevocationMethodNotCompatibleWithSelectedFormat), got {:?}",
+            other
+        ),
+    }
 }
 
 #[tokio::test]
@@ -1423,39 +1326,24 @@ async fn test_create_credential_schema_failed_mdoc_not_all_top_claims_are_object
         .expect_get_capabilities()
         .returning(generic_formatter_capabilities);
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "MDOC".to_string(),
-            external_schema: false,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "MDOC".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![
                 CredentialClaimSchemaRequestDTO {
@@ -1482,163 +1370,20 @@ async fn test_create_credential_schema_failed_mdoc_not_all_top_claims_are_object
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: Some("schema.id".to_string()),
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(
-            BusinessLogicError::InvalidClaimTypeMdocTopLevelOnlyObjectsAllowed
-        )
-    ));
-}
+        .await;
 
-#[tokio::test]
-async fn test_create_credential_schema_failed_mdoc_missing_doctype() {
-    let mut formatter = MockCredentialFormatter::default();
-    let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    formatter
-        .expect_get_capabilities()
-        .returning(|| FormatterCapabilities {
-            features: vec![
-                Features::SelectiveDisclosure,
-                Features::RequiresSchemaId,
-                Features::SupportsCredentialDesign,
-            ],
-            ..generic_formatter_capabilities()
-        });
-    formatter_provider
-        .expect_get_formatter()
-        .once()
-        .return_once(|_| Some(Arc::new(formatter)));
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
-    let service = setup_service(
-        MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
-        MockOrganisationRepository::default(),
-        formatter_provider,
-        revocation_method_provider,
-        generic_config().core,
-    );
-
-    let result = service
-        .create_credential_schema(CreateCredentialSchemaRequestDTO {
-            name: "cred".to_string(),
-            format: "MDOC".to_string(),
-            external_schema: false,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            organisation_id: Uuid::new_v4().into(),
-            claims: vec![CredentialClaimSchemaRequestDTO {
-                key: "test".to_string(),
-                datatype: "OBJECT".to_string(),
-                array: Some(false),
-                required: true,
-                claims: vec![CredentialClaimSchemaRequestDTO {
-                    key: "nested".to_string(),
-                    datatype: "STRING".to_string(),
-                    required: true,
-                    array: Some(false),
-                    claims: vec![],
-                }],
-            }],
-            layout_type: LayoutType::Card,
-            layout_properties: None,
-            schema_id: Some("".to_string()),
-            allow_suspension: Some(true),
-        })
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(BusinessLogicError::MissingSchemaId)
-    ));
-}
-
-#[tokio::test]
-async fn test_create_credential_schema_failed_physical_card_invalid_schema_id() {
-    let mut formatter = MockCredentialFormatter::default();
-    let mut formatter_provider = MockCredentialFormatterProvider::default();
-
-    formatter
-        .expect_get_capabilities()
-        .returning(|| FormatterCapabilities {
-            features: vec![
-                Features::SelectiveDisclosure,
-                Features::RequiresSchemaId,
-                Features::SupportsCredentialDesign,
-            ],
-            allowed_schema_ids: vec!["UtopiaEmploymentDocument".to_string()],
-            ..generic_formatter_capabilities()
-        });
-    formatter_provider
-        .expect_get_formatter()
-        .once()
-        .return_once(|_| Some(Arc::new(formatter)));
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
-    let service = setup_service(
-        MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
-        MockOrganisationRepository::default(),
-        formatter_provider,
-        revocation_method_provider,
-        generic_config().core,
-    );
-
-    let result = service
-        .create_credential_schema(CreateCredentialSchemaRequestDTO {
-            name: "cred".to_string(),
-            format: "PHYSICAL_CARD".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
-            organisation_id: Uuid::new_v4().into(),
-            claims: vec![CredentialClaimSchemaRequestDTO {
-                key: "nested".to_string(),
-                datatype: "STRING".to_string(),
-                required: true,
-                array: Some(false),
-                claims: vec![],
-            }],
-            layout_type: LayoutType::Card,
-            layout_properties: None,
-            schema_id: Some("test".to_string()),
-            allow_suspension: Some(true),
-        })
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::Validation(ValidationError::SchemaIdNotAllowedForFormat)
-    ));
+    match result {
+        Err(CredentialSchemaServiceError::InvalidClaimTypeMdocTopLevelOnlyObjectsAllowed) => { /* Expected */
+        }
+        other => panic!(
+            "Expected Err(CredentialSchemaServiceError::InvalidClaimTypeMdocTopLevelOnlyObjectsAllowed), got {:?}",
+            other
+        ),
+    }
 }
 
 #[tokio::test]
@@ -1650,39 +1395,24 @@ async fn test_create_credential_schema_failed_schema_id_not_allowed() {
         .expect_get_capabilities()
         .returning(generic_formatter_capabilities);
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .once()
         .return_once(|_| Some(Arc::new(formatter)));
 
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let service = setup_service(
         MockCredentialSchemaRepository::default(),
-        MockHistoryRepository::default(),
         MockOrganisationRepository::default(),
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
     let result = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            external_schema: false,
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: "test".to_string(),
@@ -1694,25 +1424,29 @@ async fn test_create_credential_schema_failed_schema_id_not_allowed() {
             layout_type: LayoutType::Card,
             layout_properties: None,
             schema_id: Some("schema.id".to_string()),
-            allow_suspension: Some(true),
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        result,
-        ServiceError::BusinessLogic(BusinessLogicError::SchemaIdNotAllowed)
-    ));
+        .await;
+
+    match result {
+        Err(CredentialSchemaServiceError::SchemaIdNotAllowed) => { /* Expected */ }
+        other => panic!(
+            "Expected Err(CredentialSchemaServiceError::SchemaIdNotAllowed), got {:?}",
+            other
+        ),
+    }
 }
 
 #[tokio::test]
 async fn test_create_credential_schema_failed_claim_schema_key_too_long() {
     let mut formatter_provider = MockCredentialFormatterProvider::default();
     formatter_provider
-        .expect_get_formatter()
+        .expect_get_credential_formatter()
         .times(3)
         .returning(|_| Some(Arc::new(MockCredentialFormatter::default())));
     let service = setup_service(
-        Default::default(),
         Default::default(),
         Default::default(),
         formatter_provider,
@@ -1727,10 +1461,9 @@ async fn test_create_credential_schema_failed_claim_schema_key_too_long() {
     let first_level_fail = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            external_schema: false,
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: str_of_len_256,
@@ -1743,22 +1476,21 @@ async fn test_create_credential_schema_failed_claim_schema_key_too_long() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
     assert!(matches!(
         first_level_fail,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::ClaimSchemaKeyTooLong
-        ))
+        Err(CredentialSchemaServiceError::ClaimSchemaKeyTooLong)
     ));
 
     let nested_fail = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: str_of_len_128.to_owned(),
@@ -1777,22 +1509,21 @@ async fn test_create_credential_schema_failed_claim_schema_key_too_long() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
     assert!(matches!(
         nested_fail,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::ClaimSchemaKeyTooLong
-        ))
+        Err(CredentialSchemaServiceError::ClaimSchemaKeyTooLong)
     ));
 
     let unicode_len_fail = service
         .create_credential_schema(CreateCredentialSchemaRequestDTO {
             name: "cred".to_string(),
-            format: "JWT".to_string(),
-            wallet_storage_type: Some(WalletStorageTypeEnum::Software),
-            revocation_method: "NONE".to_string(),
-            external_schema: false,
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
             organisation_id: Uuid::new_v4().into(),
             claims: vec![CredentialClaimSchemaRequestDTO {
                 key: unicode_str_of_len_130_but_byte_len_of_260,
@@ -1805,13 +1536,13 @@ async fn test_create_credential_schema_failed_claim_schema_key_too_long() {
             layout_properties: None,
             schema_id: None,
             allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
         })
         .await;
     assert!(matches!(
         unicode_len_fail,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::ClaimSchemaKeyTooLong
-        ))
+        Err(CredentialSchemaServiceError::ClaimSchemaKeyTooLong)
     ));
 }
 
@@ -2254,9 +1985,7 @@ fn test_renest_claim_schemas_failed_missing_parent_claim_schema() {
     }];
     assert!(matches!(
         renest_claim_schemas(request),
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::MissingParentClaimSchema { .. }
-        ))
+        Err(CredentialSchemaServiceError::MissingParentClaimSchema { .. })
     ));
 }
 
@@ -2364,7 +2093,7 @@ fn test_claims_presence_in_layout_properties_validation_missing_primary_attribut
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::MissingLayoutAttribute(_))) = check_claims_presence_in_layout_properties(&request)
+        let Err(CredentialSchemaServiceError::MissingLayoutAttribute(_)) = check_claims_presence_in_layout_properties(&request)
     )
 }
 
@@ -2394,7 +2123,7 @@ fn test_background_attributes_combination_failed_both() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_background_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_background_properties(&request)
     )
 }
 
@@ -2419,7 +2148,7 @@ fn test_background_attributes_combination_failed_none() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_background_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_background_properties(&request)
     )
 }
 
@@ -2562,7 +2291,7 @@ fn test_logo_attributes_combination_mix1_fail() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_logo_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_logo_properties(&request)
     )
 }
 
@@ -2593,7 +2322,7 @@ fn test_logo_attributes_combination_mix2_fail() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_logo_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_logo_properties(&request)
     )
 }
 
@@ -2619,7 +2348,7 @@ fn test_logo_attributes_combination_mix3_fail() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_logo_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_logo_properties(&request)
     )
 }
 
@@ -2645,7 +2374,7 @@ fn test_logo_attributes_combination_empty_fail() {
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::AttributeCombinationNotAllowed)) = check_logo_properties(&request)
+        let Err(CredentialSchemaServiceError::AttributeCombinationNotAllowed) = check_logo_properties(&request)
     )
 }
 
@@ -2674,7 +2403,7 @@ fn test_claims_presence_in_layout_properties_validation_missing_secondary_attrib
     };
 
     assert2::assert!(
-        let Err(ServiceError::Validation(ValidationError::MissingLayoutAttribute(_))) = check_claims_presence_in_layout_properties(&request)
+        let Err(CredentialSchemaServiceError::MissingLayoutAttribute(_)) = check_claims_presence_in_layout_properties(&request)
     )
 }
 
@@ -2700,23 +2429,23 @@ fn test_claims_presence_in_layout_properties_validation_attributes_not_specified
 fn dummy_request() -> CreateCredentialSchemaRequestDTO {
     CreateCredentialSchemaRequestDTO {
         name: "AnyName".to_owned(),
-        format: "AnyFormat".to_owned(),
-        revocation_method: "None".to_owned(),
-        external_schema: false,
+        format: "AnyFormat".into(),
+        revocation_method: None,
         organisation_id: Uuid::new_v4().into(),
         claims: vec![],
-        wallet_storage_type: None,
+        key_storage_security: None,
         layout_type: LayoutType::Card,
         layout_properties: None,
         schema_id: None,
         allow_suspension: Some(true),
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
     }
 }
 
 #[tokio::test]
 async fn test_share_credential_schema_success() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
 
     let schema_id: CredentialSchemaId = Uuid::new_v4().into();
@@ -2725,13 +2454,8 @@ async fn test_share_credential_schema_success() {
         .expect_get_credential_schema()
         .returning(|_, _| Ok(Some(generic_credential_schema())));
 
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         Default::default(),
         Default::default(),
@@ -2745,7 +2469,6 @@ async fn test_share_credential_schema_success() {
 #[tokio::test]
 async fn test_import_credential_schema_success() {
     let mut repository = MockCredentialSchemaRepository::default();
-    let mut history_repository = MockHistoryRepository::default();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
@@ -2760,13 +2483,16 @@ async fn test_import_credential_schema_success() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
             ..Default::default()
         });
+    formatter.expect_get_metadata_claims().returning(Vec::new);
+    let formatter = Arc::new(formatter);
     formatter_provider
-        .expect_get_formatter()
-        .once()
-        .return_once(|_| Some(Arc::new(formatter)));
+        .expect_get_credential_formatter()
+        .times(2)
+        .returning(move |_| Some(formatter.clone()));
 
     repository
         .expect_get_credential_schema_list()
@@ -2784,33 +2510,16 @@ async fn test_import_credential_schema_success() {
         .return_once(move |new_schema| {
             assert_eq!(
                 own_organisation_id,
-                new_schema.organisation.unwrap().id.into()
+                Uuid::from(new_schema.organisation.unwrap().id)
             );
             Ok(new_schema.id)
         });
-    history_repository
-        .expect_create_history()
-        .returning(|_| Ok(Uuid::new_v4().into()));
-
-    let mut revocation_method = MockRevocationMethod::default();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities {
-            operations: vec![Operation::Suspend],
-        });
-
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .once()
-        .return_once(move |_| Some(Arc::new(revocation_method)));
 
     let service = setup_service(
         repository,
-        history_repository,
         organisation_repository,
         formatter_provider,
-        revocation_method_provider,
+        MockRevocationMethodProvider::default(),
         generic_config().core,
     );
 
@@ -2825,8 +2534,7 @@ async fn test_import_credential_schema_success() {
                 last_modified: now,
                 name: "external schema".to_string(),
                 format: "JWT".to_string(),
-                external_schema: false,
-                revocation_method: "NONE".to_string(),
+                revocation_method: None,
                 organisation_id: Uuid::new_v4(),
                 claims: vec![ImportCredentialSchemaClaimSchemaDTO {
                     id: Uuid::new_v4(),
@@ -2838,15 +2546,332 @@ async fn test_import_credential_schema_success() {
                     array: Some(false),
                     claims: vec![],
                 }],
-                wallet_storage_type: None,
+                key_storage_security: None,
                 schema_id: "http://127.0.0.1/ssi/schema/some_schmea".to_string(),
-                schema_type: CredentialSchemaType::ProcivisOneSchema2024.into(),
                 layout_type: None,
                 layout_properties: None,
-                allow_suspension: Some(true),
+                allow_suspension: None,
+                requires_wallet_instance_attestation: Some(true),
+                transaction_code: None,
             },
         })
         .await
         .unwrap();
     assert_ne!(external_schema_id, result);
+}
+
+#[tokio::test]
+async fn test_create_credential_schema_fail_unsupported_datatype() {
+    // given
+    let mut formatter = MockCredentialFormatter::default();
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+    let organisation = dummy_organisation(None);
+
+    formatter
+        .expect_get_capabilities()
+        .returning(|| FormatterCapabilities {
+            revocation_methods: vec![],
+            datatypes: vec!["STRING".into()],
+            ..Default::default()
+        });
+    formatter
+        .expect_credential_schema_id()
+        .returning(|_, _, _| Ok("some schema id".to_string()));
+    formatter_provider
+        .expect_get_credential_formatter()
+        .once()
+        .return_once(|_| Some(Arc::new(formatter)));
+
+    let service = setup_service(
+        MockCredentialSchemaRepository::default(),
+        MockOrganisationRepository::default(),
+        formatter_provider,
+        MockRevocationMethodProvider::default(),
+        generic_config().core,
+    );
+
+    // when
+    let result = service
+        .create_credential_schema(CreateCredentialSchemaRequestDTO {
+            name: "cred".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
+            organisation_id: organisation.id.to_owned(),
+            claims: vec![CredentialClaimSchemaRequestDTO {
+                key: "location".to_string(),
+                datatype: "OBJECT".to_string(),
+                array: Some(false),
+                required: true,
+                claims: vec![
+                    CredentialClaimSchemaRequestDTO {
+                        key: "x".to_string(),
+                        datatype: "STRING".to_string(),
+                        required: true,
+                        array: Some(false),
+                        claims: vec![],
+                    },
+                    CredentialClaimSchemaRequestDTO {
+                        key: "y".to_string(),
+                        datatype: "STRING".to_string(),
+                        required: true,
+                        array: Some(true),
+                        claims: vec![],
+                    },
+                ],
+            }],
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id: None,
+            allow_suspension: Some(true),
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
+        })
+        .await
+        .unwrap_err();
+
+    // then
+    let_assert!(
+        CredentialSchemaServiceError::ClaimSchemaUnsupportedDatatype {
+            claim_name,
+            data_type
+        } = result
+    );
+    assert2::assert!(claim_name == "location");
+    assert2::assert!(data_type == "OBJECT");
+}
+
+#[tokio::test]
+async fn test_create_credential_schema_fail_session_org_mismatch() {
+    let service = CredentialSchemaService {
+        credential_schema_repository: Arc::new(MockCredentialSchemaRepository::default()),
+        organisation_repository: Arc::new(MockOrganisationRepository::default()),
+        formatter_provider: Arc::new(MockCredentialFormatterProvider::default()),
+        revocation_method_provider: Arc::new(MockRevocationMethodProvider::default()),
+        config: Arc::new(generic_config().core),
+        core_base_url: None,
+        session_provider: Arc::new(StaticSessionProvider::new_random()),
+        import_parser: Arc::new(MockCredentialSchemaImportParser::default()),
+        importer_proto: Arc::new(MockCredentialSchemaImporter::default()),
+    };
+
+    let result = service
+        .create_credential_schema(CreateCredentialSchemaRequestDTO {
+            name: "cred".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
+            organisation_id: Uuid::new_v4().into(),
+            claims: vec![],
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id: None,
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: None,
+        })
+        .await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+}
+
+#[tokio::test]
+async fn test_create_credential_schema_fail_tx_code_not_supported() {
+    let mut formatter = MockCredentialFormatter::default();
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+
+    formatter
+        .expect_get_capabilities()
+        .returning(|| FormatterCapabilities {
+            datatypes: vec!["STRING".into()],
+            ..Default::default()
+        });
+    formatter.expect_get_metadata_claims().returning(Vec::new);
+    let formatter = Arc::new(formatter);
+    formatter_provider
+        .expect_get_credential_formatter()
+        .returning(move |_| Some(formatter.clone()));
+
+    let service = setup_service(
+        MockCredentialSchemaRepository::default(),
+        MockOrganisationRepository::default(),
+        formatter_provider,
+        MockRevocationMethodProvider::new(),
+        generic_config().core,
+    );
+
+    let result = service
+        .create_credential_schema(CreateCredentialSchemaRequestDTO {
+            name: "cred".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
+            organisation_id: Uuid::new_v4().into(),
+            claims: vec![CredentialClaimSchemaRequestDTO {
+                key: "test".to_string(),
+                datatype: "STRING".to_string(),
+                array: Some(false),
+                required: true,
+                claims: vec![],
+            }],
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id: None,
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: Some(CredentialSchemaTransactionCodeRequestDTO {
+                r#type: TransactionCodeType::Numeric,
+                length: 4.try_into().unwrap(),
+                description: None,
+            }),
+        })
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(CredentialSchemaServiceError::TransactionCodeNotSupported)
+    ));
+}
+
+#[tokio::test]
+async fn test_create_credential_schema_fail_tx_code_description_too_long() {
+    let mut formatter = MockCredentialFormatter::default();
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+
+    formatter
+        .expect_get_capabilities()
+        .returning(|| FormatterCapabilities {
+            datatypes: vec!["STRING".into()],
+            features: vec![Features::SupportsTxCode],
+            ..Default::default()
+        });
+    formatter.expect_get_metadata_claims().returning(Vec::new);
+    let formatter = Arc::new(formatter);
+    formatter_provider
+        .expect_get_credential_formatter()
+        .returning(move |_| Some(formatter.clone()));
+
+    let service = setup_service(
+        MockCredentialSchemaRepository::default(),
+        MockOrganisationRepository::default(),
+        formatter_provider,
+        MockRevocationMethodProvider::new(),
+        generic_config().core,
+    );
+
+    let result = service
+        .create_credential_schema(CreateCredentialSchemaRequestDTO {
+            name: "cred".to_string(),
+            format: "JWT".into(),
+            key_storage_security: None,
+            revocation_method: None,
+            organisation_id: Uuid::new_v4().into(),
+            claims: vec![CredentialClaimSchemaRequestDTO {
+                key: "test".to_string(),
+                datatype: "STRING".to_string(),
+                array: Some(false),
+                required: true,
+                claims: vec![],
+            }],
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id: None,
+            allow_suspension: None,
+            requires_wallet_instance_attestation: false,
+            transaction_code: Some(CredentialSchemaTransactionCodeRequestDTO {
+                r#type: TransactionCodeType::Numeric,
+                length: 4.try_into().unwrap(),
+                description: Some(['a'; 301].iter().collect()),
+            }),
+        })
+        .await;
+
+    assert!(matches!(
+        result,
+        Err(CredentialSchemaServiceError::InvalidTransactionCodeDescriptionLength)
+    ));
+}
+
+#[tokio::test]
+async fn test_list_credential_schema_fail_session_org_mismatch() {
+    let service = CredentialSchemaService {
+        credential_schema_repository: Arc::new(MockCredentialSchemaRepository::default()),
+        organisation_repository: Arc::new(MockOrganisationRepository::default()),
+        formatter_provider: Arc::new(MockCredentialFormatterProvider::default()),
+        revocation_method_provider: Arc::new(MockRevocationMethodProvider::default()),
+        config: Arc::new(generic_config().core),
+        core_base_url: None,
+        session_provider: Arc::new(StaticSessionProvider::new_random()),
+        import_parser: Arc::new(MockCredentialSchemaImportParser::default()),
+        importer_proto: Arc::new(MockCredentialSchemaImporter::default()),
+    };
+
+    let result = service
+        .get_credential_schema_list(
+            &Uuid::new_v4().into(),
+            GetCredentialSchemaQueryDTO {
+                pagination: None,
+                sorting: None,
+                filtering: None,
+                include: None,
+            },
+        )
+        .await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+}
+
+#[tokio::test]
+async fn test_credential_schema_ops_session_org_mismatch() {
+    let mut schema_repository = MockCredentialSchemaRepository::default();
+    schema_repository
+        .expect_get_credential_schema()
+        .returning(|_, _| Ok(Some(generic_credential_schema())));
+    let service = CredentialSchemaService {
+        credential_schema_repository: Arc::new(schema_repository),
+        organisation_repository: Arc::new(MockOrganisationRepository::default()),
+        formatter_provider: Arc::new(MockCredentialFormatterProvider::default()),
+        revocation_method_provider: Arc::new(MockRevocationMethodProvider::default()),
+        config: Arc::new(generic_config().core),
+        core_base_url: None,
+        session_provider: Arc::new(StaticSessionProvider::new_random()),
+        import_parser: Arc::new(MockCredentialSchemaImportParser::default()),
+        importer_proto: Arc::new(MockCredentialSchemaImporter::default()),
+    };
+
+    let result = service.get_credential_schema(&Uuid::new_v4().into()).await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+
+    let result = service
+        .delete_credential_schema(&Uuid::new_v4().into())
+        .await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+
+    let result = service
+        .share_credential_schema(&Uuid::new_v4().into())
+        .await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+
+    let result = service
+        .import_credential_schema(ImportCredentialSchemaRequestDTO {
+            organisation_id: Uuid::new_v4().into(),
+            schema: ImportCredentialSchemaRequestSchemaDTO {
+                id: Uuid::new_v4(),
+                created_date: get_dummy_date(),
+                last_modified: get_dummy_date(),
+                name: "".to_string(),
+                format: "".to_string(),
+                revocation_method: None,
+                organisation_id: Uuid::new_v4(),
+                claims: vec![],
+                key_storage_security: None,
+                schema_id: "".to_string(),
+                imported_source_url: "".to_string(),
+                layout_type: None,
+                layout_properties: None,
+                allow_suspension: None,
+                requires_wallet_instance_attestation: None,
+                transaction_code: None,
+            },
+        })
+        .await;
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }

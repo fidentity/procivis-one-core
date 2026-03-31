@@ -1,61 +1,68 @@
 use std::collections::HashMap;
 use std::ops::Add;
+use std::sync::Arc;
 
-use one_dto_mapper::{convert_inner, convert_inner_of_inner};
-use serde::{Deserialize, Deserializer};
-use shared_types::{DidValue, ProofId};
+use one_dto_mapper::convert_inner;
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+use shared_types::{InteractionId, ProofId};
+use standardized_types::jwa::EncryptionAlgorithm;
+use standardized_types::jwk::PublicJwk;
+use standardized_types::openid4vp::{
+    ClientMetadata, GenericAlgs, LdpVcAlgs, PresentationFormat, SdJwtVcAlgs,
+};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use super::draft20::model::OpenID4VP20AuthorizationRequest;
 use super::model::{
-    LdpVcAlgs, OpenID4VPAlgs, OpenID4VPPresentationDefinition,
-    OpenID4VPPresentationDefinitionConstraint, OpenID4VPPresentationDefinitionConstraintField,
+    JwePayload, OpenID4VCVerifierAttestationPayload, OpenID4VPHolderInteractionData,
+    OpenID4VPPresentationDefinition, OpenID4VPPresentationDefinitionConstraint,
+    OpenID4VPPresentationDefinitionConstraintField,
     OpenID4VPPresentationDefinitionConstraintFieldFilter,
     OpenID4VPPresentationDefinitionInputDescriptor,
-    OpenID4VPPresentationDefinitionLimitDisclosurePreference, OpenID4VPVcSdJwtAlgs,
-    OpenID4VPVerifierInteractionContent, ProvedCredential,
+    OpenID4VPPresentationDefinitionLimitDisclosurePreference, OpenID4VPVerifierInteractionContent,
+    ProvedCredential, VpSubmissionData,
 };
-use crate::common_mapper::{
-    DidRole, NESTED_CLAIM_MARKER, get_or_create_did_and_identifier, value_to_model_claims,
+use super::{JWTSigner, get_jwt_signer, jwe_presentation};
+use crate::config::core_config::{CoreConfig, FormatType, VerificationProtocolType};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::oidc::map_to_openid4vp_format;
+use crate::mapper::x509::pem_chain_into_x5c;
+use crate::mapper::{
+    NESTED_CLAIM_MARKER, get_encryption_key_jwk_from_proof, value_to_model_claims,
 };
-use crate::config::core_config::{CoreConfig, FormatType};
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType,
-};
-use crate::model::interaction::InteractionId;
-use crate::model::organisation::Organisation;
+use crate::model::credential_schema::CredentialSchema;
+use crate::model::identifier::IdentifierType;
 use crate::model::proof::Proof;
-use crate::model::proof_schema::ProofInputClaimSchema;
-use crate::provider::credential_formatter::jwt::Jwt;
-use crate::provider::credential_formatter::jwt::model::{JWTHeader, JWTPayload};
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::MobileSecurityObject;
-use crate::provider::credential_formatter::model::{AuthenticationFn, ExtractPresentationCtx};
+use crate::model::proof_schema::{ProofInputClaimSchema, ProofSchema};
+use crate::proto::jwt::Jwt;
+use crate::proto::jwt::model::{JWTHeader, JWTPayload, ProofOfPossessionJwk, ProofOfPossessionKey};
+use crate::provider::credential_formatter::mdoc_formatter::util::MobileSecurityObject;
+use crate::provider::credential_formatter::model::{CredentialClaim, IdentifierDetails};
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
-use crate::provider::did_method::provider::DidMethodProvider;
-use crate::provider::key_algorithm::error::KeyAlgorithmError;
+use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::key_storage::provider::KeyProvider;
+use crate::provider::presentation_formatter::model::ExtractPresentationCtx;
 use crate::provider::verification_protocol::dto::{
-    CredentialGroup, PresentationDefinitionRequestGroupResponseDTO,
+    CredentialGroup, FormattedCredentialPresentation,
+    PresentationDefinitionRequestGroupResponseDTO,
     PresentationDefinitionRequestedCredentialResponseDTO, PresentationDefinitionResponseDTO,
-    PresentationDefinitionRuleDTO, PresentationDefinitionRuleTypeEnum, PresentedCredential,
+    PresentationDefinitionRuleDTO, PresentationDefinitionRuleTypeEnum,
 };
 use crate::provider::verification_protocol::mapper::{
     create_presentation_definition_field, credential_model_to_credential_dto,
 };
 use crate::provider::verification_protocol::openid4vp::error::OpenID4VCError;
 use crate::provider::verification_protocol::openid4vp::model::{
-    NestedPresentationSubmissionDescriptorDTO, OpenID4VpPresentationFormat,
-    PresentationSubmissionDescriptorDTO, PresentationSubmissionMappingDTO,
+    OpenID4VPClientMetadata, OpenID4VPDraftClientMetadata,
 };
+use crate::provider::verification_protocol::openid4vp::service::create_open_id_for_vp_client_metadata_draft;
 use crate::provider::verification_protocol::openid4vp::{
     FormatMapper, TypeToDescriptorMapper, VerificationProtocolError,
 };
-use crate::repository::did_repository::DidRepository;
-use crate::repository::identifier_repository::IdentifierRepository;
 use crate::service::error::{BusinessLogicError, ServiceError};
-use crate::util::oidc::map_to_openid4vp_format;
 
 pub(super) fn presentation_definition_from_interaction_data(
     proof_id: ProofId,
@@ -80,6 +87,7 @@ pub(super) fn presentation_definition_from_interaction_data(
                     Ok(PresentationDefinitionRequestedCredentialResponseDTO {
                         id: group.id,
                         name: group.name,
+                        multiple: None,
                         purpose: group.purpose,
                         fields: convert_inner(
                             group
@@ -103,17 +111,16 @@ pub(super) fn presentation_definition_from_interaction_data(
                         applicable_credentials: group
                             .applicable_credentials
                             .into_iter()
-                            .map(|credential| credential.id.to_string())
+                            .map(|credential| credential.id)
                             .collect(),
                         inapplicable_credentials: group
                             .inapplicable_credentials
                             .into_iter()
-                            .map(|credential| credential.id.to_string())
+                            .map(|credential| credential.id)
                             .collect(),
-                        validity_credential_nbf: group.validity_credential_nbf,
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, VerificationProtocolError>>()?,
         }],
         credentials: credential_model_to_credential_dto(convert_inner(credentials), config)?,
     })
@@ -157,22 +164,23 @@ pub(crate) fn get_claim_name_by_json_path(
 }
 
 // TODO: This method needs to be refactored as soon as we have a new config value access and remove the static values from this method
-pub(crate) fn create_open_id_for_vp_formats() -> HashMap<String, OpenID4VpPresentationFormat> {
+// only for use with Draft implementations
+pub(crate) fn create_open_id_for_vp_formats() -> HashMap<String, PresentationFormat> {
     let mut formats = HashMap::new();
-    let algorithms = OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+    let algorithms = PresentationFormat::GenericAlgList(GenericAlgs {
         alg: vec!["EdDSA".to_owned(), "ES256".to_owned()],
     });
 
-    let sd_jwt_algorithms = OpenID4VpPresentationFormat::SdJwtVcAlgs(OpenID4VPVcSdJwtAlgs {
-        sd_jwt_algorithms: vec!["EdDSA".to_owned(), "ES256".to_owned()],
-        kb_jwt_algorithms: vec!["EdDSA".to_owned(), "ES256".to_owned()],
+    let sd_jwt_algorithms = PresentationFormat::SdJwtVcAlgs(SdJwtVcAlgs {
+        sd_jwt_alg_values: vec!["EdDSA".to_owned(), "ES256".to_owned()],
+        kb_jwt_alg_values: vec!["EdDSA".to_owned(), "ES256".to_owned()],
     });
 
     formats.insert("jwt_vp_json".to_owned(), algorithms.clone());
     formats.insert("jwt_vc_json".to_owned(), algorithms.clone());
     formats.insert(
         "ldp_vp".to_owned(),
-        OpenID4VpPresentationFormat::LdpVcAlgs(LdpVcAlgs {
+        PresentationFormat::LdpVcAlgs(LdpVcAlgs {
             proof_type: vec!["DataIntegrityProof".to_owned()],
         }),
     );
@@ -184,37 +192,30 @@ pub(crate) fn create_open_id_for_vp_formats() -> HashMap<String, OpenID4VpPresen
 
 pub fn create_format_map(
     format_type: &FormatType,
-) -> Result<HashMap<String, OpenID4VpPresentationFormat>, VerificationProtocolError> {
+) -> Result<HashMap<String, PresentationFormat>, VerificationProtocolError> {
     match format_type {
         FormatType::Jwt | FormatType::Mdoc => {
-            let key = map_to_openid4vp_format(format_type)
-                .map_err(|error| VerificationProtocolError::Failed(error.to_string()))?
-                .to_string();
+            let key = map_to_openid4vp_format(format_type).to_string();
             Ok(HashMap::from([(
                 key,
-                OpenID4VpPresentationFormat::GenericAlgList(OpenID4VPAlgs {
+                PresentationFormat::GenericAlgList(GenericAlgs {
                     alg: vec!["EdDSA".to_string(), "ES256".to_string()],
                 }),
             )]))
         }
         FormatType::SdJwt | FormatType::SdJwtVc => {
-            let key = map_to_openid4vp_format(format_type)
-                .map_err(|error| VerificationProtocolError::Failed(error.to_string()))?
-                .to_string();
+            let key = map_to_openid4vp_format(format_type).to_string();
             Ok(HashMap::from([(
                 key,
-                OpenID4VpPresentationFormat::SdJwtVcAlgs(OpenID4VPVcSdJwtAlgs {
-                    sd_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
-                    kb_jwt_algorithms: vec!["EdDSA".to_string(), "ES256".to_string()],
+                PresentationFormat::SdJwtVcAlgs(SdJwtVcAlgs {
+                    sd_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
+                    kb_jwt_alg_values: vec!["EdDSA".to_string(), "ES256".to_string()],
                 }),
             )]))
         }
-        FormatType::PhysicalCard => {
-            unimplemented!()
-        }
         FormatType::JsonLdClassic | FormatType::JsonLdBbsPlus => Ok(HashMap::from([(
             "ldp_vc".to_string(),
-            OpenID4VpPresentationFormat::LdpVcAlgs(LdpVcAlgs {
+            PresentationFormat::LdpVcAlgs(LdpVcAlgs {
                 proof_type: vec!["DataIntegrityProof".to_string()],
             }),
         )])),
@@ -223,17 +224,11 @@ pub fn create_format_map(
 
 pub(crate) fn create_open_id_for_vp_presentation_definition(
     interaction_id: InteractionId,
-    proof: &Proof,
+    proof_schema: &ProofSchema,
     format_type_to_input_descriptor_format: TypeToDescriptorMapper,
     format_to_type_mapper: FormatMapper, // Credential schema format to format type mapper
     formatter_provider: &dyn CredentialFormatterProvider,
 ) -> Result<OpenID4VPPresentationDefinition, VerificationProtocolError> {
-    let proof_schema = proof
-        .schema
-        .as_ref()
-        .ok_or(VerificationProtocolError::Failed(
-            "Proof schema not found".to_string(),
-        ))?;
     // using vec to keep the original order of claims/credentials in the proof request
     let requested_credentials: Vec<(CredentialSchema, Option<Vec<ProofInputClaimSchema>>)> =
         match proof_schema.input_schemas.as_ref() {
@@ -294,9 +289,9 @@ fn create_open_id_for_vp_presentation_definition_input_descriptor(
 ) -> Result<OpenID4VPPresentationDefinitionInputDescriptor, VerificationProtocolError> {
     let (id, schema_fields, intent_to_retain) = match presentation_format_type {
         FormatType::Mdoc => (credential_schema.schema_id, vec![], Some(true)),
-        _ => {
-            let path = match credential_schema.schema_type {
-                CredentialSchemaType::SdJwtVc => ["$.vct".to_string()],
+        format_type => {
+            let path = match format_type {
+                FormatType::SdJwtVc => ["$.vct".to_string()],
                 _ => ["$.credentialSchema.id".to_string()],
             }
             .to_vec();
@@ -319,7 +314,7 @@ fn create_open_id_for_vp_presentation_definition_input_descriptor(
     };
 
     let selectively_disclosable = !formatter_provider
-        .get_formatter(&credential_schema.format)
+        .get_credential_formatter(&credential_schema.format)
         .ok_or(VerificationProtocolError::Failed(
             "missing provider".to_string(),
         ))?
@@ -346,7 +341,7 @@ fn create_open_id_for_vp_presentation_definition_input_descriptor(
                 intent_to_retain,
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, VerificationProtocolError>>()?;
 
     Ok(OpenID4VPPresentationDefinitionInputDescriptor {
         id,
@@ -355,7 +350,6 @@ fn create_open_id_for_vp_presentation_definition_input_descriptor(
         format: format_to_type_mapper(presentation_format_type)?,
         constraints: OpenID4VPPresentationDefinitionConstraint {
             fields: [schema_fields, claim_fields].concat(),
-            validity_credential_nbf: None,
             limit_disclosure,
         },
     })
@@ -370,51 +364,60 @@ fn format_path(
             None => Ok(format!("$['{claim_key}']")),
             Some((namespace, key)) => Ok(format!("$['{namespace}']['{key}']")),
         },
-        FormatType::SdJwtVc => Ok(format!("$.{}", claim_key)),
-        _ => Ok(format!("$.vc.credentialSubject.{}", claim_key)),
+        FormatType::SdJwtVc => Ok(format!("$.{claim_key}")),
+        _ => Ok(format!("$.vc.credentialSubject.{claim_key}")),
     }
 }
 
-pub(crate) fn create_presentation_submission(
-    presentation_definition_id: String,
-    credential_presentations: Vec<PresentedCredential>,
-    format: &str,
-) -> Result<PresentationSubmissionMappingDTO, VerificationProtocolError> {
-    let path_nested_supported = format == "jwt_vp_json" || format == "ldp_vp";
-    Ok(PresentationSubmissionMappingDTO {
-        id: Uuid::new_v4().to_string(),
-        definition_id: presentation_definition_id,
-        descriptor_map: credential_presentations
-            .into_iter()
-            .enumerate()
-            .map(|(index, presented_credential)| {
-                Ok(PresentationSubmissionDescriptorDTO {
-                    id: presented_credential.request.id,
-                    format: format.to_owned(),
-                    path: "$".to_string(),
-                    path_nested: if path_nested_supported {
-                        let credential_format = presented_credential
-                            .credential_schema
-                            .format
-                            .parse()
-                            .map_err(|_| {
-                                VerificationProtocolError::Failed("format not found".to_string())
-                            })?;
-                        Some(NestedPresentationSubmissionDescriptorDTO {
-                            format: map_to_openid4vp_format(&credential_format)
-                                .map_err(|error| {
-                                    VerificationProtocolError::Failed(error.to_string())
-                                })?
-                                .to_string(),
-                            path: format!("$.vp.verifiableCredential[{index}]"),
-                        })
-                    } else {
-                        None
-                    },
-                })
-            })
-            .collect::<Result<_, _>>()?,
-    })
+pub(crate) fn cred_to_presentation_format_type(credential_format_type: FormatType) -> FormatType {
+    match credential_format_type {
+        FormatType::Jwt => FormatType::Jwt,
+        FormatType::SdJwt => FormatType::SdJwt,
+        FormatType::SdJwtVc => FormatType::SdJwtVc,
+        FormatType::JsonLdClassic | FormatType::JsonLdBbsPlus => FormatType::JsonLdClassic,
+        FormatType::Mdoc => FormatType::Mdoc,
+    }
+}
+
+pub(crate) async fn encrypted_params(
+    interaction_data: &OpenID4VPHolderInteractionData,
+    submission_data: VpSubmissionData,
+    holder_nonce: &str,
+    verifier_key: PublicJwk,
+    encryption_algorithm: EncryptionAlgorithm,
+    key_algorithm_provider: &dyn KeyAlgorithmProvider,
+) -> Result<HashMap<String, String>, VerificationProtocolError> {
+    let aud = interaction_data
+        .response_uri
+        .clone()
+        .ok_or(VerificationProtocolError::Failed(
+            "response_uri is None".to_string(),
+        ))?;
+    let verifier_nonce =
+        interaction_data
+            .nonce
+            .clone()
+            .ok_or(VerificationProtocolError::Failed(
+                "nonce is None".to_string(),
+            ))?;
+    let payload = JwePayload {
+        aud: Some(aud),
+        exp: Some(OffsetDateTime::now_utc() + Duration::minutes(10)),
+        submission_data,
+        state: interaction_data.state.clone(),
+    };
+
+    let response = jwe_presentation::build_jwe(
+        payload,
+        verifier_key,
+        holder_nonce,
+        &verifier_nonce,
+        encryption_algorithm,
+        key_algorithm_provider,
+    )
+    .await
+    .map_err(VerificationProtocolError::Other)?;
+    Ok(HashMap::from_iter([("response".to_owned(), response)]))
 }
 
 pub(crate) fn deserialize_with_serde_json<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -453,23 +456,32 @@ pub(crate) fn vec_last_position_from_token_path(path: &str) -> Result<usize, Ope
 
 pub fn extract_presentation_ctx_from_interaction_content(
     content: OpenID4VPVerifierInteractionContent,
+    verification_protocol_type: VerificationProtocolType,
 ) -> ExtractPresentationCtx {
     ExtractPresentationCtx {
         nonce: Some(content.nonce),
         client_id: Some(content.client_id),
         response_uri: content.response_uri,
-        ..Default::default()
+        verification_protocol_type,
+        format_nonce: None,
+        issuance_date: None,
+        expiration_date: None,
+        mdoc_session_transcript: None,
+        verifier_key: content.encryption_key,
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn extracted_credential_to_model(
-    claim_schemas: &[CredentialSchemaClaim],
+    claim_schemas: &[ClaimSchema],
     credential_schema: CredentialSchema,
-    claims: Vec<(serde_json::Value, ClaimSchema)>,
-    issuer_did: &DidValue,
-    holder_did: &DidValue,
+    claims: Vec<(CredentialClaim, ClaimSchema)>,
+    issuer_details: IdentifierDetails,
+    holder_details: IdentifierDetails,
     mdoc_mso: Option<MobileSecurityObject>,
     verification_protocol: &str,
+    profile: &Option<String>,
+    issuance_date: Option<OffsetDateTime>,
 ) -> Result<ProvedCredential, OpenID4VCError> {
     let now = OffsetDateTime::now_utc();
     let credential_id = Uuid::new_v4().into();
@@ -480,7 +492,7 @@ pub(crate) fn extracted_credential_to_model(
             value_to_model_claims(
                 credential_id,
                 claim_schemas,
-                &value,
+                value,
                 now,
                 &claim_schema,
                 &claim_schema.key,
@@ -499,185 +511,399 @@ pub(crate) fn extracted_credential_to_model(
         credential: Credential {
             id: credential_id,
             created_date: now,
-            issuance_date: now,
+            issuance_date,
             last_modified: now,
             deleted_at: None,
-            credential: vec![],
-            exchange: verification_protocol.to_string(),
+            protocol: verification_protocol.to_string(),
             state: CredentialStateEnum::Accepted,
             suspend_end_date: None,
+            profile: profile.clone(),
             claims: Some(model_claims.to_owned()),
             issuer_identifier: None,
+            issuer_certificate: None,
             holder_identifier: None,
             schema: Some(credential_schema),
             redirect_uri: None,
             key: None,
             role: CredentialRole::Verifier,
             interaction: None,
-            revocation_list: None,
+            credential_blob_id: None,
+            wallet_unit_attestation_blob_id: None,
+            wallet_instance_attestation_blob_id: None,
+            webhook_url: None,
         },
-        issuer_did_value: issuer_did.to_owned(),
-        holder_did_value: holder_did.to_owned(),
+        issuer_details,
+        holder_details,
         mdoc_mso,
     })
 }
 
-impl OpenID4VP20AuthorizationRequest {
-    pub async fn as_signed_jwt(
-        &self,
-        did: &DidValue,
-        auth_fn: AuthenticationFn,
-    ) -> Result<String, ServiceError> {
-        let unsigned_jwt = Jwt {
-            header: JWTHeader {
-                algorithm: auth_fn.jose_alg().ok_or(KeyAlgorithmError::Failed(
-                    "No JOSE alg specified".to_string(),
-                ))?,
-                key_id: auth_fn.get_key_id(),
-                r#type: Some("oauth-authz-req+jwt".to_string()),
-                jwk: None,
-                jwt: None,
-                x5c: None,
-            },
-            payload: JWTPayload {
-                issued_at: None,
-                expires_at: Some(OffsetDateTime::now_utc().add(Duration::hours(1))),
-                invalid_before: None,
-                issuer: Some(did.to_string()),
-                subject: None,
-                audience: None,
-                jwt_id: None,
-                proof_of_possession_key: None,
-                custom: self.clone(),
-            },
-        };
-        Ok(unsigned_jwt.tokenize(Some(auth_fn)).await?)
-    }
+pub(crate) fn format_to_type(
+    presented_credential: &FormattedCredentialPresentation,
+    config: &CoreConfig,
+) -> Result<FormatType, VerificationProtocolError> {
+    Ok(config
+        .format
+        .get_type(&presented_credential.credential_schema.format)
+        .error_while("getting format type")?)
 }
 
-pub(crate) fn map_credential_formats_to_presentation_format(
-    presented: &[PresentedCredential],
-) -> Result<(String, String), VerificationProtocolError> {
-    // MDOC credential(s) are sent as a MDOC presentation, using the MDOC formatter
-    if presented.len() == 1
-        && presented
-            .iter()
-            .all(|cred| cred.credential_schema.format == FormatType::Mdoc.to_string())
-    {
-        return Ok((FormatType::Mdoc.to_string(), "mso_mdoc".to_owned()));
+pub(crate) fn unencrypted_params(
+    submission_data: &VpSubmissionData,
+    state: Option<String>,
+) -> Result<HashMap<String, String>, VerificationProtocolError> {
+    let mut result = serde_json::to_value(submission_data)?;
+
+    if let Some(state) = state {
+        result
+            .as_object_mut()
+            .ok_or(VerificationProtocolError::Failed(
+                "unsupported submission data".to_string(),
+            ))?
+            .insert("state".to_string(), Value::String(state));
     }
 
-    // The SD_JWT presentations can contains only one credential
-    if presented.len() == 1
-        && presented.iter().all(|cred| {
-            cred.credential_schema.format == FormatType::SdJwt.to_string()
-                || cred.credential_schema.schema_type == CredentialSchemaType::SdJwtVc
+    let params = result
+        .as_object()
+        .ok_or(VerificationProtocolError::Failed(format!(
+            "unsupported submission data: {result}"
+        )))?
+        .into_iter()
+        .map(|(k, v)| {
+            let value = if let Some(string) = v.as_str() {
+                string.to_string()
+            } else {
+                serde_json::to_string(v)?
+            };
+            Ok((k.clone(), value))
         })
-    {
-        return Ok((FormatType::SdJwt.to_string(), "vc+sd-jwt".to_owned()));
-    }
-
-    if presented.iter().all(|cred| {
-        cred.credential_schema.format == FormatType::JsonLdClassic.to_string()
-            || cred.credential_schema.format == FormatType::JsonLdBbsPlus.to_string()
-    }) {
-        return Ok((FormatType::JsonLdClassic.to_string(), "ldp_vp".to_owned()));
-    }
-
-    // Fallback, handle all other formats via enveloped JWT
-    Ok((FormatType::Jwt.to_string(), "jwt_vp_json".to_owned()))
+        .collect::<Result<Vec<_>, VerificationProtocolError>>()?;
+    let map = HashMap::from_iter(params);
+    Ok(map)
 }
 
-pub(crate) async fn credential_from_proved(
-    proved_credential: ProvedCredential,
-    organisation: &Organisation,
-    did_repository: &dyn DidRepository,
-    identifier_repository: &dyn IdentifierRepository,
-    did_method_provider: &dyn DidMethodProvider,
-) -> Result<Credential, ServiceError> {
-    let (_, issuer_identifier) = get_or_create_did_and_identifier(
-        did_method_provider,
-        did_repository,
-        identifier_repository,
-        &Some(organisation.to_owned()),
-        &proved_credential.issuer_did_value,
-        DidRole::Issuer,
-    )
-    .await?;
-    let (_, holder_identifier) = get_or_create_did_and_identifier(
-        did_method_provider,
-        did_repository,
-        identifier_repository,
-        &Some(organisation.to_owned()),
-        &proved_credential.holder_did_value,
-        DidRole::Holder,
-    )
-    .await?;
-
-    Ok(Credential {
-        id: proved_credential.credential.id,
-        created_date: proved_credential.credential.created_date,
-        issuance_date: proved_credential.credential.issuance_date,
-        last_modified: proved_credential.credential.last_modified,
-        deleted_at: proved_credential.credential.deleted_at,
-        credential: proved_credential.credential.credential,
-        exchange: proved_credential.credential.exchange,
-        redirect_uri: proved_credential.credential.redirect_uri,
-        role: proved_credential.credential.role,
-        state: proved_credential.credential.state,
-        claims: convert_inner_of_inner(proved_credential.credential.claims),
-        issuer_identifier: Some(issuer_identifier),
-        holder_identifier: Some(holder_identifier),
-        schema: proved_credential
-            .credential
-            .schema
-            .map(|schema| from_provider_schema(schema, organisation.to_owned())),
-        interaction: None,
-        revocation_list: None,
-        key: proved_credential.credential.key,
-        suspend_end_date: convert_inner(proved_credential.credential.suspend_end_date),
-    })
-}
-
-fn from_provider_schema(schema: CredentialSchema, organisation: Organisation) -> CredentialSchema {
-    CredentialSchema {
-        id: schema.id,
-        deleted_at: schema.deleted_at,
-        created_date: schema.created_date,
-        last_modified: schema.last_modified,
-        name: schema.name,
-        external_schema: schema.external_schema,
-        format: schema.format,
-        revocation_method: schema.revocation_method,
-        wallet_storage_type: convert_inner(schema.wallet_storage_type),
-        layout_type: schema.layout_type,
-        layout_properties: convert_inner(schema.layout_properties),
-        imported_source_url: schema.imported_source_url,
-        schema_id: schema.schema_id,
-        schema_type: schema.schema_type,
-        claim_schemas: convert_inner_of_inner(schema.claim_schemas),
-        organisation: organisation.into(),
-        allow_suspension: schema.allow_suspension,
-    }
-}
-
-pub(super) mod unix_timestamp {
+pub(super) mod unix_timestamp_option {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use time::OffsetDateTime;
 
-    pub(crate) fn serialize<S>(datetime: &OffsetDateTime, serializer: S) -> Result<S::Ok, S::Error>
+    pub(crate) fn serialize<S>(
+        datetime: &Option<OffsetDateTime>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        datetime.unix_timestamp().serialize(serializer)
+        datetime
+            .map(|datetime| datetime.unix_timestamp())
+            .serialize(serializer)
     }
 
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<OffsetDateTime, D::Error>
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<OffsetDateTime>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let timestamp = i64::deserialize(deserializer)?;
-
-        OffsetDateTime::from_unix_timestamp(timestamp).map_err(serde::de::Error::custom)
+        let value = Option::<i64>::deserialize(deserializer)?;
+        Ok(value.and_then(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp).ok()))
     }
+}
+
+impl From<OpenID4VPDraftClientMetadata> for OpenID4VPClientMetadata {
+    fn from(value: OpenID4VPDraftClientMetadata) -> Self {
+        Self::Draft(value)
+    }
+}
+
+impl From<ClientMetadata> for OpenID4VPClientMetadata {
+    fn from(value: ClientMetadata) -> Self {
+        Self::Final1_0(value)
+    }
+}
+
+pub(crate) async fn format_authorization_request_client_id_scheme_x509<T: Serialize>(
+    proof: &Proof,
+    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
+    key_provider: &dyn KeyProvider,
+    authorization_request: T,
+) -> Result<String, VerificationProtocolError> {
+    let JWTSigner {
+        auth_fn,
+        jose_algorithm,
+        ..
+    } = get_jwt_signer(proof, key_algorithm_provider, key_provider)?;
+
+    let verifier_identifier =
+        proof
+            .verifier_identifier
+            .as_ref()
+            .ok_or(VerificationProtocolError::Failed(
+                "verifier_identifier is None".to_string(),
+            ))?;
+
+    let x5c =
+        match verifier_identifier.r#type {
+            IdentifierType::Certificate => {
+                let verifier_certificate = proof.verifier_certificate.as_ref().ok_or(
+                    VerificationProtocolError::Failed("verifier_certificate is None".to_string()),
+                )?;
+
+                pem_chain_into_x5c(&verifier_certificate.chain).error_while("parsing PEM chain")?
+            }
+            IdentifierType::Did | IdentifierType::Key | IdentifierType::CertificateAuthority => {
+                return Err(VerificationProtocolError::Failed(format!(
+                    "Invalid verifier identifier type {}",
+                    verifier_identifier.r#type
+                )));
+            }
+        };
+
+    let expires_at = Some(OffsetDateTime::now_utc().add(Duration::hours(1)));
+
+    let request_jwt = Jwt {
+        header: JWTHeader {
+            algorithm: jose_algorithm,
+            key_id: None,
+            r#type: Some("oauth-authz-req+jwt".to_string()),
+            jwk: None,
+            jwt: None,
+            key_attestation: None,
+            x5c: Some(x5c),
+        },
+        payload: JWTPayload {
+            issued_at: None,
+            expires_at,
+            invalid_before: None,
+            issuer: None,
+            subject: None,
+            // https://openid.net/specs/openid-4-verifiable-presentations-1_0-ID2.html#name-aud-of-a-request-object
+            audience: Some(vec!["https://self-issued.me/v2".to_string()]),
+            jwt_id: None,
+            proof_of_possession_key: None,
+            custom: authorization_request,
+        },
+    };
+
+    Ok(request_jwt
+        .tokenize(Some(&*auth_fn))
+        .await
+        .error_while("creating request JWT")?)
+}
+
+/*
+ * TODO(ONE-3846): this needs to be issued and obtained from external authority,
+ *     holder needs to know the authority and should check if it's signed by it
+ */
+pub(crate) async fn format_authorization_request_client_id_scheme_verifier_attestation<
+    T: Serialize,
+>(
+    proof: &Proof,
+    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
+    key_provider: &dyn KeyProvider,
+    client_id_without_prefix: String,
+    response_uri: String,
+    authorization_request: T,
+) -> Result<String, VerificationProtocolError> {
+    let JWTSigner {
+        auth_fn,
+        verifier_key,
+        key_algorithm,
+        jose_algorithm,
+    } = get_jwt_signer(proof, key_algorithm_provider, key_provider)?;
+
+    let jwk = key_algorithm
+        .reconstruct_key(&verifier_key.public_key, None, None)
+        .error_while("reconstructing key")?
+        .public_key_as_jwk()
+        .error_while("getting JWK")?;
+    let proof_of_possession_key = Some(ProofOfPossessionKey {
+        key_id: None,
+        jwk: ProofOfPossessionJwk::Jwk { jwk },
+    });
+
+    let verifier_did = proof
+        .verifier_identifier
+        .as_ref()
+        .ok_or(VerificationProtocolError::Failed(
+            "verifier_identifier is None".to_string(),
+        ))?
+        .did
+        .as_ref()
+        .ok_or(VerificationProtocolError::Failed(
+            "verifier_did is None".to_string(),
+        ))?;
+
+    let key = verifier_did
+        .find_key(&verifier_key.id, &Default::default())
+        .error_while("finding related key")?;
+
+    let key_id = verifier_did.verification_method_id(key);
+
+    let expires_at = Some(OffsetDateTime::now_utc().add(Duration::hours(1)));
+
+    let custom = OpenID4VCVerifierAttestationPayload {
+        redirect_uris: vec![response_uri],
+    };
+
+    let attestation_jwt = Jwt {
+        header: JWTHeader {
+            algorithm: jose_algorithm.to_owned(),
+            key_id: Some(key_id),
+            r#type: Some("verifier-attestation+jwt".to_string()),
+            jwk: None,
+            jwt: None,
+            key_attestation: None,
+            x5c: None,
+        },
+        payload: JWTPayload {
+            expires_at,
+            issuer: Some(verifier_did.did.to_string()),
+
+            // ... the original Client Identifier (the part without the verifier_attestation: prefix) MUST equal the sub claim value in the Verifier attestation JWT
+            // <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.9.3-3.4.1>
+            subject: Some(client_id_without_prefix.clone()),
+            custom,
+            proof_of_possession_key,
+            ..Default::default()
+        },
+    }
+    .tokenize(Some(&*auth_fn))
+    .await
+    .error_while("creating attestation JWT")?;
+
+    let auth_fn = key_provider
+        .get_signature_provider(verifier_key, None, key_algorithm_provider.clone())
+        .error_while("getting signature provider")?;
+
+    let request_jwt = Jwt {
+        header: JWTHeader {
+            algorithm: jose_algorithm,
+            key_id: None,
+            r#type: Some("oauth-authz-req+jwt".to_string()),
+            jwk: None,
+            jwt: Some(attestation_jwt),
+            key_attestation: None,
+            x5c: None,
+        },
+        payload: JWTPayload {
+            issued_at: None,
+            expires_at,
+            invalid_before: None,
+            issuer: Some(verifier_did.did.to_string()),
+            subject: Some(client_id_without_prefix),
+            audience: Some(vec!["https://self-issued.me/v2".to_string()]),
+            jwt_id: None,
+            proof_of_possession_key: None,
+            custom: authorization_request,
+        },
+    };
+
+    Ok(request_jwt
+        .tokenize(Some(&*auth_fn))
+        .await
+        .error_while("creating request JWT")?)
+}
+
+pub(crate) async fn format_authorization_request_client_id_scheme_did<T: Serialize>(
+    proof: &Proof,
+    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
+    key_provider: &dyn KeyProvider,
+    authorization_request: T,
+) -> Result<String, VerificationProtocolError> {
+    let JWTSigner {
+        auth_fn,
+        jose_algorithm,
+        verifier_key,
+        ..
+    } = get_jwt_signer(proof, key_algorithm_provider, key_provider)?;
+
+    let verifier_did = proof
+        .verifier_identifier
+        .as_ref()
+        .ok_or(VerificationProtocolError::Failed(
+            "verifier_identifier is None".to_string(),
+        ))?
+        .did
+        .as_ref()
+        .ok_or(VerificationProtocolError::Failed(
+            "verifier_did is None".to_string(),
+        ))?;
+
+    let key = verifier_did
+        .find_key(&verifier_key.id, &Default::default())
+        .error_while("finding related key")?;
+
+    let key_id = verifier_did.verification_method_id(key);
+
+    let expires_at = Some(OffsetDateTime::now_utc().add(Duration::hours(1)));
+
+    let request_jwt = Jwt {
+        header: JWTHeader {
+            algorithm: jose_algorithm,
+            key_id: Some(key_id),
+            r#type: Some("oauth-authz-req+jwt".to_string()),
+            jwk: None,
+            jwt: None,
+            key_attestation: None,
+            x5c: None,
+        },
+        payload: JWTPayload {
+            issued_at: None,
+            expires_at,
+            invalid_before: None,
+            issuer: Some(verifier_did.did.to_string()),
+            subject: None,
+            audience: Some(vec!["https://self-issued.me/v2".to_string()]),
+            jwt_id: None,
+            proof_of_possession_key: None,
+            custom: authorization_request,
+        },
+    };
+
+    Ok(request_jwt
+        .tokenize(Some(&*auth_fn))
+        .await
+        .error_while("creating request JWT")?)
+}
+
+pub(crate) async fn format_authorization_request_client_id_scheme_redirect_uri<T: Serialize>(
+    authorization_request: T,
+) -> Result<String, VerificationProtocolError> {
+    let unsigned_jwt = Jwt {
+        header: JWTHeader {
+            algorithm: "none".to_string(),
+            key_id: None,
+            r#type: Some("oauth-authz-req+jwt".to_string()),
+            jwk: None,
+            jwt: None,
+            key_attestation: None,
+            x5c: None,
+        },
+        payload: JWTPayload {
+            issued_at: None,
+            expires_at: None,
+            invalid_before: None,
+            issuer: None,
+            subject: None,
+            audience: Some(vec!["https://self-issued.me/v2".to_string()]),
+            jwt_id: None,
+            proof_of_possession_key: None,
+            custom: authorization_request,
+        },
+    };
+
+    Ok(unsigned_jwt
+        .tokenize(None)
+        .await
+        .error_while("creating request JWT")?)
+}
+
+pub(crate) fn generate_client_metadata_draft(
+    proof: &Proof,
+    key_algorithm_provider: &dyn KeyAlgorithmProvider,
+    config: &CoreConfig,
+) -> Result<OpenID4VPDraftClientMetadata, VerificationProtocolError> {
+    let vp_formats = create_open_id_for_vp_formats();
+    let jwk = get_encryption_key_jwk_from_proof(proof, key_algorithm_provider, config)
+        .error_while("getting encryption key")?;
+
+    Ok(create_open_id_for_vp_client_metadata_draft(jwk, vp_formats))
 }

@@ -1,6 +1,8 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use secrecy::SecretString;
+use similar_asserts::assert_eq;
 use tempfile::NamedTempFile;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -10,16 +12,14 @@ use crate::model::backup::{Metadata, UnexportableEntities};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaClaim, CredentialSchemaType, LayoutType,
-    WalletStorageTypeEnum,
-};
-use crate::model::history::{HistoryAction, HistoryEntityType};
+use crate::model::credential_schema::{CredentialSchema, KeyStorageSecurity, LayoutType};
+use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
+use crate::model::organisation::{GetOrganisationList, OrganisationListQuery};
 use crate::repository::backup_repository::MockBackupRepository;
 use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::service::test_utilities::{
-    dummy_did, dummy_identifier, dummy_key, dummy_organisation, generic_config,
+    dummy_did, dummy_identifier, dummy_key, dummy_organisation, generic_config, get_dummy_date,
 };
 
 #[derive(Default)]
@@ -45,22 +45,23 @@ fn dummy_unexportable_entities() -> UnexportableEntities {
         credentials: vec![Credential {
             id: Uuid::new_v4().into(),
             created_date: OffsetDateTime::now_utc(),
-            issuance_date: OffsetDateTime::now_utc(),
+            issuance_date: None,
             last_modified: OffsetDateTime::now_utc(),
             deleted_at: None,
-            credential: vec![],
-            exchange: "foo".into(),
+            protocol: "foo".into(),
             redirect_uri: None,
             role: CredentialRole::Holder,
             state: CredentialStateEnum::Created,
             suspend_end_date: None,
+            profile: None,
             claims: Some(vec![Claim {
-                id: Uuid::new_v4(),
+                id: Uuid::new_v4().into(),
                 credential_id: Uuid::new_v4().into(),
                 created_date: OffsetDateTime::now_utc(),
                 last_modified: OffsetDateTime::now_utc(),
-                value: "value".into(),
+                value: Some("value".to_string()),
                 path: "key".into(),
+                selectively_disclosable: false,
                 schema: Some(ClaimSchema {
                     id: claim_schema_id,
                     key: "key".into(),
@@ -68,9 +69,12 @@ fn dummy_unexportable_entities() -> UnexportableEntities {
                     created_date: OffsetDateTime::now_utc(),
                     last_modified: OffsetDateTime::now_utc(),
                     array: false,
+                    metadata: false,
+                    required: false,
                 }),
             }]),
             issuer_identifier: None,
+            issuer_certificate: None,
             holder_identifier: None,
             schema: Some(CredentialSchema {
                 id: Uuid::new_v4().into(),
@@ -78,40 +82,56 @@ fn dummy_unexportable_entities() -> UnexportableEntities {
                 imported_source_url: "CORE_URL".to_string(),
                 created_date: OffsetDateTime::now_utc(),
                 last_modified: OffsetDateTime::now_utc(),
-                wallet_storage_type: Some(WalletStorageTypeEnum::Software),
+                key_storage_security: Some(KeyStorageSecurity::Basic),
                 name: "name".into(),
-                external_schema: false,
                 format: "format".into(),
-                revocation_method: "revocation_method".into(),
-                claim_schemas: Some(vec![CredentialSchemaClaim {
-                    schema: ClaimSchema {
-                        id: claim_schema_id,
-                        key: "key".into(),
-                        data_type: "STRING".into(),
-                        created_date: OffsetDateTime::now_utc(),
-                        last_modified: OffsetDateTime::now_utc(),
-                        array: false,
-                    },
+                revocation_method: Some("revocation_method".into()),
+                claim_schemas: Some(vec![ClaimSchema {
+                    id: claim_schema_id,
+                    key: "key".into(),
+                    data_type: "STRING".into(),
+                    created_date: OffsetDateTime::now_utc(),
+                    last_modified: OffsetDateTime::now_utc(),
+                    array: false,
+                    metadata: false,
                     required: false,
                 }]),
                 organisation: Some(dummy_organisation(None)),
                 layout_type: LayoutType::Card,
                 layout_properties: None,
-                schema_type: CredentialSchemaType::ProcivisOneSchema2024,
                 schema_id: "CredentialSchemaId".to_owned(),
                 allow_suspension: true,
+                requires_wallet_instance_attestation: false,
+                transaction_code: None,
             }),
             interaction: None,
-            revocation_list: None,
             key: None,
+            credential_blob_id: None,
+            wallet_unit_attestation_blob_id: None,
+            wallet_instance_attestation_blob_id: None,
+            webhook_url: None,
         }],
         keys: vec![dummy_key()],
         dids: vec![dummy_did()],
         identifiers: vec![dummy_identifier()],
+        histories: vec![History {
+            id: Uuid::new_v4().into(),
+            created_date: get_dummy_date(),
+            action: HistoryAction::Accepted,
+            name: "test".to_string(),
+            source: HistorySource::Core,
+            target: None,
+            entity_id: Some(Uuid::new_v4().into()),
+            entity_type: HistoryEntityType::WalletUnit,
+            metadata: None,
+            organisation_id: None,
+            user: None,
+        }],
         total_credentials: 5,
         total_keys: 5,
         total_dids: 5,
         total_identifiers: 5,
+        total_histories: 1,
     }
 }
 
@@ -140,7 +160,13 @@ async fn test_finalize_import() {
         .once()
         .return_once({
             let organisation = organisation.clone();
-            || Ok(vec![organisation])
+            |_: OrganisationListQuery| {
+                Ok(GetOrganisationList {
+                    values: vec![organisation],
+                    total_items: 1,
+                    total_pages: 1,
+                })
+            }
         });
 
     repositories
@@ -151,7 +177,7 @@ async fn test_finalize_import() {
             assert_eq!(event.action, HistoryAction::Restored);
             assert_eq!(event.entity_id, None);
             assert_eq!(event.entity_type, HistoryEntityType::Backup);
-            assert_eq!(event.organisation_id, organisation.id);
+            assert_eq!(event.organisation_id, Some(organisation.id));
             Ok(Uuid::new_v4().into())
         });
 
@@ -195,7 +221,13 @@ async fn test_backup_flow() {
         .once()
         .return_once({
             let organisation = organisation.clone();
-            || Ok(vec![organisation])
+            |_: OrganisationListQuery| {
+                Ok(GetOrganisationList {
+                    values: vec![organisation],
+                    total_items: 1,
+                    total_pages: 1,
+                })
+            }
         });
 
     repositories
@@ -212,7 +244,7 @@ async fn test_backup_flow() {
             assert_eq!(event.action, HistoryAction::Created);
             assert_eq!(event.entity_id, None);
             assert_eq!(event.entity_type, HistoryEntityType::Backup);
-            assert_eq!(event.organisation_id, organisation.id);
+            assert_eq!(event.organisation_id, Some(organisation.id));
             Ok(history_id)
         });
 
@@ -231,10 +263,12 @@ async fn test_backup_flow() {
 
     assert_eq!(unexportable.history_id, history_id);
 
-    let metadata = service
-        .unpack_backup(SecretString::from("foo"), zip_path, db_path)
-        .await
-        .unwrap();
+    let metadata = BackupService::unpack_backup(
+        SecretString::from("foo"),
+        PathBuf::from(zip_path),
+        PathBuf::from(db_path),
+    )
+    .unwrap();
 
     assert_eq!(metadata.db_version, "10");
     assert_eq!(std::io::read_to_string(db).unwrap(), "content");

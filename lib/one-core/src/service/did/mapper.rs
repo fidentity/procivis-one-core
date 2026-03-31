@@ -3,28 +3,27 @@ use std::collections::HashMap;
 use one_dto_mapper::convert_inner;
 use shared_types::{DidId, DidValue, KeyId};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use super::dto::{
     CreateDidRequestDTO, DidListItemResponseDTO, DidResponseDTO, DidResponseKeysDTO,
     GetDidListResponseDTO,
 };
+use super::error::DidServiceError;
 use crate::model::did::{Did, DidType, GetDidList, KeyRole, RelatedKey, UpdateDidRequest};
-use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
+use crate::model::key::Key;
 use crate::model::organisation::Organisation;
 use crate::provider::did_method::dto::{DidDocumentDTO, DidVerificationMethodDTO};
 use crate::provider::did_method::{DidCreated, DidKeys, DidUpdate};
-use crate::service::error::ServiceError;
-use crate::service::key::dto::{KeyListItemResponseDTO, PublicKeyJwkDTO};
+use crate::service::key::dto::KeyListItemResponseDTO;
 
 impl TryFrom<Did> for DidResponseDTO {
-    type Error = ServiceError;
+    type Error = DidServiceError;
     fn try_from(value: Did) -> Result<Self, Self::Error> {
         let organisation_id = value.organisation.map(|value| value.id);
 
         let keys = value
             .keys
-            .ok_or(ServiceError::MappingError("keys is None".to_string()))?;
+            .ok_or(DidServiceError::MappingError("keys is None".to_string()))?;
         let filter_keys = |role: KeyRole| -> Vec<KeyListItemResponseDTO> {
             keys.iter()
                 .filter(|key| key.role == role)
@@ -63,22 +62,28 @@ impl From<GetDidList> for GetDidListResponseDTO {
     }
 }
 
-pub(super) fn did_from_did_request(
+pub(crate) fn did_from_did_request(
     did_id: DidId,
     request: CreateDidRequestDTO,
     organisation: Organisation,
     did_create: DidCreated,
     found_keys: DidKeys,
     now: OffsetDateTime,
-) -> Did {
+    key_reference_mapping: HashMap<KeyId, String>,
+) -> Result<Did, DidServiceError> {
+    struct KeyEntry {
+        role: KeyRole,
+        key: Key,
+    }
+
     let update_keys = found_keys.update_keys.into_iter().flat_map(|keys| {
-        keys.into_iter().map(|key| RelatedKey {
+        keys.into_iter().map(|key| KeyEntry {
             role: KeyRole::UpdateKey,
             key,
         })
     });
 
-    let keys = [
+    let keys: Vec<_> = [
         (KeyRole::Authentication, found_keys.authentication),
         (KeyRole::AssertionMethod, found_keys.assertion_method),
         (KeyRole::KeyAgreement, found_keys.key_agreement),
@@ -93,7 +98,7 @@ pub(super) fn did_from_did_request(
     ]
     .into_iter()
     .flat_map(|(role, keys)| {
-        keys.into_iter().map(move |key| RelatedKey {
+        keys.into_iter().map(move |key| KeyEntry {
             role: role.clone(),
             key,
         })
@@ -101,7 +106,23 @@ pub(super) fn did_from_did_request(
     .chain(update_keys)
     .collect();
 
-    Did {
+    let keys = keys
+        .into_iter()
+        .map(|KeyEntry { role, key }| {
+            Ok::<_, DidServiceError>(RelatedKey {
+                role,
+                reference: key_reference_mapping
+                    .get(&key.id)
+                    .ok_or(DidServiceError::MappingError(
+                        "key reference not found".to_string(),
+                    ))?
+                    .to_owned(),
+                key,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    Ok(Did {
         id: did_id,
         created_date: now,
         last_modified: now,
@@ -113,31 +134,14 @@ pub(super) fn did_from_did_request(
         keys: Some(keys),
         deactivated: false,
         log: did_create.log,
-    }
-}
-
-pub(super) fn identifier_from_did(did: Did, now: OffsetDateTime) -> Identifier {
-    Identifier {
-        did: Some(did.to_owned()),
-        id: Uuid::new_v4().into(),
-        created_date: now,
-        last_modified: now,
-        name: did.name,
-        organisation: did.organisation,
-        r#type: IdentifierType::Did,
-        is_remote: false,
-        state: IdentifierState::Active,
-        deleted_at: None,
-        key: None,
-        certificates: None,
-    }
+    })
 }
 
 pub(super) fn map_did_model_to_did_web_response(
     did: &Did,
     keys: &[RelatedKey],
     grouped_key: &HashMap<KeyId, DidVerificationMethodDTO>,
-) -> Result<DidDocumentDTO, ServiceError> {
+) -> Result<DidDocumentDTO, DidServiceError> {
     Ok(DidDocumentDTO {
         context: serde_json::json!([
             "https://www.w3.org/ns/did/v1",
@@ -169,30 +173,17 @@ pub(super) fn get_key_id_by_role(
     role: KeyRole,
     keys: &[RelatedKey],
     group: &HashMap<KeyId, DidVerificationMethodDTO>,
-) -> Result<Vec<String>, ServiceError> {
+) -> Result<Vec<String>, DidServiceError> {
     keys.iter()
         .filter(|key| key.role == role)
         .map(|key| {
             Ok(group
                 .get(&key.key.id)
-                .ok_or(ServiceError::MappingError("Missing key".to_string()))?
+                .ok_or(DidServiceError::MappingError("Missing key".to_string()))?
                 .id
                 .to_string())
         })
         .collect::<Result<Vec<_>, _>>()
-}
-
-pub(super) fn map_key_to_verification_method(
-    did_value: &DidValue,
-    public_key_id: &KeyId,
-    public_key_jwk: PublicKeyJwkDTO,
-) -> Result<DidVerificationMethodDTO, ServiceError> {
-    Ok(DidVerificationMethodDTO {
-        id: format!("{}#key-{}", did_value, public_key_id),
-        r#type: "JsonWebKey2020".to_string(),
-        controller: did_value.to_string(),
-        public_key_jwk,
-    })
 }
 
 impl From<DidListItemResponseDTO> for DidValue {
@@ -201,9 +192,9 @@ impl From<DidListItemResponseDTO> for DidValue {
     }
 }
 
-pub(super) fn map_did_to_did_keys(did: &Did) -> Result<DidKeys, ServiceError> {
+pub(super) fn map_did_to_did_keys(did: &Did) -> Result<DidKeys, DidServiceError> {
     let Some(ref related_keys) = did.keys else {
-        return Err(ServiceError::MappingError("Missing keys".to_string()));
+        return Err(DidServiceError::MappingError("Missing keys".to_string()));
     };
     let mut did_keys = DidKeys::default();
     for related_key in related_keys {

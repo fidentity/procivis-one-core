@@ -1,3 +1,5 @@
+use similar_asserts::assert_eq;
+
 use crate::utils::context::TestContext;
 
 #[tokio::test]
@@ -7,7 +9,7 @@ async fn test_resolve_json_ld_context() {
     let resp = context
         .api
         .jsonld
-        .resolve("https://www.w3.org/2018/credentials/v1")
+        .resolve("https://www.w3.org/ns/credentials/v2") // preloaded in cache, so no network request needed
         .await;
     assert_eq!(resp.status(), 200);
 

@@ -8,12 +8,13 @@ use serde::Deserialize;
 use shared_types::{DidId, DidValue};
 
 use super::{DidCreated, DidKeys, DidUpdate};
+use crate::model::key::Key;
+use crate::proto::http_client::HttpClient;
 use crate::provider::did_method::DidMethod;
 use crate::provider::did_method::dto::DidDocumentDTO;
 use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::keys::Keys;
 use crate::provider::did_method::model::{AmountOfKeys, DidCapabilities, DidDocument, Operation};
-use crate::provider::http_client::HttpClient;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +22,8 @@ struct ResolutionResponse {
     did_document: DidDocumentDTO,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Params {
     pub resolver_url: String,
     pub supported_method_names: Vec<String>,
@@ -46,7 +48,7 @@ impl DidMethod for UniversalDidMethod {
         _params: &Option<serde_json::Value>,
         _keys: Option<DidKeys>,
     ) -> Result<DidCreated, DidMethodError> {
-        Err(DidMethodError::NotSupported)
+        Err(DidMethodError::OperationNotSupported)
     }
 
     async fn resolve(&self, did_value: &DidValue) -> Result<DidDocument, DidMethodError> {
@@ -77,11 +79,7 @@ impl DidMethod for UniversalDidMethod {
         _keys: DidKeys,
         _log: Option<String>,
     ) -> Result<DidUpdate, DidMethodError> {
-        Err(DidMethodError::NotSupported)
-    }
-
-    fn can_be_deactivated(&self) -> bool {
-        false
+        Err(DidMethodError::OperationNotSupported)
     }
 
     fn get_capabilities(&self) -> DidCapabilities {
@@ -100,6 +98,10 @@ impl DidMethod for UniversalDidMethod {
 
     fn get_keys(&self) -> Option<Keys> {
         None
+    }
+
+    fn get_reference_for_key(&self, _key: &Key) -> Result<String, DidMethodError> {
+        unimplemented!()
     }
 }
 

@@ -14,10 +14,16 @@ import java.security.MessageDigest
 import java.security.PrivateKey
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
-import java.util.Arrays
 
+/**
+ * Default implementation of native secure element
+ */
 class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage {
     override suspend fun generateKey(keyAlias: String): GeneratedKeyBindingDto {
+        return generateKeyInner(keyAlias, null)
+    }
+
+    private suspend fun generateKeyInner(keyAlias: String, nonce: String?): GeneratedKeyBindingDto {
         try {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
                 throw NativeKeyStorageException.KeyGenerationFailure("Insufficient SDK version `${Build.VERSION.SDK_INT}`");
@@ -41,8 +47,11 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                 .setDigests(KeyProperties.DIGEST_SHA256)
 
-            var strongbox = strongBoxSupported()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && strongbox) {
+            if (nonce != null) {
+                builder.setAttestationChallenge(nonce.toByteArray(Charsets.UTF_8))
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && strongBoxSupported()) {
                 builder.setIsStrongBoxBacked(true)
                     .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
             }
@@ -51,9 +60,8 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
             val pair = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 try {
                     keyPairGenerator.generateKeyPair()
-                } catch (e: StrongBoxUnavailableException) {
+                } catch (_: StrongBoxUnavailableException) {
                     builder.setIsStrongBoxBacked(false).setDigests(KeyProperties.DIGEST_SHA256)
-                    strongbox = false
                     keyPairGenerator.initialize(builder.build())
                     keyPairGenerator.generateKeyPair()
                 }
@@ -61,14 +69,9 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
                 keyPairGenerator.generateKeyPair()
             }
 
-            // on Samsung S20 (with Strongbox support) the keyInfo reports the generated key as Software security level
-            // we will assume the generated key is HW secured in this case, since the generation did not produce the `StrongBoxUnavailableException`
-            if (!strongbox) {
-                val keyInfo = keyInfo(pair.private)
-
-                if (!keyInfo.isInsideSecureHardware) {
-                    throw NativeKeyStorageException.Unsupported();
-                }
+            val keyInfo = keyInfo(pair.private)
+            if (!keyInfo.isInsideSecureHardware) {
+                throw NativeKeyStorageException.Unsupported()
             }
 
             // convert to compressed form
@@ -85,6 +88,13 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
         } catch (e: Throwable) {
             throw NativeKeyStorageException.KeyGenerationFailure(e.toString());
         }
+    }
+
+    override suspend fun generateAttestationKey(
+        keyAlias: String,
+        nonce: String?
+    ): GeneratedKeyBindingDto {
+        return generateKeyInner(keyAlias, nonce)
     }
 
     override suspend fun sign(keyReference: ByteArray, message: ByteArray): ByteArray {
@@ -123,6 +133,31 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
         }
     }
 
+    override suspend fun generateAttestation(
+        keyReference: ByteArray,
+        nonce: String?
+    ): List<String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            throw NativeKeyStorageException.KeyGenerationFailure("Insufficient SDK version `${Build.VERSION.SDK_INT}`");
+        }
+
+        val keyAlias = keyReference.toString(Charsets.UTF_8)
+
+        val keyStore = this.getAndroidKeyStore()
+        val certificateChain = keyStore.getCertificateChain(keyAlias)
+
+        return certificateChain
+            ?.map { android.util.Base64.encodeToString(it.encoded, android.util.Base64.NO_WRAP) }
+            ?: throw NativeKeyStorageException.Unknown("No certificate chain found for key alias `${keyAlias}`")
+    }
+
+    override suspend fun signWithAttestationKey(
+        keyReference: ByteArray,
+        message: ByteArray
+    ): ByteArray {
+        return sign(keyReference, message)
+    }
+
     private fun strongBoxSupported(): Boolean {
         var strongbox = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -150,7 +185,7 @@ class AndroidKeyStoreKeyStorage(private val context: Context) : NativeKeyStorage
     private fun toRawBytes(value: ByteArray): ByteArray {
         val combined = ByteArray(value.size + 32)
         System.arraycopy(value, 0, combined, 32, value.size)
-        return Arrays.copyOfRange(combined, combined.size - 32, combined.size)
+        return combined.copyOfRange(combined.size - 32, combined.size)
     }
 
     private fun extractSignatureBytes(signature: ByteArray): ByteArray {

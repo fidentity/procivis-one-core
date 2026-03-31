@@ -1,9 +1,5 @@
 use std::sync::Arc;
 
-use shared_types::DidValue;
-use time::OffsetDateTime;
-use uuid::Uuid;
-
 use super::VCAPIService;
 use super::dto::{
     CredentialIssueOptions, CredentialIssueRequest, CredentialIssueResponse,
@@ -11,46 +7,51 @@ use super::dto::{
     PresentationVerifyResponse,
 };
 use super::validation::{validate_verifiable_credential, validate_verifiable_presentation};
-use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use crate::config::core_config::VerificationProtocolType;
+use crate::error::ContextWithErrorCode;
 use crate::model::did::{DidRelations, KeyRole};
 use crate::model::key::KeyRelations;
-use crate::model::revocation_list::{RevocationListPurpose, StatusListType};
-use crate::provider::credential_formatter::json_ld::context::caching_loader::ContextCache;
-use crate::provider::credential_formatter::json_ld::model::LdCredential;
-use crate::provider::credential_formatter::model::{CredentialData, ExtractPresentationCtx};
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::key_verification::KeyVerification;
+use crate::provider::caching_loader::json_ld_context::ContextCache;
+use crate::provider::credential_formatter::model::CredentialData;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
-use crate::provider::revocation::bitstring_status_list;
+use crate::provider::presentation_formatter::model::ExtractPresentationCtx;
+use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
 use crate::repository::did_repository::DidRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::revocation_list_repository::RevocationListRepository;
 use crate::service::error::{MissingProviderError, ServiceError};
-use crate::util::key_verification::KeyVerification;
-use crate::util::revocation_update::get_or_create_revocation_list_id;
+use crate::service::vc_api::model::LdCredential;
 
 impl VCAPIService {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        credential_formatter: Arc<dyn CredentialFormatterProvider>,
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
+        presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
         key_provider: Arc<dyn KeyProvider>,
         did_repository: Arc<dyn DidRepository>,
         identifier_repository: Arc<dyn IdentifierRepository>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         revocation_list_repository: Arc<dyn RevocationListRepository>,
+        certificate_validator: Arc<dyn CertificateValidator>,
         json_ld_ctx_cache: ContextCache,
         base_url: Option<String>,
     ) -> Self {
         Self {
-            credential_formatter,
+            credential_formatter_provider,
+            presentation_formatter_provider,
             key_provider,
             did_repository,
             identifier_repository,
             did_method_provider,
             key_algorithm_provider,
             revocation_list_repository,
+            certificate_validator,
             jsonld_ctx_cache: json_ld_ctx_cache,
             base_url,
         }
@@ -62,16 +63,16 @@ impl VCAPIService {
     ) -> Result<CredentialIssueResponse, ServiceError> {
         let CredentialIssueOptions {
             credential_format,
-            revocation_method,
+            // revocation_method,
             ..
         } = create_request.options;
-        let mut vcdm = create_request.credential;
+        let vcdm = create_request.credential;
         validate_verifiable_credential(&vcdm, &self.jsonld_ctx_cache).await?;
 
         let issuer_did_value = vcdm
             .issuer
             .to_did_value()
-            .map_err(ServiceError::FormatterError)?;
+            .error_while("parsing issuer did")?;
         let issuer_did = self
             .did_repository
             .get_did_by_value(
@@ -82,12 +83,14 @@ impl VCAPIService {
                     organisation: None,
                 },
             )
-            .await?
+            .await
+            .error_while("getting did")?
             .ok_or(ServiceError::Other("Issuer DID not found".to_string()))?;
-        let issuer_identifier = self
+        let _issuer_identifier = self
             .identifier_repository
             .get_from_did_id(issuer_did.id, &Default::default())
-            .await?
+            .await
+            .error_while("getting identifier")?
             .ok_or(ServiceError::Other(
                 "Issuer DID identifier not found".to_string(),
             ))?;
@@ -104,7 +107,8 @@ impl VCAPIService {
         let assertion_methods = self
             .did_method_provider
             .resolve(&issuer_did_value)
-            .await?
+            .await
+            .error_while("resolving DID")?
             .assertion_method
             .ok_or(ServiceError::MappingError(
                 "Missing assertion_method".to_owned(),
@@ -114,20 +118,28 @@ impl VCAPIService {
             "Could not find key in assertion method".to_string(),
         ))?;
 
-        let auth_fn = self.key_provider.get_signature_provider(
-            &key.key,
-            Some(key_id.to_owned()),
-            self.key_algorithm_provider.clone(),
-        )?;
+        let auth_fn = self
+            .key_provider
+            .get_signature_provider(
+                &key.key,
+                Some(key_id.to_owned()),
+                self.key_algorithm_provider.clone(),
+            )
+            .error_while("getting key provider")?;
 
-        let credential_format = credential_format.as_deref().unwrap_or("JSON_LD_CLASSIC");
+        let credential_format = credential_format
+            .as_deref()
+            .unwrap_or("JSON_LD_CLASSIC")
+            .into();
 
         let formatter = self
-            .credential_formatter
-            .get_formatter(credential_format)
+            .credential_formatter_provider
+            .get_credential_formatter(&credential_format)
             .ok_or(ServiceError::MissingProvider(
                 MissingProviderError::Formatter(credential_format.to_string()),
             ))?;
+
+        /* TODO: revocation disabled during refactoring
 
         if revocation_method.is_some() {
             let credential_status = &mut vcdm.credential_status;
@@ -135,31 +147,32 @@ impl VCAPIService {
                 &[Credential {
                     id: Uuid::new_v4().into(),
                     created_date: OffsetDateTime::now_utc(),
-                    issuance_date: OffsetDateTime::now_utc(),
+                    issuance_date: None,
                     last_modified: OffsetDateTime::now_utc(),
                     deleted_at: None,
-                    credential: vec![],
-                    exchange: "OPENID4VCI_DRAFT13".to_owned(),
+                    protocol: "OPENID4VCI_DRAFT13".to_owned(),
                     redirect_uri: None,
                     role: CredentialRole::Issuer,
                     state: CredentialStateEnum::Offered,
                     suspend_end_date: None,
+                    profile: None,
                     claims: None,
-                    issuer_identifier: Some(issuer_identifier),
+                    issuer_identifier: Some(issuer_identifier.clone()),
+                    issuer_certificate: None,
                     holder_identifier: None,
                     schema: None,
                     key: None,
                     interaction: None,
-                    revocation_list: None,
+                    credential_blob_id: None,
+                    wallet_unit_attestation_blob_id: None,
                 }],
-                &issuer_did,
+                issuer_identifier,
                 RevocationListPurpose::Revocation,
                 &*self.revocation_list_repository,
-                &self.key_provider,
+                &*self.key_provider,
                 &self.key_algorithm_provider,
                 &self.base_url,
                 &*formatter,
-                key_id.to_owned(),
                 &StatusListType::BitstringStatusList,
                 &crate::model::revocation_list::StatusListCredentialFormat::JsonLdClassic,
             )
@@ -175,19 +188,22 @@ impl VCAPIService {
             credential_status.push(status);
         }
 
+        */
+
         let credential_data = CredentialData {
-            holder_did: vcdm
-                .credential_subject
-                .iter()
-                .find_map(|s| DidValue::from_did_url(s.id.as_ref()?).ok()),
+            holder_identifier: None, // For VC API verification, we don't have a full Identifier object
             vcdm,
             claims: vec![],
             holder_key_id: None,
+            issuer_certificate: None,
         };
-        let test = formatter.format_credential(credential_data, auth_fn).await;
+        let test = formatter
+            .format_credential(credential_data, auth_fn)
+            .await
+            .error_while("formatting credential")?;
 
         let mut verifiable_credential: LdCredential =
-            serde_json::from_str(&test?).map_err(|e: serde_json::Error| {
+            serde_json::from_str(&test).map_err(|e: serde_json::Error| {
                 ServiceError::Other(format!("Failed to serialize verifiable credential: {e}"))
             })?;
 
@@ -224,14 +240,16 @@ impl VCAPIService {
                 .credential_format
                 .as_deref()
                 .unwrap_or("JSON_LD_CLASSIC")
-        };
+        }
+        .to_string()
+        .into();
 
-        let formatter =
-            self.credential_formatter
-                .get_formatter(format)
-                .ok_or(ServiceError::Other(format!(
-                    "Formatter not found for credential format {format}"
-                )))?;
+        let formatter = self
+            .credential_formatter_provider
+            .get_credential_formatter(&format)
+            .ok_or(ServiceError::Other(format!(
+                "Formatter not found for credential format {format}"
+            )))?;
 
         let string_token =
             serde_json::to_string(&verify_request.verifiable_credential).map_err(|e| {
@@ -242,11 +260,13 @@ impl VCAPIService {
             key_algorithm_provider: self.key_algorithm_provider.clone(),
             did_method_provider: self.did_method_provider.clone(),
             key_role: KeyRole::AssertionMethod,
+            certificate_validator: self.certificate_validator.clone(),
         });
 
         formatter
-            .extract_credentials(&string_token, None, verification_fn, None)
-            .await?;
+            .extract_credentials(&string_token, None, verification_fn)
+            .await
+            .error_while("extracting credential")?;
 
         Ok(CredentialVerifyResponse {
             credential: verify_request.verifiable_credential,
@@ -268,9 +288,9 @@ impl VCAPIService {
 
         const CREDENTIAL_FORMAT: &str = "JSON_LD_CLASSIC";
 
-        let formatter = self
-            .credential_formatter
-            .get_formatter(CREDENTIAL_FORMAT)
+        let presentation_formatter = self
+            .presentation_formatter_provider
+            .get_presentation_formatter(CREDENTIAL_FORMAT)
             .ok_or(ServiceError::MissingProvider(
                 MissingProviderError::Formatter(CREDENTIAL_FORMAT.to_string()),
             ))?;
@@ -284,15 +304,27 @@ impl VCAPIService {
             key_algorithm_provider: self.key_algorithm_provider.clone(),
             did_method_provider: self.did_method_provider.clone(),
             key_role: KeyRole::AssertionMethod,
+            certificate_validator: self.certificate_validator.clone(),
         });
 
-        formatter
+        presentation_formatter
             .extract_presentation(
                 &string_token,
                 verification_fn,
-                ExtractPresentationCtx::default(),
+                ExtractPresentationCtx {
+                    verification_protocol_type: VerificationProtocolType::OpenId4VpDraft20,
+                    nonce: None,
+                    format_nonce: None,
+                    issuance_date: None,
+                    expiration_date: None,
+                    client_id: None,
+                    response_uri: None,
+                    mdoc_session_transcript: None,
+                    verifier_key: None,
+                },
             )
-            .await?;
+            .await
+            .error_while("extracting presentation")?;
 
         Ok(PresentationVerifyResponse {
             checks: vec![],

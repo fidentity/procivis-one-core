@@ -1,3 +1,4 @@
+use similar_asserts::assert_eq;
 use validator::ValidateLength;
 
 use crate::utils::context::TestContext;
@@ -12,7 +13,7 @@ async fn test_get_proof_schema_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claim_schema = credential_schema
@@ -21,7 +22,6 @@ async fn test_get_proof_schema_success() {
         .unwrap()
         .first()
         .unwrap()
-        .schema
         .to_owned();
 
     let proof_schema = context
@@ -39,7 +39,6 @@ async fn test_get_proof_schema_success() {
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: Some(10),
             }],
         )
         .await;
@@ -61,7 +60,6 @@ async fn test_get_proof_schema_success() {
     assert_eq!(claim_schema_item["key"], claim_schema.key);
     assert_eq!(claim_schema_item["dataType"], claim_schema.data_type);
     assert!(claim_schema_item["required"].as_bool().unwrap());
-    assert_eq!(resp["proofInputSchemas"][0]["validityConstraint"], 10);
 }
 
 #[tokio::test]
@@ -72,7 +70,7 @@ async fn test_succeed_to_fetch_claims_just_root_object() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create_with_nested_claims("test", &organisation, "NONE", Default::default())
+        .create_with_nested_claims("test", &organisation, None, Default::default())
         .await;
 
     let root_claim = credential_schema
@@ -91,14 +89,13 @@ async fn test_succeed_to_fetch_claims_just_root_object() {
             &organisation,
             vec![CreateProofInputSchema {
                 claims: vec![CreateProofClaim {
-                    id: root_claim.schema.id,
-                    key: &root_claim.schema.key,
+                    id: root_claim.id,
+                    key: &root_claim.key,
                     required: true,
-                    data_type: &root_claim.schema.data_type,
+                    data_type: &root_claim.data_type,
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: Some(10),
             }],
         )
         .await;
@@ -132,7 +129,7 @@ async fn test_succeed_to_fetch_claims_nested_root_object() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create_with_nested_claims("test", &organisation, "NONE", Default::default())
+        .create_with_nested_claims("test", &organisation, None, Default::default())
         .await;
 
     let root_claim = credential_schema
@@ -151,14 +148,13 @@ async fn test_succeed_to_fetch_claims_nested_root_object() {
             &organisation,
             vec![CreateProofInputSchema {
                 claims: vec![CreateProofClaim {
-                    id: root_claim.schema.id,
-                    key: &root_claim.schema.key,
+                    id: root_claim.id,
+                    key: &root_claim.key,
                     required: true,
-                    data_type: &root_claim.schema.data_type,
+                    data_type: &root_claim.data_type,
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: Some(10),
             }],
         )
         .await;

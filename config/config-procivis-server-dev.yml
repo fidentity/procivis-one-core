@@ -1,3 +1,33 @@
+app:
+  traceLevel: "debug,hyper=error,sea_orm=info,sqlx::query=error,reqwest=error"
+walletProvider:
+  PROCIVIS_ONE:
+    params:
+      public:
+        walletName: "Procivis One Dev Wallet"
+        walletInstanceAttestation:
+          integrityCheck:
+            android:
+              bundleId: ch.procivis.one.wallet.dev
+              signingCertificateFingerprints: [
+                  "FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C", # local
+                  "3C:54:08:A0:AB:59:9A:5B:51:72:3F:DA:58:8E:81:DB:4F:A0:65:41:0E:7D:C2:65:4D:F1:A5:67:5B:47:13:52", # bitrise
+                  "FF:F9:BC:4E:E9:D7:10:AF:4F:B4:C2:7C:63:85:01:A6:A2:99:09:3C:F1:56:9E:E3:60:00:31:15:91:70:EA:E9", # google-play
+                ]
+            ios:
+              bundleId: AGG3V6QN4G.ch.procivis.one.wallet.dev
+              enforceProductionBuild: false
+        appVersion:
+          minimum: "v1.0.0"
+        eudiWalletInfo:
+          providerName: "Procivis One Dev"
+verifierProvider:
+  PROCIVIS_ONE:
+    params:
+      public:
+        verifierName: "Procivis One Dev Verifier"
+        appVersion:
+          minimum: "v1.0.0"
 format:
   MDOC_SHORT_EXPIRY:
     type: "MDOC"
@@ -11,7 +41,6 @@ format:
         msoExpectedUpdateIn: 60
         msoMinimumRefreshTime: 10
         leeway: 10
-        embedLayoutProperties: true
 transport:
   MQTT:
     type: "MQTT"
@@ -21,60 +50,25 @@ transport:
     params:
       private:
         brokerUrl: "mqtts://mqtt.dev.procivis-one.com:8883"
-issuanceProtocol:
-  OPENID4VCI_DRAFT13:
-    params:
-      public:
-        redirectUri:
-          allowedSchemes: ["http", "https"]
-  OPENID4VCI_DRAFT13_SWIYU:
-    params:
-      public:
-          allowedSchemes: ["http", "https"]
 verificationProtocol:
-  OPENID4VP_DRAFT20:
-    params:
-      public:
-        redirectUri:
-          allowedSchemes: ["http", "https"]
-  MDOC_OPENID4VP:
-    params:
-      public:
-        redirectUri:
-          allowedSchemes: ["http", "https"]
   OPENID4VP_DRAFT25:
     params:
       public:
-        redirectUri:
-          allowedSchemes: ["http", "https"]
+        verifier:
+          useDcql: true
   OPENID4VP_PROXIMITY_DRAFT00:
     display:
       en: "OpenID4VP Proximity"
-      de: "OpenID4VP Nähe"
-    order: 4
+      de: "OpenID4VP Nahbereich"
+    order: 5
     type: "OPENID4VP_PROXIMITY_DRAFT00"
-    params: {}
-  OPENID4VP_DRAFT20_SWIYU:
     params:
       public:
-        redirectUri:
-          allowedSchemes: ["http", "https"]
-  OPENID4VP_DRAFT25_EUDI:
-    display:
-      en: "OpenID4VP draft 25 (EUDI)"
-      de: "OpenID4VP draft 25 (EUDI)"
-    order: 8
-    type: "OPENID4VP_DRAFT25"
-    params:
-      public:
-        useRequestUri: true
-        urlScheme: eudi-openid4vp
-        x509CaCertificate: MIIC3TCCAoOgAwIBAgIUEwybFc9Jw-az3r188OiHDaxCfHEwCgYIKoZIzj0EAwMwXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4XDTI1MDMyNDIwMjYxNFoXDTM0MDYyMDIwMjYxM1owXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEesDKj9rCIcrGj0wbSXYvCV953bOPSYLZH5TNmhTz2xa7VdlvQgQeGZRg1PrF5AFwt070wvL9qr1DUDdvLp6a1qOCASEwggEdMBIGA1UdEwEB_wQIMAYBAf8CAQAwHwYDVR0jBBgwFoAUYseURyi9D6IWIKeawkmURPEB08cwEwYDVR0lBAwwCgYIK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5ldWRpdy5kZXYvY3JsL3BpZF9DQV9VVF8wMi5jcmwwHQYDVR0OBBYEFGLHlEcovQ-iFiCnmsJJlETxAdPHMA4GA1UdDwEB_wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczovL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0dXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0gAMEUCIQCe4R9rO4JhFp821kO8Gkb8rXm4qGG_e5_Oi2XmnTQqOQIgfFs-LDbnP2_j1MB4rwZ1FgGdpr4oyrFB9daZyRIcP90
         verifier:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
-          defaultClientIdScheme: x509_san_dns
-        holder:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
-        redirectUri:
-          enabled: true
-          allowedSchemes: ["https"]
+          interactionExpiresIn: 3600
+signer:
+  REGISTRATION_CERTIFICATE:
+    params:
+      private:
+        payload:
+          issuer: "https://core.dev.procivis-one"

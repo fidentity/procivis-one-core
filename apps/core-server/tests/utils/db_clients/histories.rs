@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use one_core::model::history::{
     GetHistoryList, History, HistoryAction, HistoryEntityType, HistoryFilterValue,
-    HistoryListQuery, HistoryMetadata,
+    HistoryListQuery, HistoryMetadata, HistorySource,
 };
 use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::list_query::ListPagination;
@@ -21,7 +21,9 @@ pub struct TestingHistoryParams {
     pub entity_type: Option<HistoryEntityType>,
     pub metadata: Option<HistoryMetadata>,
     pub name: Option<String>,
+    pub source: Option<HistorySource>,
     pub target: Option<String>,
+    pub user: Option<String>,
 }
 
 pub struct HistoriesDB {
@@ -48,9 +50,11 @@ impl HistoriesDB {
             entity_id: Some(params.entity_id.unwrap_or(Uuid::new_v4().into())),
             entity_type: params.entity_type.unwrap_or(HistoryEntityType::Credential),
             metadata: params.metadata,
-            organisation_id: organisation.id,
+            organisation_id: Some(organisation.id),
             name: params.name.unwrap_or_default(),
+            source: params.source.unwrap_or(HistorySource::Core),
             target: params.target,
+            user: params.user,
         };
 
         self.repository
@@ -61,6 +65,41 @@ impl HistoriesDB {
         history
     }
 
+    pub async fn create_without_organisation(&self, params: TestingHistoryParams) -> History {
+        let now = OffsetDateTime::now_utc();
+
+        let history_id = params.id.unwrap_or(HistoryId::from(Uuid::new_v4()));
+        let history = History {
+            id: history_id.to_owned(),
+            created_date: params.created_date.unwrap_or(now),
+            action: params.action.unwrap_or(HistoryAction::Accepted),
+            entity_id: Some(params.entity_id.unwrap_or(Uuid::new_v4().into())),
+            entity_type: params.entity_type.unwrap_or(HistoryEntityType::Credential),
+            metadata: params.metadata,
+            organisation_id: None,
+            name: params.name.unwrap_or_default(),
+            source: params.source.unwrap_or(HistorySource::Core),
+            target: params.target,
+            //TODO: pass user
+            user: None,
+        };
+
+        self.repository
+            .create_history(history.clone())
+            .await
+            .unwrap();
+
+        history
+    }
+
+    pub async fn get_entry(&self, history_id: HistoryId) -> History {
+        self.repository
+            .get_history_entry(history_id)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     pub async fn get_by_entity_id(&self, entity_id: &EntityId) -> GetHistoryList {
         let query = HistoryListQuery {
             pagination: Some(ListPagination {
@@ -68,8 +107,8 @@ impl HistoriesDB {
                 page_size: 10,
             }),
             sorting: None,
-            filtering: Some(ListFilterCondition::Value(HistoryFilterValue::EntityId(
-                *entity_id,
+            filtering: Some(ListFilterCondition::Value(HistoryFilterValue::EntityIds(
+                vec![*entity_id],
             ))),
 
             include: None,

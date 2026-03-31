@@ -1,16 +1,23 @@
 use std::sync::Arc;
 
 use crate::config::core_config;
+use crate::proto::bluetooth_low_energy::ble_resource::BleWaiter;
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::identifier_creator::IdentifierCreator;
+use crate::proto::nfc::hce::NfcHce;
+use crate::proto::notification_scheduler::NotificationScheduler;
+use crate::proto::openid4vp_proof_validator::OpenId4VpProofValidator;
+use crate::proto::session_provider::SessionProvider;
+use crate::proto::transaction_manager::TransactionManager;
+use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
-use crate::provider::key_storage::provider::KeyProvider;
-use crate::provider::revocation::provider::RevocationMethodProvider;
+use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
 use crate::provider::verification_protocol::provider::VerificationProtocolProvider;
 use crate::repository::claim_repository::ClaimRepository;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
-use crate::repository::did_repository::DidRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
@@ -18,22 +25,19 @@ use crate::repository::organisation_repository::OrganisationRepository;
 use crate::repository::proof_repository::ProofRepository;
 use crate::repository::proof_schema_repository::ProofSchemaRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
-use crate::util::ble_resource::BleWaiter;
 
 pub mod dto;
+pub mod error;
 mod iso_mdl;
 mod mapper;
 mod proximity_callback;
-mod scan_to_verify;
 pub mod service;
 
 #[derive(Clone)]
 pub struct ProofService {
     proof_repository: Arc<dyn ProofRepository>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    key_provider: Arc<dyn KeyProvider>,
     proof_schema_repository: Arc<dyn ProofSchemaRepository>,
-    did_repository: Arc<dyn DidRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
     claim_repository: Arc<dyn ClaimRepository>,
     credential_repository: Arc<dyn CredentialRepository>,
@@ -41,25 +45,29 @@ pub struct ProofService {
     history_repository: Arc<dyn HistoryRepository>,
     interaction_repository: Arc<dyn InteractionRepository>,
     credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
-    revocation_method_provider: Arc<dyn RevocationMethodProvider>,
+    presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
     protocol_provider: Arc<dyn VerificationProtocolProvider>,
-    #[allow(dead_code)]
     did_method_provider: Arc<dyn DidMethodProvider>,
     ble: Option<BleWaiter>,
     config: Arc<core_config::CoreConfig>,
-    base_url: Option<String>,
     organisation_repository: Arc<dyn OrganisationRepository>,
     validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
+    nfc_hce_provider: Option<Arc<dyn NfcHce>>,
+    session_provider: Arc<dyn SessionProvider>,
+    identifier_creator: Arc<dyn IdentifierCreator>,
+    transaction_manager: Arc<dyn TransactionManager>,
+    proof_validator: Arc<dyn OpenId4VpProofValidator>,
+    notification_scheduler: Arc<dyn NotificationScheduler>,
 }
 
 impl ProofService {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         proof_repository: Arc<dyn ProofRepository>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-        key_provider: Arc<dyn KeyProvider>,
         proof_schema_repository: Arc<dyn ProofSchemaRepository>,
-        did_repository: Arc<dyn DidRepository>,
         identifier_repository: Arc<dyn IdentifierRepository>,
         claim_repository: Arc<dyn ClaimRepository>,
         credential_repository: Arc<dyn CredentialRepository>,
@@ -67,21 +75,26 @@ impl ProofService {
         history_repository: Arc<dyn HistoryRepository>,
         interaction_repository: Arc<dyn InteractionRepository>,
         credential_formatter_provider: Arc<dyn CredentialFormatterProvider>,
-        revocation_method_provider: Arc<dyn RevocationMethodProvider>,
+        presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
         protocol_provider: Arc<dyn VerificationProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         ble: Option<BleWaiter>,
         config: Arc<core_config::CoreConfig>,
-        base_url: Option<String>,
         organisation_repository: Arc<dyn OrganisationRepository>,
         validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+        certificate_validator: Arc<dyn CertificateValidator>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
+        nfc_hce_provider: Option<Arc<dyn NfcHce>>,
+        session_provider: Arc<dyn SessionProvider>,
+        identifier_creator: Arc<dyn IdentifierCreator>,
+        transaction_manager: Arc<dyn TransactionManager>,
+        proof_validator: Arc<dyn OpenId4VpProofValidator>,
+        notification_scheduler: Arc<dyn NotificationScheduler>,
     ) -> Self {
         Self {
             proof_repository,
             key_algorithm_provider,
-            key_provider,
             proof_schema_repository,
-            did_repository,
             identifier_repository,
             claim_repository,
             credential_repository,
@@ -89,14 +102,21 @@ impl ProofService {
             history_repository,
             interaction_repository,
             credential_formatter_provider,
-            revocation_method_provider,
+            presentation_formatter_provider,
             protocol_provider,
             did_method_provider,
             ble,
             config,
-            base_url,
             organisation_repository,
             validity_credential_repository,
+            certificate_validator,
+            blob_storage_provider,
+            nfc_hce_provider,
+            session_provider,
+            identifier_creator,
+            transaction_manager,
+            proof_validator,
+            notification_scheduler,
         }
     }
 }

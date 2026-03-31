@@ -5,19 +5,34 @@ license           = "Apache-2.0"
 name              = "migration"
 publish           = false
 version           = "0.1.0"
+rust-version.workspace = true
 
 [dependencies]
 sea-orm                = { workspace = true, features = ["with-time", "with-uuid"] }
 sea-orm-migration      = { version = "1.1", default-features = false, features = ["runtime-tokio-rustls", "sqlx-sqlite"] }
 shared-types.workspace = true
 time.workspace         = true
-tokio                  = { workspace = true, features = ["macros", "rt-multi-thread"], optional = true }
+tokio                  = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing.workspace      = true
 urlencoding.workspace  = true
-uuid                   = { version = "1.11.0", features = ["v4"] }
+uuid                   = { workspace = true, features = ["v4"] }
 
 [features]
 default = ["mysql"]
 mysql   = ["sea-orm-migration/sqlx-mysql"]
+
+[dev-dependencies]
+sea-schema = { version = "0.17.0-rc.16", default-features = false, features = [
+    "discovery",
+    "sqlite",
+    "sqlx-sqlite",
+    "mysql",
+    "sqlx-mysql",
+    "runtime-tokio-rustls",
+] }
+similar-asserts.workspace = true
+ulid.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

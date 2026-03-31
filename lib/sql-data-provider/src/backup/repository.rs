@@ -10,7 +10,7 @@ use one_dto_mapper::{Into, convert_inner, try_convert_inner};
 use sea_orm::prelude::Expr;
 use sea_orm::sea_query::{Alias, Func, Query, SelectStatement, SimpleExpr};
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
+    ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DbBackend, EntityTrait,
     FromQueryResult, Iterable, JoinType, PaginatorTrait, QueryFilter, QuerySelect, QueryTrait,
     RelationTrait, Statement, UpdateResult, Values,
 };
@@ -22,13 +22,14 @@ use crate::backup::helpers::{
 };
 use crate::backup::models::UnexportableCredentialModel;
 use crate::entity::{
-    certificate, claim, claim_schema, credential, credential_schema,
-    credential_schema_claim_schema, did, history, identifier, key, key_did, organisation,
+    certificate, claim, claim_schema, credential, credential_schema, did, history,
+    holder_wallet_unit, identifier, key, key_did, organisation, wallet_unit_attestation,
 };
 use crate::mapper::to_data_layer_error;
+use crate::transaction_context::TransactionManagerImpl;
 
 impl BackupProvider {
-    pub fn new(db: DatabaseConnection, exportable_storages: Vec<String>) -> Self {
+    pub fn new(db: TransactionManagerImpl, exportable_storages: Vec<String>) -> Self {
         Self {
             db,
             exportable_storages,
@@ -97,7 +98,10 @@ impl BackupProvider {
             )
             .and_where(
                 identifier::Column::Type
-                    .eq(identifier::IdentifierType::Certificate)
+                    .is_in([
+                        identifier::IdentifierType::Certificate,
+                        identifier::IdentifierType::CertificateAuthority,
+                    ])
                     .and(self.non_exportable_keys_filter()),
             )
             .to_owned()
@@ -182,13 +186,15 @@ impl BackupRepository for BackupProvider {
                 credential::Column::IssuanceDate,
                 credential::Column::LastModified,
                 credential::Column::DeletedAt,
-                credential::Column::Credential,
                 credential::Column::RedirectUri,
                 credential::Column::Role,
                 credential::Column::State,
                 credential::Column::SuspendEndDate,
+                credential::Column::CreatedDate,
+                credential::Column::CredentialBlobId,
+                credential::Column::Protocol,
+                credential::Column::WebhookUrl,
             ])
-            .column_as(credential::Column::Exchange, "exchange")
             .column_as(credential_schema::Column::Id, "credential_schema_id")
             .column_as(
                 credential_schema::Column::DeletedAt,
@@ -206,10 +212,6 @@ impl BackupRepository for BackupProvider {
                 credential_schema::Column::ImportedSourceUrl,
                 "credential_schema_imported_source_url",
             )
-            .column_as(
-                credential_schema::Column::ExternalSchema,
-                "credential_schema_external_schema",
-            )
             .column_as(credential_schema::Column::Name, "credential_schema_name")
             .column_as(
                 credential_schema::Column::Format,
@@ -223,6 +225,22 @@ impl BackupRepository for BackupProvider {
                 credential_schema::Column::AllowSuspension,
                 "credential_schema_allow_suspension",
             )
+            .column_as(
+                credential_schema::Column::RequiresWalletInstanceAttestation,
+                "credential_schema_requires_wallet_instance_attestation",
+            )
+            .column_as(
+                credential_schema::Column::TransactionCodeType,
+                "credential_schema_transaction_code_type",
+            )
+            .column_as(
+                credential_schema::Column::TransactionCodeLength,
+                "credential_schema_transaction_code_length",
+            )
+            .column_as(
+                credential_schema::Column::TransactionCodeDescription,
+                "credential_schema_transaction_code_description",
+            )
             .column_as(organisation::Column::Id, "organisation_id")
             .column_as(organisation::Column::Name, "organisation_name")
             .column_as(
@@ -233,35 +251,9 @@ impl BackupRepository for BackupProvider {
                 organisation::Column::LastModified,
                 "organisation_last_modified",
             )
-            .expr_as_(
-                coalesce_to_empty_array(
-                    credential_schema_claim_schema::Entity::find()
-                        .select_only()
-                        .expr(
-                            Func::cust(JsonAgg).arg(
-                                Func::cust(JsonObject)
-                                    .arg("credential_schema_claim_schema")
-                                    .arg(json_object_columns(
-                                        credential_schema_claim_schema::Column::iter(),
-                                    ))
-                                    .arg("claim_schema")
-                                    .arg(json_object_columns(claim_schema::Column::iter())),
-                            ),
-                        )
-                        .join(
-                            JoinType::InnerJoin,
-                            credential_schema_claim_schema::Relation::ClaimSchema.def(),
-                        )
-                        .filter(
-                            Expr::col((
-                                credential_schema_claim_schema::Entity,
-                                credential_schema_claim_schema::Column::CredentialSchemaId,
-                            ))
-                            .equals((credential_schema::Entity, credential_schema::Column::Id)),
-                        )
-                        .into_query(),
-                ),
-                "credential_schema_claim_schemas",
+            .column_as(
+                organisation::Column::DeactivatedAt,
+                "organisation_deactivated_at",
             )
             .expr_as_(
                 coalesce_to_empty_array(
@@ -294,19 +286,34 @@ impl BackupRepository for BackupProvider {
                 credential_schema::Relation::Organisation.def(),
             )
             .filter(
-                credential::Column::KeyId
-                    .in_subquery(
-                        Query::select()
-                            .column(key::Column::Id)
-                            .from(key::Entity)
-                            .and_where(
-                                key::Column::StorageType
-                                    .is_not_in(&self.exportable_storages)
-                                    .and(key::Column::DeletedAt.is_null()),
+                Condition::any()
+                    .add(
+                        credential::Column::KeyId
+                            .in_subquery(
+                                Query::select()
+                                    .column(key::Column::Id)
+                                    .from(key::Entity)
+                                    .and_where(
+                                        key::Column::StorageType
+                                            .is_not_in(&self.exportable_storages)
+                                            .and(key::Column::DeletedAt.is_null()),
+                                    )
+                                    .to_owned(),
                             )
-                            .to_owned(),
+                            .and(credential::Column::DeletedAt.is_null()),
                     )
-                    .and(credential::Column::DeletedAt.is_null()),
+                    .add(
+                        credential::Column::CredentialSchemaId.in_subquery(
+                            Query::select()
+                                .column(credential_schema::Column::Id)
+                                .from(credential_schema::Entity)
+                                .and_where(
+                                    credential_schema::Column::RequiresWalletInstanceAttestation
+                                        .eq(true),
+                                )
+                                .to_owned(),
+                        ),
+                    ),
             )
             .into_model::<UnexportableCredentialModel>()
             .all(&db);
@@ -348,6 +355,10 @@ impl BackupRepository for BackupProvider {
             )
             .all(&db);
 
+        let select_history = history::Entity::find()
+            .filter(history::Column::EntityType.eq(history::HistoryEntityType::WalletUnit))
+            .all(&db);
+
         let (
             total_keys,
             keys,
@@ -357,6 +368,8 @@ impl BackupRepository for BackupProvider {
             dids,
             total_identifiers,
             identifiers,
+            total_histories,
+            histories,
         ) = tokio::try_join!(
             key::Entity::find()
                 .filter(key::Column::DeletedAt.is_null())
@@ -373,7 +386,9 @@ impl BackupRepository for BackupProvider {
             identifier::Entity::find()
                 .filter(identifier::Column::DeletedAt.is_null())
                 .count(&db),
-            select_identifiers
+            select_identifiers,
+            history::Entity::find().count(&db),
+            select_history
         )
         .map_err(to_data_layer_error)?;
 
@@ -382,10 +397,12 @@ impl BackupRepository for BackupProvider {
             keys: convert_inner(keys),
             dids: convert_inner(dids),
             identifiers: convert_inner(identifiers),
+            histories: try_convert_inner(histories)?,
             total_credentials,
             total_keys,
             total_dids,
             total_identifiers,
+            total_histories,
         })
     }
 
@@ -397,20 +414,35 @@ impl BackupRepository for BackupProvider {
         let update_credentials = credential::Entity::update_many()
             .col_expr(credential::Column::DeletedAt, now.into())
             .filter(
-                credential::Column::KeyId
-                    .in_subquery(
-                        Query::select()
-                            .column(key::Column::Id)
-                            .from(key::Entity)
-                            .and_where(
-                                key::Column::StorageType
-                                    .is_not_in(&self.exportable_storages)
-                                    .and(key::Column::DeletedAt.is_null()),
+                Condition::any()
+                    .add(
+                        credential::Column::KeyId
+                            .in_subquery(
+                                Query::select()
+                                    .column(key::Column::Id)
+                                    .from(key::Entity)
+                                    .and_where(
+                                        key::Column::StorageType
+                                            .is_not_in(&self.exportable_storages)
+                                            .and(key::Column::DeletedAt.is_null()),
+                                    )
+                                    .to_owned(),
                             )
-                            .to_owned(),
+                            .and(credential::Column::Role.eq(credential::CredentialRole::Holder))
+                            .and(credential::Column::DeletedAt.is_null()),
                     )
-                    .and(credential::Column::Role.eq(credential::CredentialRole::Holder))
-                    .and(credential::Column::DeletedAt.is_null()),
+                    .add(
+                        credential::Column::CredentialSchemaId.in_subquery(
+                            Query::select()
+                                .column(credential_schema::Column::Id)
+                                .from(credential_schema::Entity)
+                                .and_where(
+                                    credential_schema::Column::RequiresWalletInstanceAttestation
+                                        .eq(true),
+                                )
+                                .to_owned(),
+                        ),
+                    ),
             )
             .exec(&db);
 
@@ -440,7 +472,10 @@ impl BackupRepository for BackupProvider {
                 &db,
                 now,
                 self.identifiers_with_non_exportable_keys()
-            )
+            ),
+            delete_wallet_unit_attestations(&db),
+            delete_holder_wallet_units(&db),
+            delete_history_related_to_wallet_unit_attestations(&db),
         )
         .map_err(to_data_layer_error)?;
 
@@ -471,7 +506,7 @@ impl BackupRepository for BackupProvider {
 }
 
 fn update_identifiers_matching_subquery(
-    db: &DatabaseConnection,
+    db: &TransactionManagerImpl,
     now: OffsetDateTime,
     subquery: SelectStatement,
 ) -> impl Future<Output = Result<UpdateResult, sea_orm::DbErr>> {
@@ -484,6 +519,30 @@ fn update_identifiers_matching_subquery(
                 .and(identifier::Column::DeletedAt.is_null()),
         )
         .exec(db)
+}
+
+async fn delete_wallet_unit_attestations(
+    db: &TransactionManagerImpl,
+) -> Result<(), sea_orm::DbErr> {
+    wallet_unit_attestation::Entity::delete_many()
+        .exec(db)
+        .await?;
+    Ok(())
+}
+
+async fn delete_holder_wallet_units(db: &TransactionManagerImpl) -> Result<(), sea_orm::DbErr> {
+    holder_wallet_unit::Entity::delete_many().exec(db).await?;
+    Ok(())
+}
+
+async fn delete_history_related_to_wallet_unit_attestations(
+    db: &TransactionManagerImpl,
+) -> Result<(), sea_orm::DbErr> {
+    history::Entity::delete_many()
+        .filter(history::Column::EntityType.eq(history::HistoryEntityType::WalletUnit))
+        .exec(db)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug, FromQueryResult, Into)]

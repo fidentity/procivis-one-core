@@ -1,4 +1,5 @@
 use serde_json::json;
+use similar_asserts::assert_eq;
 
 use crate::config::core_config::{CoreConfig, DatatypeType, Fields, Params};
 use crate::service::config::dto::ConfigDTO;
@@ -13,7 +14,8 @@ fn convert_internal_structure_to_dto() {
             r#type: DatatypeType::String,
             display: "display".into(),
             order: None,
-            enabled: None,
+            priority: None,
+            enabled: true,
             capabilities: None,
             params: Some(Params {
                 public: Some(json!({
@@ -40,6 +42,7 @@ fn convert_internal_structure_to_dto() {
           "datatype": {
             "STRING": {
               "display": "display",
+              "enabled": true,
               "params": {
                 "autocomplete": false
               },
@@ -48,9 +51,17 @@ fn convert_internal_structure_to_dto() {
           },
           "transport": {},
           "keyAlgorithm": {},
+          "keySecurityLevel": {},
           "keyStorage": {},
           "trustManagement": {},
+          "blobStorage": {},
           "cacheEntities": {},
+          "task": {},
+          "walletProvider": {},
+          "credentialIssuer": {},
+          "verificationEngagement": {},
+          "signer": {},
+          "trustListPublisher": {},
         }),
         output
     );
@@ -66,7 +77,8 @@ fn do_not_serialize_private_parameters() {
             r#type: DatatypeType::String,
             display: "display".into(),
             order: None,
-            enabled: None,
+            priority: None,
+            enabled: true,
             capabilities: None,
             params: Some(Params {
                 public: None,
@@ -92,14 +104,23 @@ fn do_not_serialize_private_parameters() {
           "datatype": {
             "STRING": {
               "display": "display",
+              "enabled": true,
               "params": {},
               "type": "STRING"
             }
           },
           "keyAlgorithm": {},
+          "keySecurityLevel": {},
           "keyStorage": {},
           "trustManagement": {},
+          "blobStorage": {},
           "cacheEntities": {},
+          "task": {},
+          "walletProvider": {},
+          "credentialIssuer": {},
+          "verificationEngagement": {},
+          "signer": {},
+          "trustListPublisher": {},
         }),
         output
     );

@@ -4,21 +4,24 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 
 pub(crate) mod jwk_helpers;
 
 use shared_types::{DidId, DidValue};
+use standardized_types::jwk::PublicJwk;
 
 use super::common::expect_one_key;
 use super::{DidCreated, DidKeys, DidUpdate};
 use crate::config::core_config::KeyAlgorithmType;
+use crate::error::ContextWithErrorCode;
+use crate::model::key::Key;
 use crate::provider::did_method::DidMethod;
 use crate::provider::did_method::error::DidMethodError;
-use crate::provider::did_method::jwk::jwk_helpers::{
-    encode_to_did, extract_jwk, generate_document,
-};
+use crate::provider::did_method::jwk::jwk_helpers::{extract_jwk, generate_document};
 use crate::provider::did_method::keys::Keys;
 use crate::provider::did_method::model::{AmountOfKeys, DidCapabilities, DidDocument, Operation};
+use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 
 pub struct JWKDidMethod {
@@ -26,7 +29,6 @@ pub struct JWKDidMethod {
 }
 
 impl JWKDidMethod {
-    #[allow(clippy::new_without_default)]
     pub fn new(key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>) -> Self {
         Self {
             key_algorithm_provider,
@@ -42,24 +44,31 @@ impl DidMethod for JWKDidMethod {
         _params: &Option<serde_json::Value>,
         keys: Option<DidKeys>,
     ) -> Result<DidCreated, DidMethodError> {
-        let keys = keys.ok_or(DidMethodError::ResolutionError("Missing keys".to_string()))?;
+        let keys = keys.ok_or(DidMethodError::CreationError("Missing keys".to_string()))?;
         let key = expect_one_key(&keys)?;
 
         let key_algorithm_type = key
             .key_algorithm_type()
-            .ok_or(DidMethodError::KeyAlgorithmNotFound)?;
+            .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                key.key_type.to_owned(),
+            ))
+            .error_while("getting key algorithm")?;
 
         let key_algorithm = self
             .key_algorithm_provider
             .key_algorithm_from_type(key_algorithm_type)
-            .ok_or(DidMethodError::KeyAlgorithmNotFound)?;
+            .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                key_algorithm_type.to_string(),
+            ))
+            .error_while("getting key algorithm")?;
+
         let jwk = key_algorithm
             .reconstruct_key(&key.public_key, None, None)
-            .map_err(|e| DidMethodError::CouldNotCreate(e.to_string()))?
+            .error_while("reconstructing key")?
             .public_key_as_jwk()
-            .map_err(|e| DidMethodError::CouldNotCreate(e.to_string()))?;
+            .error_while("getting JWK")?;
 
-        encode_to_did(&jwk.into()).map(|did| DidCreated { did, log: None })
+        encode_to_did(&jwk).map(|did| DidCreated { did, log: None })
     }
 
     async fn resolve(&self, did: &DidValue) -> Result<DidDocument, DidMethodError> {
@@ -73,11 +82,7 @@ impl DidMethod for JWKDidMethod {
         _keys: DidKeys,
         _log: Option<String>,
     ) -> Result<DidUpdate, DidMethodError> {
-        Err(DidMethodError::NotSupported)
-    }
-
-    fn can_be_deactivated(&self) -> bool {
-        false
+        Err(DidMethodError::OperationNotSupported)
     }
 
     fn get_capabilities(&self) -> DidCapabilities {
@@ -87,7 +92,7 @@ impl DidMethod for JWKDidMethod {
                 KeyAlgorithmType::Ecdsa,
                 KeyAlgorithmType::Eddsa,
                 KeyAlgorithmType::BbsPlus,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
             method_names: vec!["jwk".to_string()],
             features: vec![],
@@ -102,6 +107,16 @@ impl DidMethod for JWKDidMethod {
     fn get_keys(&self) -> Option<Keys> {
         Some(Keys::default())
     }
+
+    fn get_reference_for_key(&self, _key: &Key) -> Result<String, DidMethodError> {
+        Ok("0".to_string())
+    }
+}
+
+pub fn encode_to_did(jwk: &PublicJwk) -> Result<DidValue, DidMethodError> {
+    let jwk = serde_json::to_string(jwk)?;
+    let encoded = Base64UrlSafeNoPadding::encode_to_string(jwk)?;
+    Ok(format!("did:jwk:{encoded}").parse()?)
 }
 
 #[cfg(test)]

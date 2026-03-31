@@ -1,37 +1,45 @@
 use std::collections::HashMap;
 
-use one_core::model::common::{EntityShareResponseDTO, ExactColumn};
+use one_core::model::common::ExactColumn;
 use one_core::model::proof::{ProofRole, ProofStateEnum, SortableProofColumn};
 use one_core::provider::verification_protocol::dto::{
-    PresentationDefinitionFieldDTO, PresentationDefinitionRequestGroupResponseDTO,
-    PresentationDefinitionRequestedCredentialResponseDTO, PresentationDefinitionResponseDTO,
+    CredentialDetailClaimExtResponseDTO, CredentialQueryFailureHintResponseDTO,
+    CredentialQueryFailureReasonEnum, CredentialQueryResponseDTO, CredentialSetResponseDTO,
+    PresentationDefinitionRequestGroupResponseDTO, PresentationDefinitionResponseDTO,
     PresentationDefinitionRuleDTO, PresentationDefinitionRuleTypeEnum,
+    PresentationDefinitionV2ResponseDTO,
 };
 use one_core::provider::verification_protocol::openid4vp::model::ClientIdScheme;
 use one_core::service::error::ServiceError;
 use one_core::service::proof::dto::{
-    CreateProofRequestDTO, GetProofListResponseDTO, ProofInputDTO, ProofListItemResponseDTO,
-    ProposeProofResponseDTO, ScanToVerifyBarcodeTypeEnum, ScanToVerifyRequestDTO,
-    ShareProofRequestDTO, ShareProofRequestParamsDTO,
+    GetProofListResponseDTO, ProofInputDTO, ProofListItemResponseDTO, ProposeProofRequestDTO,
+    ProposeProofResponseDTO, ShareProofRequestDTO, ShareProofRequestParamsDTO,
+    ShareProofResponseDTO,
 };
 use one_core::service::ssi_holder::dto::{
     PresentationSubmitCredentialRequestDTO, PresentationSubmitRequestDTO,
+    PresentationSubmitV2CredentialRequestDTO, PresentationSubmitV2RequestDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner_of_inner};
 
 use super::common::SortDirection;
-use super::credential::CredentialDetailBindingDTO;
-use super::credential_schema::CredentialSchemaBindingDTO;
-use super::did::DidListItemBindingDTO;
-use super::identifier::GetIdentifierListItemBindingDTO;
-use super::mapper::{optional_did_id_string, optional_identifier_id_string, optional_time};
+use super::credential::{
+    CredentialDetailBindingDTO, CredentialRoleBindingDTO, CredentialStateBindingEnum,
+    MdocMsoValidityResponseBindingDTO,
+};
+use super::credential_schema::{
+    CredentialClaimSchemaBindingDTO, CredentialSchemaBindingDTO, CredentialSchemaDetailBindingDTO,
+};
+use super::identifier::{CertificateResponseBindingDTO, GetIdentifierListItemBindingDTO};
+use super::mapper::{optional_identifier_id_string, optional_time};
 use super::proof_schema::{GetProofSchemaListItemBindingDTO, ProofRequestClaimBindingDTO};
 use crate::OneCoreBinding;
 use crate::error::BindingError;
-use crate::utils::{TimestampFormat, format_timestamp_opt, into_id, into_id_opt};
+use crate::utils::{TimestampFormat, into_id};
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCoreBinding {
+    /// For verifiers, creates a proof request.
     #[uniffi::method]
     pub async fn create_proof(
         &self,
@@ -65,7 +73,11 @@ impl OneCoreBinding {
         query: ProofListQueryBindingDTO,
     ) -> Result<ProofListBindingDTO, BindingError> {
         let core = self.use_core().await?;
-        let proofs = core.proof_service.get_proof_list(query.try_into()?).await?;
+        let organisation_id = into_id(query.organisation_id.clone())?;
+        let proofs = core
+            .proof_service
+            .get_proof_list(&organisation_id, query.try_into()?)
+            .await?;
         Ok(proofs.into())
     }
 
@@ -82,19 +94,14 @@ impl OneCoreBinding {
     pub async fn holder_submit_proof(
         &self,
         interaction_id: String,
-        submit_credentials: HashMap<String, PresentationSubmitCredentialRequestBindingDTO>,
-        did_id: Option<String>,
-        identifier_id: Option<String>,
-        key_id: Option<String>,
+        submit_credentials: HashMap<String, Vec<PresentationSubmitCredentialRequestBindingDTO>>,
     ) -> Result<(), BindingError> {
         let core = self.use_core().await?;
+
         core.ssi_holder_service
             .submit_proof(PresentationSubmitRequestDTO {
                 interaction_id: into_id(&interaction_id)?,
-                submit_credentials: try_convert_inner(submit_credentials)?,
-                did_id: did_id.map(into_id).transpose()?,
-                identifier_id: identifier_id.map(into_id).transpose()?,
-                key_id: key_id.map(|key_id| into_id(&key_id)).transpose()?,
+                submit_credentials: try_convert_inner_of_inner(submit_credentials)?,
             })
             .await?;
 
@@ -102,15 +109,35 @@ impl OneCoreBinding {
     }
 
     #[uniffi::method]
+    pub async fn holder_submit_proof_v2(
+        &self,
+        interaction_id: String,
+        submission: HashMap<String, Vec<PresentationSubmitV2CredentialRequestBindingDTO>>,
+    ) -> Result<(), BindingError> {
+        let core = self.use_core().await?;
+
+        core.ssi_holder_service
+            .submit_proof_v2(PresentationSubmitV2RequestDTO {
+                interaction_id: into_id(&interaction_id)?,
+                submission: try_convert_inner_of_inner(submission)?,
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// For wallets, initiates device engagement for offline flows. Reference
+    /// the `verificationEngagement` entry of your configuration for your
+    /// options for `engagement`.
+    #[uniffi::method]
     pub async fn propose_proof(
         &self,
-        exchange: String,
-        organisation_id: String,
+        request: ProposeProofRequestBindingDTO,
     ) -> Result<ProposeProofResponseBindingDTO, BindingError> {
         let core = self.use_core().await?;
         Ok(core
             .proof_service
-            .propose_proof(exchange, into_id(&organisation_id)?)
+            .propose_proof(request.try_into()?)
             .await?
             .into())
     }
@@ -148,45 +175,39 @@ impl OneCoreBinding {
             .await?
             .into())
     }
+
+    #[uniffi::method]
+    pub async fn get_presentation_definition_v2(
+        &self,
+        proof_id: String,
+    ) -> Result<PresentationDefinitionV2ResponseBindingDTO, BindingError> {
+        let core = self.use_core().await?;
+        Ok(core
+            .proof_service
+            .get_proof_presentation_definition_v2(&into_id(&proof_id)?)
+            .await?
+            .into())
+    }
 }
 
-#[derive(Clone, Debug, TryInto, uniffi::Record)]
-#[try_into(T = CreateProofRequestDTO, Error = ServiceError)]
+/// If protocol is `ISO_MDL`, specify the device engagement type
+/// by referencing an entry from `verificationEngagement` of your
+/// configuration. `iso_mdl_engagement` accepts either QR code content
+/// (for QR device engagement) or NFC engagement parameters from
+/// `nfc_read_iso_mdl_engagement`.
+#[derive(Clone, Debug, uniffi::Record)]
 pub struct CreateProofRequestBindingDTO {
-    #[try_into(with_fn_ref = into_id)]
     pub proof_schema_id: String,
-    #[try_into(with_fn = into_id_opt)]
     pub verifier_did_id: Option<String>,
-    #[try_into(with_fn = into_id_opt)]
     pub verifier_identifier_id: Option<String>,
-    #[try_into(infallible)]
-    pub exchange: String,
-    #[try_into(with_fn = convert_inner, infallible)]
+    pub protocol: String,
     pub redirect_uri: Option<String>,
-    #[try_into(with_fn = into_id_opt)]
     pub verifier_key: Option<String>,
-    #[try_into(with_fn = convert_inner, infallible)]
-    pub scan_to_verify: Option<ScanToVerifyRequestBindingDTO>,
-    #[try_into(with_fn = convert_inner, infallible)]
+    pub verifier_certificate: Option<String>,
     pub iso_mdl_engagement: Option<String>,
-    #[try_into(with_fn = convert_inner, infallible)]
     pub transport: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Into, uniffi::Record)]
-#[into(ScanToVerifyRequestDTO)]
-pub struct ScanToVerifyRequestBindingDTO {
-    pub credential: String,
-    pub barcode: String,
-    pub barcode_type: ScanToVerifyBarcodeTypeBindingEnum,
-}
-
-#[derive(Clone, Debug, Into, uniffi::Enum)]
-#[into(ScanToVerifyBarcodeTypeEnum)]
-pub enum ScanToVerifyBarcodeTypeBindingEnum {
-    #[allow(clippy::upper_case_acronyms)]
-    MRZ,
-    PDF417,
+    pub profile: Option<String>,
+    pub engagement: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
@@ -199,7 +220,7 @@ pub enum ProofListQueryExactColumnBindingEnum {
 #[into(SortableProofColumn)]
 pub enum SortableProofListColumnBinding {
     SchemaName,
-    VerifierDid,
+    Verifier,
     State,
     CreatedDate,
 }
@@ -212,11 +233,21 @@ pub struct ProofListQueryBindingDTO {
     pub sort: Option<SortableProofListColumnBinding>,
     pub sort_direction: Option<SortDirection>,
     pub name: Option<String>,
+    pub profiles: Option<Vec<String>>,
     pub ids: Option<Vec<String>>,
     pub proof_states: Option<Vec<ProofStateBindingEnum>>,
     pub proof_roles: Option<Vec<ProofRoleBindingEnum>>,
     pub proof_schema_ids: Option<Vec<String>>,
     pub exact: Option<Vec<ProofListQueryExactColumnBindingEnum>>,
+
+    pub created_date_after: Option<String>,
+    pub created_date_before: Option<String>,
+    pub last_modified_after: Option<String>,
+    pub last_modified_before: Option<String>,
+    pub requested_date_after: Option<String>,
+    pub requested_date_before: Option<String>,
+    pub completed_date_after: Option<String>,
+    pub completed_date_before: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -228,24 +259,22 @@ pub struct ProofListItemBindingDTO {
     pub created_date: String,
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
     pub last_modified: String,
-    #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
-    pub issuance_date: String,
     #[from(with_fn = optional_time)]
     pub requested_date: Option<String>,
     #[from(with_fn = optional_time)]
     pub completed_date: Option<String>,
-    #[from(with_fn = optional_did_id_string)]
-    pub verifier_did: Option<String>,
     #[from(with_fn = optional_identifier_id_string)]
     pub verifier: Option<String>,
-    pub exchange: String,
+    pub protocol: String,
     pub transport: String,
+    pub engagement: Option<String>,
     pub state: ProofStateBindingEnum,
     pub role: ProofRoleBindingEnum,
     #[from(with_fn = convert_inner)]
     pub schema: Option<GetProofSchemaListItemBindingDTO>,
     #[from(with_fn = optional_time)]
     pub retain_until_date: Option<String>,
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -253,14 +282,12 @@ pub struct ProofResponseBindingDTO {
     pub id: String,
     pub created_date: String,
     pub last_modified: String,
-    pub verifier_did: Option<DidListItemBindingDTO>,
     pub verifier: Option<GetIdentifierListItemBindingDTO>,
-    pub holder_did: Option<DidListItemBindingDTO>,
-    pub holder: Option<GetIdentifierListItemBindingDTO>,
     pub state: ProofStateBindingEnum,
     pub role: ProofRoleBindingEnum,
     pub proof_schema: Option<GetProofSchemaListItemBindingDTO>,
-    pub exchange: String,
+    pub protocol: String,
+    pub engagement: Option<String>,
     pub transport: String,
     pub redirect_uri: Option<String>,
     pub proof_inputs: Vec<ProofInputBindingDTO>,
@@ -268,6 +295,7 @@ pub struct ProofResponseBindingDTO {
     pub requested_date: Option<String>,
     pub completed_date: Option<String>,
     pub claims_removed_at: Option<String>,
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -278,7 +306,6 @@ pub struct ProofInputBindingDTO {
     #[from(with_fn = convert_inner)]
     pub credential: Option<CredentialDetailBindingDTO>,
     pub credential_schema: CredentialSchemaBindingDTO,
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -301,6 +328,7 @@ pub enum ProofStateBindingEnum {
     Rejected,
     Retracted,
     Error,
+    InteractionExpired,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
@@ -320,6 +348,28 @@ pub struct PresentationSubmitCredentialRequestBindingDTO {
     pub submit_claims: Vec<String>,
 }
 
+#[derive(Clone, Debug, TryInto, uniffi::Record)]
+#[try_into(T = PresentationSubmitV2CredentialRequestDTO, Error = ServiceError)]
+pub struct PresentationSubmitV2CredentialRequestBindingDTO {
+    #[try_into(with_fn_ref = into_id)]
+    pub credential_id: String,
+    #[try_into(infallible)]
+    pub user_selections: Vec<String>,
+}
+
+#[derive(Clone, Debug, TryInto, uniffi::Record)]
+#[try_into(T = ProposeProofRequestDTO, Error = ServiceError)]
+pub struct ProposeProofRequestBindingDTO {
+    #[try_into(infallible)]
+    pub protocol: String,
+    #[try_into(with_fn_ref = into_id)]
+    pub organisation_id: String,
+    #[try_into(infallible)]
+    pub engagement: Vec<String>,
+    #[try_into(infallible)]
+    pub ui_message: Option<String>,
+}
+
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProposeProofResponseDTO)]
 pub struct ProposeProofResponseBindingDTO {
@@ -327,7 +377,7 @@ pub struct ProposeProofResponseBindingDTO {
     pub proof_id: String,
     #[from(with_fn_ref = "ToString::to_string")]
     pub interaction_id: String,
-    pub url: String,
+    pub url: Option<String>,
 }
 
 #[derive(Into, uniffi::Record)]
@@ -354,9 +404,11 @@ pub enum ClientIdSchemeBindingEnum {
 }
 
 #[derive(From, uniffi::Record)]
-#[from(EntityShareResponseDTO)]
+#[from(ShareProofResponseDTO)]
 pub struct ShareProofResponseBindingDTO {
     pub url: String,
+    #[from(with_fn = optional_time)]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -379,29 +431,22 @@ pub struct PresentationDefinitionRequestGroupBindingDTO {
     pub requested_credentials: Vec<PresentationDefinitionRequestedCredentialBindingDTO>,
 }
 
-#[derive(Clone, Debug, From, uniffi::Record)]
-#[from(PresentationDefinitionRequestedCredentialResponseDTO)]
+#[derive(Clone, Debug, uniffi::Record)]
 pub struct PresentationDefinitionRequestedCredentialBindingDTO {
     pub id: String,
     pub name: Option<String>,
     pub purpose: Option<String>,
-    #[from(with_fn = convert_inner)]
     pub fields: Vec<PresentationDefinitionFieldBindingDTO>,
-    #[from(with_fn = convert_inner)]
     pub applicable_credentials: Vec<String>,
-    #[from(with_fn = convert_inner)]
     pub inapplicable_credentials: Vec<String>,
-    #[from(with_fn = format_timestamp_opt)]
-    pub validity_credential_nbf: Option<String>,
+    pub multiple: Option<bool>,
 }
 
-#[derive(Clone, Debug, From, uniffi::Record)]
-#[from(PresentationDefinitionFieldDTO)]
+#[derive(Clone, Debug, uniffi::Record)]
 pub struct PresentationDefinitionFieldBindingDTO {
     pub id: String,
     pub name: Option<String>,
     pub purpose: Option<String>,
-    #[from(unwrap_or = true)]
     pub required: bool,
     pub key_map: HashMap<String, String>,
 }
@@ -420,4 +465,104 @@ pub struct PresentationDefinitionRuleBindingDTO {
     pub min: Option<u32>,
     pub max: Option<u32>,
     pub count: Option<u32>,
+}
+
+#[derive(Debug, From, uniffi::Record)]
+#[from(PresentationDefinitionV2ResponseDTO)]
+pub(crate) struct PresentationDefinitionV2ResponseBindingDTO {
+    #[from(with_fn = convert_inner)]
+    pub credential_queries: HashMap<String, CredentialQueryResponseBindingDTO>,
+    #[from(with_fn = convert_inner)]
+    pub credential_sets: Vec<CredentialSetResponseBindingDTO>,
+}
+
+#[derive(Debug, From, uniffi::Record)]
+#[from(CredentialQueryResponseDTO)]
+pub(crate) struct CredentialQueryResponseBindingDTO {
+    pub multiple: bool,
+    pub credential_or_failure_hint: ApplicableCredentialOrFailureHintBindingEnum,
+}
+
+#[derive(Debug, uniffi::Enum)]
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum ApplicableCredentialOrFailureHintBindingEnum {
+    ApplicableCredentials {
+        applicable_credentials: Vec<PresentationDefinitionV2CredentialDetailBindingDTO>,
+    },
+    FailureHint {
+        failure_hint: CredentialQueryFailureHintResponseBindingDTO,
+    },
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PresentationDefinitionV2CredentialDetailBindingDTO {
+    pub id: String,
+    pub created_date: String,
+    pub issuance_date: Option<String>,
+    pub last_modified: String,
+    pub revocation_date: Option<String>,
+    pub issuer: Option<GetIdentifierListItemBindingDTO>,
+    pub issuer_certificate: Option<CertificateResponseBindingDTO>,
+    pub holder: Option<GetIdentifierListItemBindingDTO>,
+    pub state: CredentialStateBindingEnum,
+    pub schema: CredentialSchemaBindingDTO,
+    pub claims: Vec<PresentationDefinitionV2ClaimBindingDTO>,
+    pub redirect_uri: Option<String>,
+    pub role: CredentialRoleBindingDTO,
+    pub suspend_end_date: Option<String>,
+    pub mdoc_mso_validity: Option<MdocMsoValidityResponseBindingDTO>,
+    pub protocol: String,
+    pub profile: Option<String>,
+}
+
+#[derive(Clone, Debug, uniffi::Record, From)]
+#[from(CredentialDetailClaimExtResponseDTO)]
+pub struct PresentationDefinitionV2ClaimBindingDTO {
+    pub path: String,
+    pub schema: CredentialClaimSchemaBindingDTO,
+    pub value: PresentationDefinitionV2ClaimValueBindingDTO,
+    pub user_selection: bool,
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum PresentationDefinitionV2ClaimValueBindingDTO {
+    Boolean {
+        value: bool,
+    },
+    Float {
+        value: f64,
+    },
+    Integer {
+        value: i64,
+    },
+    String {
+        value: String,
+    },
+    Nested {
+        value: Vec<PresentationDefinitionV2ClaimBindingDTO>,
+    },
+}
+
+#[derive(Debug, From, uniffi::Record)]
+#[from(CredentialQueryFailureHintResponseDTO)]
+pub(crate) struct CredentialQueryFailureHintResponseBindingDTO {
+    pub reason: CredentialQueryFailureReasonBindingEnum,
+    #[from(with_fn = "convert_inner")]
+    pub credential_schema: Option<CredentialSchemaDetailBindingDTO>,
+}
+
+#[derive(Debug, From, uniffi::Enum)]
+#[from(CredentialQueryFailureReasonEnum)]
+pub(crate) enum CredentialQueryFailureReasonBindingEnum {
+    NoCredential,
+    Validity,
+    Constraint,
+}
+
+#[derive(Debug, From, uniffi::Record)]
+#[from(CredentialSetResponseDTO)]
+pub(crate) struct CredentialSetResponseBindingDTO {
+    pub required: bool,
+    pub options: Vec<Vec<String>>,
 }

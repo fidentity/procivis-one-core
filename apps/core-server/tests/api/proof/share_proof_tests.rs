@@ -5,9 +5,10 @@ use one_core::config::core_config::VerificationProtocolType;
 use one_core::model::did::{KeyRole, RelatedKey};
 use one_core::model::history::HistoryAction;
 use one_core::model::identifier::IdentifierType;
-use one_core::model::proof::{Proof, ProofStateEnum};
+use one_core::model::proof::{Proof, ProofRole, ProofStateEnum};
 use serde_json::Value;
 use shared_types::DidValue;
+use similar_asserts::assert_eq;
 use url::Url;
 use uuid::Uuid;
 
@@ -20,7 +21,7 @@ use crate::utils::db_clients::proof_schemas::{CreateProofClaim, CreateProofInput
 #[tokio::test]
 async fn test_share_proof_success() {
     // GIVEN
-    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+    let (context, organisation, _, identifier, key) = TestContext::new_with_did(None).await;
     let credential_schema =
         fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
     let claim_schema = credential_schema
@@ -29,7 +30,6 @@ async fn test_share_proof_success() {
         .unwrap()
         .first()
         .unwrap()
-        .schema
         .to_owned();
 
     let proof_schema = fixtures::create_proof_schema(
@@ -45,7 +45,6 @@ async fn test_share_proof_success() {
                 array: false,
             }],
             credential_schema: &credential_schema,
-            validity_constraint: None,
         }],
     )
     .await;
@@ -53,10 +52,13 @@ async fn test_share_proof_success() {
     let proof = fixtures::create_proof(
         &context.db.db_conn,
         &identifier,
-        None,
         Some(&proof_schema),
         ProofStateEnum::Created,
+        ProofRole::Verifier,
         "OPENID4VP_DRAFT20",
+        None,
+        Some(&key),
+        None,
         None,
     )
     .await;
@@ -70,6 +72,135 @@ async fn test_share_proof_success() {
     let url = resp["url"].as_str().unwrap();
     assert!(url.starts_with("openid4vp"));
     assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 1).await;
+}
+
+#[tokio::test]
+async fn test_share_proof_key_storage_disabled_success() {
+    // check that sharing works also when using disabled key storage
+    let additional_config = Some(
+        indoc::indoc! {"
+      keyStorage:
+        INTERNAL:
+          enabled: false
+  "}
+        .to_string(),
+    );
+    // GIVEN
+    let (context, organisation, _, identifier, key) =
+        TestContext::new_with_did(additional_config).await;
+    let credential_schema =
+        fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
+    let claim_schema = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .first()
+        .unwrap()
+        .to_owned();
+
+    let proof_schema = fixtures::create_proof_schema(
+        &context.db.db_conn,
+        "test",
+        &organisation,
+        &[CreateProofInputSchema {
+            claims: vec![CreateProofClaim {
+                id: claim_schema.id,
+                key: &claim_schema.key,
+                required: true,
+                data_type: &claim_schema.data_type,
+                array: false,
+            }],
+            credential_schema: &credential_schema,
+        }],
+    )
+    .await;
+
+    for exchange in ["OPENID4VP_DRAFT20", "OPENID4VP_DRAFT25", "OPENID4VP_FINAL1"] {
+        let proof = fixtures::create_proof(
+            &context.db.db_conn,
+            &identifier,
+            Some(&proof_schema),
+            ProofStateEnum::Created,
+            ProofRole::Verifier,
+            exchange,
+            None,
+            Some(&key),
+            None,
+            None,
+        )
+        .await;
+
+        // WHEN
+        let resp = context.api.proofs.share(proof.id, None).await;
+
+        // THEN
+        assert_eq!(resp.status(), 201);
+        let resp = resp.json::<Value>().await;
+        let url = resp["url"].as_str().unwrap();
+        assert!(url.starts_with("openid4vp"));
+        assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 1).await;
+    }
+}
+
+#[tokio::test]
+async fn test_share_proof_twice() {
+    // GIVEN
+    let (context, organisation, _, identifier, key) = TestContext::new_with_did(None).await;
+    let credential_schema =
+        fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
+    let claim_schema = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .first()
+        .unwrap()
+        .to_owned();
+
+    let proof_schema = fixtures::create_proof_schema(
+        &context.db.db_conn,
+        "test",
+        &organisation,
+        &[CreateProofInputSchema {
+            claims: vec![CreateProofClaim {
+                id: claim_schema.id,
+                key: &claim_schema.key,
+                required: true,
+                data_type: &claim_schema.data_type,
+                array: false,
+            }],
+            credential_schema: &credential_schema,
+        }],
+    )
+    .await;
+
+    let proof = fixtures::create_proof(
+        &context.db.db_conn,
+        &identifier,
+        Some(&proof_schema),
+        ProofStateEnum::Created,
+        ProofRole::Verifier,
+        "OPENID4VP_DRAFT20",
+        None,
+        Some(&key),
+        None,
+        None,
+    )
+    .await;
+
+    // WHEN
+    let resp_1 = context.api.proofs.share(proof.id, None).await;
+    let resp_2 = context.api.proofs.share(proof.id, None).await;
+
+    // THEN
+    assert_eq!(resp_1.status(), 201);
+    assert_eq!(resp_2.status(), 201);
+
+    let resp_1 = resp_1.json::<Value>().await;
+    let url_1 = resp_1["url"].as_str().unwrap();
+    let resp_2 = resp_2.json::<Value>().await;
+    let url_2 = resp_2["url"].as_str().unwrap();
+    assert_eq!(url_1, url_2);
+    assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 2).await;
 }
 
 #[tokio::test]
@@ -98,14 +229,17 @@ async fn test_share_proof_success_with_separate_encryption_key() {
                     RelatedKey {
                         key: signing_key.clone(),
                         role: KeyRole::AssertionMethod,
+                        reference: "1".to_string(),
                     },
                     RelatedKey {
                         key: signing_key.clone(),
                         role: KeyRole::Authentication,
+                        reference: "1".to_string(),
                     },
                     RelatedKey {
                         key: encryption_key.clone(),
                         role: KeyRole::KeyAgreement,
+                        reference: "2".to_string(),
                     },
                 ]),
                 did: Some(
@@ -132,7 +266,7 @@ async fn test_share_proof_success_with_separate_encryption_key() {
             &Uuid::new_v4(),
             "test",
             &organisation,
-            "NONE",
+            None,
             &claim_schemas,
             "JSON_LD_CLASSIC",
             "test",
@@ -172,12 +306,13 @@ async fn test_share_proof_success_with_separate_encryption_key() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Created,
             "OPENID4VP_DRAFT20",
             None,
             signing_key,
+            None,
+            None,
         )
         .await;
 
@@ -187,7 +322,7 @@ async fn test_share_proof_success_with_separate_encryption_key() {
     let interaction = proof.interaction.unwrap();
     let data: Value = serde_json::from_slice(&interaction.data.unwrap()).unwrap();
 
-    assert_eq!(data["encryption_key_id"], encryption_key.id.to_string());
+    assert_eq!(data["encryption_key"]["kid"], encryption_key.id.to_string());
 }
 
 #[tokio::test]
@@ -233,7 +368,7 @@ async fn test_share_proof_success_mdoc() {
             &Uuid::new_v4(),
             "test",
             &organisation,
-            "NONE",
+            None,
             &claim_schemas,
             "MDOC",
             "org.iso.18013.5.1.mDL",
@@ -259,12 +394,13 @@ async fn test_share_proof_success_mdoc() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Created,
             VerificationProtocolType::OpenId4VpDraft20.as_ref(),
             None,
             key,
+            None,
+            None,
         )
         .await;
 
@@ -359,7 +495,7 @@ async fn test_share_proof_success_jsonld() {
             &Uuid::new_v4(),
             "test",
             &organisation,
-            "NONE",
+            None,
             &claim_schemas,
             "JSON_LD_CLASSIC",
             "test",
@@ -385,12 +521,13 @@ async fn test_share_proof_success_jsonld() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Created,
             "OPENID4VP_DRAFT20",
             None,
             key,
+            None,
+            None,
         )
         .await;
 
@@ -436,8 +573,8 @@ async fn test_share_proof_success_jsonld() {
     assert_eq!(expected, input_descriptor);
 }
 
-async fn prepare_created_openid4vp_proof() -> (TestContext, Proof) {
-    let (context, organisation, _, identifier, ..) = TestContext::new_with_did(None).await;
+async fn prepare_created_openid4vp_proof(exchange: Option<&str>) -> (TestContext, Proof) {
+    let (context, organisation, _, identifier, key) = TestContext::new_with_did(None).await;
     let credential_schema =
         fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
     let claim_schema = credential_schema
@@ -446,7 +583,6 @@ async fn prepare_created_openid4vp_proof() -> (TestContext, Proof) {
         .unwrap()
         .first()
         .unwrap()
-        .schema
         .to_owned();
 
     let proof_schema = fixtures::create_proof_schema(
@@ -462,7 +598,6 @@ async fn prepare_created_openid4vp_proof() -> (TestContext, Proof) {
                 array: false,
             }],
             credential_schema: &credential_schema,
-            validity_constraint: None,
         }],
     )
     .await;
@@ -470,10 +605,13 @@ async fn prepare_created_openid4vp_proof() -> (TestContext, Proof) {
     let proof = fixtures::create_proof(
         &context.db.db_conn,
         &identifier,
-        None,
         Some(&proof_schema),
         ProofStateEnum::Created,
-        "OPENID4VP_DRAFT20",
+        ProofRole::Verifier,
+        exchange.unwrap_or("OPENID4VP_DRAFT20"),
+        None,
+        Some(&key),
+        None,
         None,
     )
     .await;
@@ -495,9 +633,9 @@ async fn extract_client_id(response: Response) -> String {
 }
 
 #[tokio::test]
-async fn test_share_proof_client_id_scheme_redirect_uri() {
+async fn test_share_proof_client_id_scheme_redirect_uri_openid4vp_draft20() {
     // GIVEN
-    let (context, proof) = prepare_created_openid4vp_proof().await;
+    let (context, proof) = prepare_created_openid4vp_proof(None).await;
 
     // WHEN
     let resp = context
@@ -520,9 +658,9 @@ async fn test_share_proof_client_id_scheme_redirect_uri() {
 }
 
 #[tokio::test]
-async fn test_share_proof_client_id_scheme_did() {
+async fn test_share_proof_client_id_scheme_did_openid4vp_draft20() {
     // GIVEN
-    let (context, proof) = prepare_created_openid4vp_proof().await;
+    let (context, proof) = prepare_created_openid4vp_proof(None).await;
 
     // WHEN
     let resp = context
@@ -548,9 +686,9 @@ async fn test_share_proof_client_id_scheme_did() {
 }
 
 #[tokio::test]
-async fn test_share_proof_client_id_scheme_verifier_attestation() {
+async fn test_share_proof_client_id_scheme_verifier_attestation_openid4vp_draft20() {
     // GIVEN
-    let (context, proof) = prepare_created_openid4vp_proof().await;
+    let (context, proof) = prepare_created_openid4vp_proof(None).await;
 
     // WHEN
     let resp = context
@@ -570,4 +708,155 @@ async fn test_share_proof_client_id_scheme_verifier_attestation() {
     );
 
     assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 1).await;
+}
+
+#[tokio::test]
+async fn test_share_proof_client_id_scheme_did_openid4vp_final1_0() {
+    // GIVEN
+    let (context, proof) = prepare_created_openid4vp_proof(Some("OPENID4VP_FINAL1")).await;
+
+    // WHEN
+    let resp = context
+        .api
+        .proofs
+        .share(proof.id, Some(ClientIdSchemeRestEnum::Did))
+        .await;
+
+    // THEN
+    let client_id = extract_client_id(resp).await;
+
+    let verifier_did = proof
+        .verifier_identifier
+        .unwrap()
+        .did
+        .unwrap()
+        .did
+        .to_string();
+
+    assert_eq!(
+        client_id,
+        format!("decentralized_identifier:{verifier_did}")
+    );
+
+    assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 1).await;
+}
+
+#[tokio::test]
+async fn test_share_proof_client_id_scheme_x509_hash_openid4vp_final1_0() {
+    // GIVEN
+    let (context, organisation, identifier, _, key) =
+        TestContext::new_with_certificate_identifier(None).await;
+    let credential_schema =
+        fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
+    let claim_schema = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .first()
+        .unwrap()
+        .to_owned();
+
+    let proof_schema = fixtures::create_proof_schema(
+        &context.db.db_conn,
+        "test",
+        &organisation,
+        &[CreateProofInputSchema {
+            claims: vec![CreateProofClaim {
+                id: claim_schema.id,
+                key: &claim_schema.key,
+                required: true,
+                data_type: &claim_schema.data_type,
+                array: false,
+            }],
+            credential_schema: &credential_schema,
+        }],
+    )
+    .await;
+
+    let proof = context
+        .db
+        .proofs
+        .create(
+            None,
+            &identifier,
+            Some(&proof_schema),
+            ProofStateEnum::Created,
+            "OPENID4VP_FINAL1",
+            None,
+            key,
+            None,
+            None,
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .proofs
+        .share(proof.id, Some(ClientIdSchemeRestEnum::X509Hash))
+        .await;
+
+    // THEN
+    let client_id = extract_client_id(resp).await;
+    assert_eq!(client_id, format!("x509_hash:__-qqg"));
+
+    assert_history_count(&context, &proof.id.into(), HistoryAction::Shared, 1).await;
+}
+
+#[tokio::test]
+async fn test_share_proof_fails_when_nfc_engagement_is_set_on_proof() {
+    // GIVEN
+    let (context, organisation, _, identifier, key) = TestContext::new_with_did(None).await;
+    let credential_schema =
+        fixtures::create_credential_schema(&context.db.db_conn, &organisation, None).await;
+    let claim_schema = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .first()
+        .unwrap()
+        .to_owned();
+
+    let proof_schema = fixtures::create_proof_schema(
+        &context.db.db_conn,
+        "test",
+        &organisation,
+        &[CreateProofInputSchema {
+            claims: vec![CreateProofClaim {
+                id: claim_schema.id,
+                key: &claim_schema.key,
+                required: true,
+                data_type: &claim_schema.data_type,
+                array: false,
+            }],
+            credential_schema: &credential_schema,
+        }],
+    )
+    .await;
+
+    let proof = fixtures::create_proof(
+        &context.db.db_conn,
+        &identifier,
+        Some(&proof_schema),
+        ProofStateEnum::Pending,
+        ProofRole::Verifier,
+        "ISO_MDL",
+        None,
+        Some(&key),
+        None,
+        Some("NFC".to_string()),
+    )
+    .await;
+
+    // WHEN
+    let resp = context.api.proofs.share(proof.id, None).await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+    let resp = resp.json::<Value>().await;
+    assert_eq!(&resp["code"], "BR_0078");
+    assert_eq!(
+        &resp["message"],
+        "Sharing not possible with non QR_CODE engagement"
+    );
 }

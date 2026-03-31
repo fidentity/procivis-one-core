@@ -1,7 +1,12 @@
-use crate::config::ConfigValidationError;
-use crate::config::core_config::FormatConfig;
+use shared_types::CredentialFormat;
 
-pub fn validate_format(value: &str, config: &FormatConfig) -> Result<(), ConfigValidationError> {
+use crate::config::ConfigValidationError;
+use crate::config::core_config::{ConfigExt, FormatConfig};
+
+pub fn validate_format(
+    value: &CredentialFormat,
+    config: &FormatConfig,
+) -> Result<(), ConfigValidationError> {
     config.get_if_enabled(value)?;
     Ok(())
 }

@@ -2,14 +2,20 @@ use one_crypto::Hasher;
 use one_crypto::hasher::sha256::SHA256;
 use time::OffsetDateTime;
 
+use crate::error::ContextWithErrorCode;
 use crate::model::credential::{Credential, CredentialStateEnum};
+use crate::model::identifier::IdentifierType;
 use crate::model::interaction::Interaction;
-use crate::provider::issuance_protocol::openid4vci_draft13::error::{
-    OpenID4VCIError, OpenIDIssuanceError,
+use crate::provider::credential_formatter::model::{
+    CertificateDetails, DetailCredential, IdentifierDetails,
+};
+use crate::provider::issuance_protocol::error::{
+    IssuanceProtocolError, OpenID4VCIError, OpenIDIssuanceError,
 };
 use crate::provider::issuance_protocol::openid4vci_draft13::model::{
     OpenID4VCIIssuerInteractionDataDTO, OpenID4VCITokenRequestDTO,
 };
+use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 
 pub(crate) fn throw_if_token_request_invalid(
     request: &OpenID4VCITokenRequestDTO,
@@ -29,6 +35,44 @@ pub(crate) fn throw_if_token_request_invalid(
 
         _ => Ok(()),
     }
+}
+
+pub(crate) fn throw_if_tx_code_invalid(
+    expected_code: Option<&String>,
+    request: &OpenID4VCITokenRequestDTO,
+) -> Result<(), OpenID4VCIError> {
+    match (expected_code, request) {
+        (
+            Some(expected_code),
+            OpenID4VCITokenRequestDTO::PreAuthorizedCode {
+                pre_authorized_code: _,
+                tx_code: Some(request_code),
+            },
+        ) => {
+            if expected_code != request_code {
+                tracing::info!("wrong tx_code supplied");
+                return Err(OpenID4VCIError::InvalidGrant);
+            }
+            tracing::debug!("correct tx_code supplied");
+        }
+        (Some(_), _) => {
+            tracing::info!("tx_code not supplied");
+            return Err(OpenID4VCIError::InvalidRequest);
+        }
+        (
+            None,
+            OpenID4VCITokenRequestDTO::PreAuthorizedCode {
+                pre_authorized_code: _,
+                tx_code: Some(_),
+            },
+        ) => {
+            tracing::info!("tx_code supplied while not expected");
+            return Err(OpenID4VCIError::InvalidRequest);
+        }
+        (None, _) => {} // OK, correct handling without tx_code
+    };
+
+    Ok(())
 }
 
 pub(crate) fn throw_if_interaction_created_date(
@@ -99,5 +143,66 @@ pub(super) fn validate_refresh_token(
         ));
     }
 
+    Ok(())
+}
+
+/// Check that the issued credential issuer is consistent with what was promised in the credential offer.
+pub(crate) async fn validate_issuer(
+    offered_credential: &Credential,
+    received_credential: &DetailCredential,
+    key_algorithm_provider: &dyn KeyAlgorithmProvider,
+) -> Result<(), IssuanceProtocolError> {
+    let Some(offer_identifier) = &offered_credential.issuer_identifier else {
+        // the offer did not make any promises about the issuer, hence consistency is given anyway
+        return Ok(());
+    };
+
+    match &received_credential.issuer {
+        IdentifierDetails::Did(response_did) => {
+            if offer_identifier.r#type != IdentifierType::Did {
+                return Err(IssuanceProtocolError::DidMismatch);
+            }
+            let Some(credential_offer_did) = &offer_identifier.did else {
+                return Err(IssuanceProtocolError::Failed(format!(
+                    "Missing did on identifier {}",
+                    offer_identifier.id
+                )));
+            };
+            if *response_did != credential_offer_did.did {
+                return Err(IssuanceProtocolError::DidMismatch);
+            }
+        }
+        IdentifierDetails::Certificate(CertificateDetails { fingerprint, .. }) => {
+            if offer_identifier.r#type != IdentifierType::Certificate {
+                return Err(IssuanceProtocolError::CertificateMismatch);
+            }
+            let Some(offer_cert) = &offered_credential.issuer_certificate else {
+                return Err(IssuanceProtocolError::Failed(format!(
+                    "Missing issuer_certificate on credential {} offered by issuer with certificate identifier {}",
+                    offered_credential.id, offer_identifier.id
+                )));
+            };
+            if offer_cert.fingerprint != *fingerprint {
+                return Err(IssuanceProtocolError::CertificateMismatch);
+            }
+        }
+        IdentifierDetails::Key(public_key) => {
+            if offer_identifier.r#type != IdentifierType::Key {
+                return Err(IssuanceProtocolError::KeyMismatch);
+            }
+            let Some(offer_key) = &offer_identifier.key else {
+                return Err(IssuanceProtocolError::Failed(format!(
+                    "Missing key on identifier {}",
+                    offer_identifier.id
+                )));
+            };
+            let pk = key_algorithm_provider
+                .parse_jwk(public_key)
+                .error_while("parsing issuer JWK")?;
+            if pk.key.public_key_as_raw() != offer_key.public_key {
+                return Err(IssuanceProtocolError::KeyMismatch);
+            }
+        }
+    }
     Ok(())
 }

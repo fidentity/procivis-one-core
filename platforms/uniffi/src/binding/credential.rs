@@ -1,21 +1,23 @@
 use one_core::model::common::ExactColumn;
-use one_core::model::credential::SortableCredentialColumn;
+use one_core::model::credential::{CredentialFilterValue, SortableCredentialColumn};
 use one_core::model::list_filter::{
-    ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
 };
 use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::credential::dto::{
-    CredentialFilterValue, CredentialListIncludeEntityTypeEnum, CredentialRole,
-    CredentialStateEnum, GetCredentialListResponseDTO, GetCredentialQueryDTO,
+    CredentialRole, CredentialStateEnum, DetailCredentialClaimResponseDTO,
+    GetCredentialListResponseDTO, GetCredentialQueryDTO,
 };
 use one_core::service::error::{BusinessLogicError, ServiceError};
+use one_core::{model, service};
 use one_dto_mapper::{From, Into, convert_inner};
 
 use super::common::SortDirection;
-use super::credential_schema::CredentialSchemaBindingDTO;
-use super::did::DidListItemBindingDTO;
+use super::credential_schema::{CredentialClaimSchemaBindingDTO, CredentialSchemaBindingDTO};
 use super::identifier::GetIdentifierListItemBindingDTO;
 use crate::OneCoreBinding;
+use crate::binding::mapper::deserialize_timestamp;
 use crate::error::BindingError;
 use crate::utils::into_id;
 
@@ -40,6 +42,7 @@ impl OneCoreBinding {
         query: CredentialListQueryBindingDTO,
     ) -> Result<CredentialListBindingDTO, BindingError> {
         let core = self.use_core().await?;
+        let organisation_id = into_id(&query.organisation_id)?;
 
         let condition = {
             if query.name.is_some() && query.search_type.is_some() && query.search_text.is_some() {
@@ -58,8 +61,7 @@ impl OneCoreBinding {
                 }
             };
 
-            let organisation =
-                CredentialFilterValue::OrganisationId(into_id(&query.organisation_id)?).condition();
+            let organisation = CredentialFilterValue::OrganisationId(organisation_id).condition();
 
             let name = query.name.map(|name| {
                 CredentialFilterValue::CredentialSchemaName(StringMatch {
@@ -67,6 +69,8 @@ impl OneCoreBinding {
                     value: name,
                 })
             });
+
+            let profile = query.profiles.map(CredentialFilterValue::Profiles);
 
             let search_filters = match (query.search_text, query.search_type) {
                 (Some(search_test), Some(search_type)) => {
@@ -105,9 +109,15 @@ impl OneCoreBinding {
                 _ => organisation,
             };
 
-            let role = query
-                .role
-                .map(|role| CredentialFilterValue::Role(role.into()));
+            let role = query.roles.map(|roles| {
+                CredentialFilterValue::Roles(
+                    roles
+                        .into_iter()
+                        .map(service::credential::dto::CredentialRole::from)
+                        .map(model::credential::CredentialRole::from)
+                        .collect(),
+                )
+            });
 
             let ids = match query.ids {
                 Some(ids) => {
@@ -117,29 +127,128 @@ impl OneCoreBinding {
                 None => None,
             };
 
-            let states = query.status.map(|values| {
-                CredentialFilterValue::State(
+            let states = query.states.map(|values| {
+                CredentialFilterValue::States(
                     values.into_iter().map(|status| status.into()).collect(),
                 )
             });
 
-            search_filters & name & role & ids & states
+            let credential_schema_ids = query
+                .credential_schema_ids
+                .map(|ids| ids.into_iter().map(into_id).collect::<Result<Vec<_>, _>>())
+                .transpose()?
+                .map(CredentialFilterValue::CredentialSchemaIds);
+
+            let created_date_after = query
+                .created_date_after
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::CreatedDate(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let created_date_before = query
+                .created_date_before
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::CreatedDate(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
+            let last_modified_after = query
+                .last_modified_after
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::LastModified(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let last_modified_before = query
+                .last_modified_before
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::LastModified(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
+            let issuance_date_after = query
+                .issuance_date_after
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::IssuanceDate(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let issuance_date_before = query
+                .issuance_date_before
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::IssuanceDate(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
+            let revocation_date_after = query
+                .revocation_date_after
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::RevocationDate(ValueComparison {
+                        comparison: ComparisonType::GreaterThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+            let revocation_date_before = query
+                .revocation_date_before
+                .map(|date| {
+                    Ok::<_, ServiceError>(CredentialFilterValue::RevocationDate(ValueComparison {
+                        comparison: ComparisonType::LessThanOrEqual,
+                        value: deserialize_timestamp(&date)?,
+                    }))
+                })
+                .transpose()?;
+
+            search_filters
+                & name
+                & role
+                & ids
+                & states
+                & profile
+                & credential_schema_ids
+                & created_date_after
+                & created_date_before
+                & last_modified_after
+                & last_modified_before
+                & issuance_date_after
+                & issuance_date_before
+                & revocation_date_after
+                & revocation_date_before
         };
 
         Ok(core
             .credential_service
-            .get_credential_list(GetCredentialQueryDTO {
-                pagination: Some(ListPagination {
-                    page: query.page,
-                    page_size: query.page_size,
-                }),
-                sorting: query.sort.map(|column| ListSorting {
-                    column: column.into(),
-                    direction: convert_inner(query.sort_direction),
-                }),
-                filtering: Some(condition),
-                include: query.include.map(convert_inner),
-            })
+            .get_credential_list(
+                &organisation_id,
+                GetCredentialQueryDTO {
+                    pagination: Some(ListPagination {
+                        page: query.page,
+                        page_size: query.page_size,
+                    }),
+                    sorting: query.sort.map(|column| ListSorting {
+                        column: column.into(),
+                        direction: convert_inner(query.sort_direction),
+                    }),
+                    filtering: Some(condition),
+                    include: query.include.map(convert_inner),
+                },
+            )
             .await?
             .into())
     }
@@ -158,22 +267,20 @@ impl OneCoreBinding {
 pub struct CredentialDetailBindingDTO {
     pub id: String,
     pub created_date: String,
-    pub issuance_date: String,
+    pub issuance_date: Option<String>,
     pub last_modified: String,
     pub revocation_date: Option<String>,
-    pub issuer_did: Option<DidListItemBindingDTO>,
     pub issuer: Option<GetIdentifierListItemBindingDTO>,
-    pub holder_did: Option<DidListItemBindingDTO>,
     pub holder: Option<GetIdentifierListItemBindingDTO>,
     pub state: CredentialStateBindingEnum,
     pub schema: CredentialSchemaBindingDTO,
     pub claims: Vec<ClaimBindingDTO>,
     pub redirect_uri: Option<String>,
     pub role: CredentialRoleBindingDTO,
-    pub lvvc_issuance_date: Option<String>,
     pub suspend_end_date: Option<String>,
     pub mdoc_mso_validity: Option<MdocMsoValidityResponseBindingDTO>,
-    pub exchange: String,
+    pub protocol: String,
+    pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
@@ -187,7 +294,7 @@ pub enum CredentialListQueryExactColumnBindingEnum {
 pub enum SortableCredentialColumnBindingEnum {
     CreatedDate,
     SchemaName,
-    IssuerDid,
+    Issuer,
     State,
 }
 
@@ -208,17 +315,28 @@ pub struct CredentialListQueryBindingDTO {
 
     pub organisation_id: String,
     pub name: Option<String>,
+    pub profiles: Option<Vec<String>>,
     pub search_text: Option<String>,
     pub search_type: Option<Vec<SearchTypeBindingEnum>>,
     pub exact: Option<Vec<CredentialListQueryExactColumnBindingEnum>>,
-    pub role: Option<CredentialRoleBindingDTO>,
+    pub roles: Option<Vec<CredentialRoleBindingDTO>>,
     pub ids: Option<Vec<String>>,
-    pub status: Option<Vec<CredentialStateBindingEnum>>,
+    pub states: Option<Vec<CredentialStateBindingEnum>>,
     pub include: Option<Vec<CredentialListIncludeEntityTypeBindingEnum>>,
+    pub credential_schema_ids: Option<Vec<String>>,
+
+    pub created_date_after: Option<String>,
+    pub created_date_before: Option<String>,
+    pub last_modified_after: Option<String>,
+    pub last_modified_before: Option<String>,
+    pub issuance_date_after: Option<String>,
+    pub issuance_date_before: Option<String>,
+    pub revocation_date_after: Option<String>,
+    pub revocation_date_before: Option<String>,
 }
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
-#[into(CredentialListIncludeEntityTypeEnum)]
+#[into(one_core::model::credential::CredentialListIncludeEntityTypeEnum)]
 pub enum CredentialListIncludeEntityTypeBindingEnum {
     LayoutProperties,
     Credential,
@@ -240,7 +358,7 @@ pub struct MdocMsoValidityResponseBindingDTO {
     pub last_update: String,
 }
 
-#[derive(Clone, Debug, From, Into, uniffi::Enum)]
+#[derive(Clone, Debug, From, Into, Eq, PartialEq, uniffi::Enum)]
 #[from(CredentialStateEnum)]
 #[into(one_core::model::credential::CredentialStateEnum)]
 pub enum CredentialStateBindingEnum {
@@ -252,14 +370,14 @@ pub enum CredentialStateBindingEnum {
     Revoked,
     Suspended,
     Error,
+    InteractionExpired,
 }
 
-#[derive(Clone, Debug, uniffi::Record)]
+#[derive(Clone, Debug, uniffi::Record, From)]
+#[from(DetailCredentialClaimResponseDTO)]
 pub struct ClaimBindingDTO {
-    pub id: String,
-    pub key: String,
-    pub data_type: String,
-    pub array: bool,
+    pub path: String,
+    pub schema: CredentialClaimSchemaBindingDTO,
     pub value: ClaimValueBindingDTO,
 }
 
@@ -285,14 +403,14 @@ pub enum CredentialRoleBindingDTO {
 pub struct CredentialListItemBindingDTO {
     pub id: String,
     pub created_date: String,
-    pub issuance_date: String,
+    pub issuance_date: Option<String>,
     pub last_modified: String,
     pub revocation_date: Option<String>,
-    pub issuer_did: Option<String>,
     pub issuer: Option<String>,
     pub state: CredentialStateBindingEnum,
     pub schema: CredentialSchemaBindingDTO,
     pub role: CredentialRoleBindingDTO,
     pub suspend_end_date: Option<String>,
-    pub exchange: String,
+    pub protocol: String,
+    pub profile: Option<String>,
 }

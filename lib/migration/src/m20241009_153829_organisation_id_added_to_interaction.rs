@@ -13,20 +13,24 @@ const PROOF_TABLE: &str = "proof";
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if manager.get_database_backend() == sea_orm::DatabaseBackend::Postgres {
+            // Skip because it is not supported. If support for Postgres is added in the future
+            // the schema can be setup in its entirety in a new, later migration.
+            return Ok(());
+        }
         manager
             .get_connection()
             .execute_unprepared(&format!(
-                "UPDATE {} SET interaction_id=null",
-                CREDENTIAL_TABLE
+                "UPDATE {CREDENTIAL_TABLE} SET interaction_id=null"
             ))
             .await?;
         manager
             .get_connection()
-            .execute_unprepared(&format!("UPDATE {} SET interaction_id=null", PROOF_TABLE))
+            .execute_unprepared(&format!("UPDATE {PROOF_TABLE} SET interaction_id=null"))
             .await?;
         manager
             .get_connection()
-            .execute_unprepared(&format!("DELETE FROM {}", TABLE))
+            .execute_unprepared(&format!("DELETE FROM {TABLE}"))
             .await?;
 
         match manager.get_database_backend() {

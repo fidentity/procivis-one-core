@@ -1,4 +1,4 @@
-use one_core::model::credential_schema::CredentialSchemaType;
+use similar_asserts::assert_eq;
 
 use crate::utils::context::TestContext;
 use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
@@ -14,7 +14,7 @@ async fn test_get_credential_schema_success() {
         .create(
             "test schema",
             &organisation,
-            "STATUSLIST2021",
+            Some("STATUSLIST2021".into()),
             Default::default(),
         )
         .await;
@@ -32,10 +32,11 @@ async fn test_get_credential_schema_success() {
 
     resp["id"].assert_eq(&credential_schema.id);
     resp["schemaId"].assert_eq(&credential_schema.id);
+    resp["requiresWalletInstanceAttestation"]
+        .assert_eq(&credential_schema.requires_wallet_instance_attestation);
     assert_eq!(resp["claims"].as_array().unwrap().len(), 2);
     assert_eq!(resp["revocationMethod"], "STATUSLIST2021");
     assert_eq!(resp["layoutType"], "CARD");
-    assert_eq!(resp["schemaType"], "ProcivisOneSchema2024");
     assert_eq!(resp["layoutProperties"]["background"]["color"], "#DA2727");
     assert_eq!(resp["layoutProperties"]["primaryAttribute"], "firstName");
     assert_eq!(resp["layoutProperties"]["secondaryAttribute"], "firstName");
@@ -60,9 +61,9 @@ async fn test_get_credential_scheme_with_3rd_party_type() {
         .create(
             "test",
             &organisation,
-            "NONE",
+            None,
             TestingCreateSchemaParams {
-                schema_type: Some(CredentialSchemaType::Other("foo".into())),
+                format: Some("foo".into()),
                 ..Default::default()
             },
         )
@@ -78,5 +79,5 @@ async fn test_get_credential_scheme_with_3rd_party_type() {
     // THEN
     assert_eq!(resp.status(), 200);
     let resp = resp.json_value().await;
-    assert_eq!(resp["schemaType"], "foo");
+    assert_eq!(resp["format"], "foo");
 }

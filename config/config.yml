@@ -11,3 +11,13 @@ task: {}
 trustManagement: {}
 transport: {}
 cacheEntities: {}
+holderKeyStorage: {}
+blobStorage: {}
+walletProvider: {}
+credentialIssuer: {}
+verificationEngagement: {}
+certificateValidation: {}
+signer: {}
+verifierProvider: {}
+keySecurityLevel: {}
+trustListPublisher: {}

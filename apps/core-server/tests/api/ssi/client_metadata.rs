@@ -1,4 +1,5 @@
 use one_core::model::proof::ProofStateEnum;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
@@ -12,10 +13,10 @@ async fn test_get_client_metadata() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
-    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0].schema;
+    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
 
     let proof_schema = context
         .db
@@ -32,7 +33,6 @@ async fn test_get_client_metadata() {
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: None,
             }],
         )
         .await;
@@ -43,12 +43,13 @@ async fn test_get_client_metadata() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Pending,
             "OPENID4VP_DRAFT20",
             None,
             key.to_owned(),
+            None,
+            None,
         )
         .await;
 
@@ -63,6 +64,7 @@ async fn test_get_client_metadata() {
         serde_json::json!({
             "jwks": {
                 "keys": [{
+                    "alg": "ECDH-ES",
                     "crv": "P-256",
                     "kid": key.id.to_string(),
                     "kty": "EC",
@@ -119,10 +121,10 @@ async fn test_fail_to_get_client_metadata_wrong_exchange_protocol() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
-    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0].schema;
+    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
 
     let proof_schema = context
         .db
@@ -139,7 +141,6 @@ async fn test_fail_to_get_client_metadata_wrong_exchange_protocol() {
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: None,
             }],
         )
         .await;
@@ -150,12 +151,13 @@ async fn test_fail_to_get_client_metadata_wrong_exchange_protocol() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Pending,
             "SCAN_TO_VERIFY",
             None,
             key,
+            None,
+            None,
         )
         .await;
 
@@ -174,10 +176,10 @@ async fn test_fail_to_get_client_metadata_wrong_proof_state() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
-    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0].schema;
+    let claim_schema = &credential_schema.claim_schemas.as_ref().unwrap()[0];
 
     let proof_schema = context
         .db
@@ -194,7 +196,6 @@ async fn test_fail_to_get_client_metadata_wrong_proof_state() {
                     array: false,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: None,
             }],
         )
         .await;
@@ -205,12 +206,13 @@ async fn test_fail_to_get_client_metadata_wrong_proof_state() {
         .create(
             None,
             &identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Rejected,
             "OPENID4VP_DRAFT20",
             None,
             key,
+            None,
+            None,
         )
         .await;
 

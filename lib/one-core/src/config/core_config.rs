@@ -1,31 +1,42 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+use std::path::Path;
 
 use figment::Figment;
 #[cfg(feature = "config_env")]
 use figment::providers::Env;
-use figment::providers::Format;
 #[cfg(feature = "config_json")]
 use figment::providers::Json;
 #[cfg(feature = "config_yaml")]
 use figment::providers::Yaml;
+use figment::providers::{Data, Format};
+use one_dto_mapper::{From, Into};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use serde_with::{DurationSeconds, serde_as, skip_serializing_none};
+use shared_types::{CredentialFormat, RevocationMethodId, TaskId};
 use strum::{AsRefStr, Display, EnumString};
 
 use super::{ConfigParsingError, ConfigValidationError};
+use crate::model::credential_schema::KeyStorageSecurity;
 
 type Dict<K, V> = BTreeMap<K, V>;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NoCustomConfig;
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppCustomConfigSerdeDTO<Custom> {
+    pub(super) app: Custom,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig<Custom> {
-    #[serde(flatten)]
     pub core: CoreConfig,
     #[serde(default)]
     pub app: Custom,
@@ -34,19 +45,28 @@ pub struct AppConfig<Custom> {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoreConfig {
-    pub(crate) format: FormatConfig,
-    pub(crate) identifier: IdentifierConfig,
-    pub(crate) issuance_protocol: IssuanceProtocolConfig,
-    pub(crate) verification_protocol: VerificationProtocolConfig,
-    pub(crate) transport: TransportConfig,
-    pub(crate) revocation: RevocationConfig,
-    pub(crate) did: DidConfig,
-    pub(crate) datatype: DatatypeConfig,
-    pub(crate) key_algorithm: KeyAlgorithmConfig,
-    pub(crate) key_storage: KeyStorageConfig,
-    pub(crate) task: TaskConfig,
-    pub(crate) trust_management: TrustManagementConfig,
+    pub format: FormatConfig,
+    pub identifier: IdentifierConfig,
+    pub issuance_protocol: IssuanceProtocolConfig,
+    pub verification_protocol: VerificationProtocolConfig,
+    pub transport: TransportConfig,
+    pub revocation: RevocationConfig,
+    pub did: DidConfig,
+    pub datatype: DatatypeConfig,
+    pub key_algorithm: KeyAlgorithmConfig,
+    pub key_storage: KeyStorageConfig,
+    pub key_security_level: KeySecurityLevelConfig,
+    pub task: TaskConfig,
+    pub trust_management: TrustManagementConfig,
+    pub trust_list_publisher: TrustListPublisherConfig,
+    pub blob_storage: BlobStorageConfig,
     pub cache_entities: CacheEntitiesConfig,
+    pub wallet_provider: WalletProviderConfig,
+    pub credential_issuer: CredentialIssuerConfig,
+    pub verification_engagement: VerificationEngagementConfig,
+    pub certificate_validation: CertificateValidationConfig,
+    pub signer: SignerConfig,
+    pub verifier_provider: VerifierProviderConfig,
 }
 
 impl CoreConfig {
@@ -55,7 +75,7 @@ impl CoreConfig {
             .iter()
             .filter_map(|(key, fields)| {
                 if fields.r#type == datatype {
-                    Some(key)
+                    Some(key.as_str())
                 } else {
                     None
                 }
@@ -83,73 +103,104 @@ pub enum CacheEntityCacheType {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheEntityConfig {
-    #[serde_as(as = "DurationSeconds<i64>")]
-    pub cache_refresh_timeout: time::Duration,
-    pub cache_size: u32,
     pub cache_type: CacheEntityCacheType,
+
+    /// Maximum number of entries the cache can hold (of this `cache_type`)
+    ///
+    /// When limit reached, the oldest (unused) entries are removed
+    pub cache_size: u32,
+
+    /// Duration for soft-refresh
+    ///
+    /// Duration after which an entry is tried to be refreshed
+    /// (if refresh fails, the old cached value is still used)
     #[serde_as(as = "DurationSeconds<i64>")]
     pub refresh_after: time::Duration,
+
+    /// Duration for hard-refresh
+    ///
+    /// Duration after which an entry is expired and must be refreshed
+    /// (if refresh fails, the cached value is ignored and fetching fails)
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub cache_refresh_timeout: time::Duration,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialIssuerConfig {
+    #[serde(flatten)]
+    pub entities: HashMap<String, CredentialIssuerEntry>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialIssuerEntry {
+    pub display: ConfigEntryDisplay,
+    pub order: Option<u64>,
+    pub enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_params")]
+    pub params: Option<Params>,
+}
+
 pub enum InputFormat {
     #[cfg(feature = "config_yaml")]
-    Yaml(String),
+    Yaml(Data<Yaml>),
     #[cfg(feature = "config_json")]
-    Json(String),
+    Json(Data<Json>),
 }
 
 impl InputFormat {
-    pub fn yaml(s: impl Into<String>) -> Self {
-        Self::Yaml(s.into())
+    #[cfg(feature = "config_yaml")]
+    pub fn yaml_file(p: impl AsRef<Path>) -> InputFormat {
+        InputFormat::Yaml(Yaml::file(p))
+    }
+
+    #[cfg(feature = "config_yaml")]
+    pub fn yaml_str(s: impl AsRef<str>) -> InputFormat {
+        InputFormat::Yaml(Yaml::string(s.as_ref()))
     }
 
     #[cfg(feature = "config_json")]
-    pub fn json(s: impl Into<String>) -> Self {
-        Self::Json(s.into())
+    pub fn json_file(p: impl AsRef<Path>) -> InputFormat {
+        InputFormat::Json(Json::file(p))
+    }
+
+    #[cfg(feature = "config_json")]
+    pub fn json_str(s: impl AsRef<str>) -> InputFormat {
+        InputFormat::Json(Json::string(s.as_ref()))
     }
 }
 
 impl<Custom> AppConfig<Custom>
 where
-    Custom: Serialize + DeserializeOwned + Default,
+    Custom: Serialize + DeserializeOwned,
 {
     pub fn from_files(files: &[impl AsRef<std::path::Path>]) -> Result<Self, ConfigParsingError> {
         let mut inputs: Vec<InputFormat> = Vec::with_capacity(files.len());
 
         for path in files {
-            let file_content =
-                std::fs::read_to_string(path.as_ref()).map_err(ConfigParsingError::File)?;
-
             #[cfg(feature = "config_yaml")]
             if path
                 .as_ref()
                 .extension()
                 .is_some_and(|ext| ext == "yml" || ext == "yaml")
             {
-                inputs.push(InputFormat::Yaml(file_content));
+                inputs.push(InputFormat::Yaml(Yaml::file(path)));
                 continue;
             }
 
             #[cfg(feature = "config_json")]
             if path.as_ref().extension() == Some("json".as_ref()) {
-                inputs.push(InputFormat::Json(file_content));
+                inputs.push(InputFormat::Json(Json::file(path)));
                 continue;
             }
 
-            return Err(ConfigParsingError::GeneralParsingError(format!(
+            return Err(ConfigParsingError::ParsingError(format!(
                 "Unsupported file or missing file extension: {:?}",
                 path.as_ref().to_str()
             )));
         }
-
-        AppConfig::parse(inputs)
-    }
-
-    pub fn from_yaml(
-        configs: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Result<Self, ConfigParsingError> {
-        let inputs = configs.into_iter().map(InputFormat::yaml);
 
         AppConfig::parse(inputs)
     }
@@ -162,9 +213,9 @@ where
         for data in inputs {
             figment = match data {
                 #[cfg(feature = "config_yaml")]
-                InputFormat::Yaml(content) => figment.merge(Yaml::string(&content)),
+                InputFormat::Yaml(content) => figment.merge(content),
                 #[cfg(feature = "config_json")]
-                InputFormat::Json(content) => figment.merge(Json::string(&content)),
+                InputFormat::Json(content) => figment.merge(content),
             };
         }
 
@@ -173,13 +224,16 @@ where
             figment = figment.merge(Env::prefixed("ONE_").split("__").lowercase(false));
         }
 
-        figment
-            .extract()
-            .map_err(|e| ConfigParsingError::GeneralParsingError(e.to_string()))
+        let core = figment.extract::<CoreConfig>()?;
+        let custom = figment.extract::<AppCustomConfigSerdeDTO<Custom>>()?;
+        Ok(Self {
+            core,
+            app: custom.app,
+        })
     }
 }
 
-pub type FormatConfig = ConfigBlock<FormatType>;
+pub type FormatConfig = ConfigBlock<CredentialFormat, FormatType>;
 
 #[derive(
     Debug,
@@ -199,9 +253,6 @@ pub enum FormatType {
     #[serde(rename = "JWT")]
     #[strum(serialize = "JWT")]
     Jwt,
-    #[serde(rename = "PHYSICAL_CARD")]
-    #[strum(serialize = "PHYSICAL_CARD")]
-    PhysicalCard,
     #[serde(rename = "SD_JWT")]
     #[strum(serialize = "SD_JWT")]
     SdJwt,
@@ -219,7 +270,7 @@ pub enum FormatType {
     Mdoc,
 }
 
-pub type TransportConfig = ConfigBlock<TransportType>;
+pub type TransportConfig = ConfigBlock<String, TransportType>;
 
 #[derive(
     Debug,
@@ -247,7 +298,7 @@ pub enum TransportType {
     Mqtt,
 }
 
-pub type IssuanceProtocolConfig = ConfigBlock<IssuanceProtocolType>;
+pub type IssuanceProtocolConfig = ConfigBlock<String, IssuanceProtocolType>;
 
 #[derive(
     Debug,
@@ -267,12 +318,15 @@ pub enum IssuanceProtocolType {
     #[serde(rename = "OPENID4VCI_DRAFT13")]
     #[strum(serialize = "OPENID4VCI_DRAFT13")]
     OpenId4VciDraft13,
-    #[serde(rename = "OPENID4VCI_DRAFT13_SWIYU")]
-    #[strum(serialize = "OPENID4VCI_DRAFT13_SWIYU")]
-    OpenId4VciDraft13Swiyu,
+    #[serde(rename = "OPENID4VCI_FINAL1_SWIYU")]
+    #[strum(serialize = "OPENID4VCI_FINAL1_SWIYU")]
+    OpenId4vciFinal1_0Swiyu,
+    #[serde(rename = "OPENID4VCI_FINAL1")]
+    #[strum(serialize = "OPENID4VCI_FINAL1")]
+    OpenId4VciFinal1_0,
 }
 
-pub type VerificationProtocolConfig = ConfigBlock<VerificationProtocolType>;
+pub type VerificationProtocolConfig = ConfigBlock<String, VerificationProtocolType>;
 
 #[derive(
     Debug,
@@ -298,9 +352,9 @@ pub enum VerificationProtocolType {
     #[serde(rename = "OPENID4VP_DRAFT25")]
     #[strum(serialize = "OPENID4VP_DRAFT25")]
     OpenId4VpDraft25,
-    #[serde(rename = "SCAN_TO_VERIFY")]
-    #[strum(serialize = "SCAN_TO_VERIFY")]
-    ScanToVerify,
+    #[serde(rename = "OPENID4VP_FINAL1")]
+    #[strum(serialize = "OPENID4VP_FINAL1")]
+    OpenId4VpFinal1_0,
     #[serde(rename = "ISO_MDL")]
     #[strum(serialize = "ISO_MDL")]
     IsoMdl,
@@ -309,30 +363,27 @@ pub enum VerificationProtocolType {
     OpenId4VpProximityDraft00,
 }
 
-pub type RevocationConfig = ConfigBlock<RevocationType>;
+pub type RevocationConfig = ConfigBlock<RevocationMethodId, RevocationType>;
 
 #[derive(
     Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
 pub enum RevocationType {
-    #[serde(rename = "NONE")]
-    #[strum(serialize = "NONE")]
-    None,
     #[serde(rename = "MDOC_MSO_UPDATE_SUSPENSION")]
     #[strum(serialize = "MDOC_MSO_UPDATE_SUSPENSION")]
     MdocMsoUpdateSuspension,
-    #[serde(rename = "LVVC")]
-    #[strum(serialize = "LVVC")]
-    Lvvc,
     #[serde(rename = "BITSTRINGSTATUSLIST")]
     #[strum(serialize = "BITSTRINGSTATUSLIST")]
     BitstringStatusList,
     #[serde(rename = "TOKENSTATUSLIST")]
     #[strum(serialize = "TOKENSTATUSLIST")]
     TokenStatusList,
+    #[serde(rename = "CRL")]
+    #[strum(serialize = "CRL")]
+    CRL,
 }
 
-pub type DidConfig = ConfigBlock<DidType>;
+pub type DidConfig = ConfigBlock<String, DidType>;
 
 #[derive(
     Debug,
@@ -358,24 +409,15 @@ pub enum DidType {
     #[serde(rename = "JWK")]
     #[strum(serialize = "JWK")]
     Jwk,
-    #[serde(rename = "X509")]
-    #[strum(serialize = "X509")]
-    X509,
     #[serde(rename = "UNIVERSAL_RESOLVER")]
     #[strum(serialize = "UNIVERSAL_RESOLVER")]
     Universal,
-    #[serde(rename = "MDL")]
-    #[strum(serialize = "MDL")]
-    MDL,
-    #[serde(rename = "SD_JWT_VC_ISSUER_METADATA")]
-    #[strum(serialize = "SD_JWT_VC_ISSUER_METADATA")]
-    SdJwtVcIssuerMetadata,
     #[serde(rename = "WEBVH")]
     #[strum(serialize = "WEBVH")]
     WebVh,
 }
 
-pub type DatatypeConfig = ConfigBlock<DatatypeType>;
+pub type DatatypeConfig = ConfigBlock<String, DatatypeType>;
 
 #[derive(
     Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
@@ -390,9 +432,12 @@ pub enum DatatypeType {
     #[serde(rename = "DATE")]
     #[strum(serialize = "DATE")]
     Date,
-    #[serde(rename = "FILE")]
-    #[strum(serialize = "FILE")]
-    File,
+    #[serde(rename = "PICTURE")]
+    #[strum(serialize = "PICTURE")]
+    Picture,
+    #[serde(rename = "SWIYU_PICTURE")]
+    #[strum(serialize = "SWIYU_PICTURE")]
+    SwiyuPicture,
     #[serde(rename = "OBJECT")]
     #[strum(serialize = "OBJECT")]
     Object,
@@ -412,9 +457,18 @@ pub type KeyAlgorithmConfig = Dict<KeyAlgorithmType, KeyAlgorithmFields>;
 pub struct KeyAlgorithmFields {
     pub display: ConfigEntryDisplay,
     pub order: Option<u64>,
-    pub enabled: Option<bool>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(skip_deserializing)]
     pub capabilities: Option<Value>,
+    #[serde(default)]
+    pub holder_priority: u32,
+}
+
+impl ConfigFields for KeyAlgorithmFields {
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
 }
 
 #[derive(
@@ -442,12 +496,12 @@ pub enum KeyAlgorithmType {
     #[serde(rename = "BBS_PLUS")]
     #[strum(serialize = "BBS_PLUS")]
     BbsPlus,
-    #[serde(rename = "DILITHIUM")]
-    #[strum(serialize = "DILITHIUM")]
-    Dilithium,
+    #[serde(rename = "ML_DSA")]
+    #[strum(serialize = "ML_DSA")]
+    MlDsa,
 }
 
-pub type KeyStorageConfig = ConfigBlock<KeyStorageType>;
+pub type KeyStorageConfig = ConfigBlock<String, KeyStorageType>;
 
 #[derive(
     Debug,
@@ -481,6 +535,61 @@ pub enum KeyStorageType {
     RemoteSecureElement,
 }
 
+pub type KeySecurityLevelConfig = Dict<KeySecurityLevelType, KeySecurityLevelFields>;
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+    Hash,
+    From,
+    Into,
+)]
+#[from(KeyStorageSecurity)]
+#[into(KeyStorageSecurity)]
+pub enum KeySecurityLevelType {
+    #[serde(rename = "BASIC")]
+    #[strum(serialize = "BASIC")]
+    Basic,
+    #[serde(rename = "ENHANCED_BASIC")]
+    #[strum(serialize = "ENHANCED_BASIC")]
+    EnhancedBasic,
+    #[serde(rename = "MODERATE")]
+    #[strum(serialize = "MODERATE")]
+    Moderate,
+    #[serde(rename = "HIGH")]
+    #[strum(serialize = "HIGH")]
+    High,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySecurityLevelFields {
+    pub display: ConfigEntryDisplay,
+    pub order: Option<u64>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(skip_deserializing)]
+    pub capabilities: Option<Value>,
+    #[serde(default, deserialize_with = "deserialize_params")]
+    pub params: Option<Params>,
+}
+
+impl ConfigFields for KeySecurityLevelFields {
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 pub type IdentifierConfig = Dict<IdentifierType, IdentifierFields>;
 
 #[derive(
@@ -508,6 +617,9 @@ pub enum IdentifierType {
     #[serde(rename = "KEY")]
     #[strum(serialize = "KEY")]
     Key,
+    #[serde(rename = "CA")]
+    #[strum(serialize = "CA")]
+    CertificateAuthority,
 }
 
 #[skip_serializing_none]
@@ -516,12 +628,19 @@ pub enum IdentifierType {
 pub struct IdentifierFields {
     pub display: ConfigEntryDisplay,
     pub order: Option<u64>,
-    pub enabled: Option<bool>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(skip_deserializing)]
     pub capabilities: Option<Value>,
 }
 
-pub type TaskConfig = ConfigBlock<TaskType>;
+impl ConfigFields for IdentifierFields {
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+pub type TaskConfig = ConfigBlock<TaskId, TaskType>;
 
 #[derive(
     Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
@@ -539,9 +658,15 @@ pub enum TaskType {
     #[serde(rename = "HOLDER_CHECK_CREDENTIAL_STATUS")]
     #[strum(serialize = "HOLDER_CHECK_CREDENTIAL_STATUS")]
     HolderCheckCredentialStatus,
+    #[serde(rename = "INTERACTION_EXPIRATION_CHECK")]
+    #[strum(serialize = "INTERACTION_EXPIRATION_CHECK")]
+    InteractionExpirationCheck,
+    #[serde(rename = "WEBHOOK_NOTIFY")]
+    #[strum(serialize = "WEBHOOK_NOTIFY")]
+    WebhookNotify,
 }
 
-pub type TrustManagementConfig = ConfigBlock<TrustManagementType>;
+pub type TrustManagementConfig = ConfigBlock<String, TrustManagementType>;
 
 #[derive(
     Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
@@ -552,37 +677,208 @@ pub enum TrustManagementType {
     SimpleTrustList,
 }
 
+pub type TrustListPublisherConfig = ConfigBlock<String, TrustListPublisherType>;
+
+#[derive(
+    Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
+pub enum TrustListPublisherType {
+    #[serde(rename = "ETSI_LOTE")]
+    #[strum(serialize = "ETSI_LOTE")]
+    EtsiLote,
+}
+
+pub type BlobStorageConfig = Dict<BlobStorageType, BlobStorageFields>;
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    EnumString,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Hash,
+)]
+pub enum BlobStorageType {
+    #[serde(rename = "DB")]
+    #[strum(serialize = "DB")]
+    Db,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobStorageFields {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, deserialize_with = "deserialize_params")]
+    pub params: Option<Params>,
+}
+
+impl ConfigFields for BlobStorageFields {
+    fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    EnumString,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+)]
+pub enum WalletProviderType {
+    #[serde(rename = "PROCIVIS_ONE")]
+    #[strum(serialize = "PROCIVIS_ONE")]
+    ProcivisOne,
+}
+
+pub type WalletProviderConfig = ConfigBlock<String, WalletProviderType>;
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    EnumString,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+    Hash,
+)]
+pub enum VerificationEngagement {
+    #[serde(rename = "QR_CODE")]
+    #[strum(serialize = "QR_CODE")]
+    QrCode,
+    #[serde(rename = "NFC")]
+    #[strum(serialize = "NFC")]
+    NFC,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationEngagementFields {
+    pub display: ConfigEntryDisplay,
+    pub order: Option<u64>,
+    pub enabled: Option<bool>,
+}
+
+impl VerificationEngagementFields {
+    pub fn enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+}
+
+pub type VerificationEngagementConfig = Dict<VerificationEngagement, VerificationEngagementFields>;
+
+#[serde_as]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateValidationConfig {
+    #[serde(default)]
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub leeway: time::Duration,
+}
+
+pub type SignerConfig = ConfigBlock<String, SignerType>;
+
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    EnumString,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    AsRefStr,
+    Hash,
+)]
+pub enum SignerType {
+    #[serde(rename = "REGISTRATION_CERTIFICATE")]
+    #[strum(serialize = "REGISTRATION_CERTIFICATE")]
+    RegistrationCertificate,
+    #[serde(rename = "ACCESS_CERTIFICATE")]
+    #[strum(serialize = "ACCESS_CERTIFICATE")]
+    AccessCertificate,
+    #[serde(rename = "X509_CERTIFICATE")]
+    #[strum(serialize = "X509_CERTIFICATE")]
+    X509Certificate,
+}
+
+pub type VerifierProviderConfig = Dict<String, VerifierProviderFields>;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifierProviderFields {
+    pub params: Params,
+}
+
+// Alias for the collection of traits we want config keys to implement.
+pub trait ConfigKey: Debug + Display + Clone + Ord {}
+// Blanket impl
+impl<T: Debug + Display + Clone + Ord> ConfigKey for T {}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ConfigBlock<T>(Dict<String, Fields<T>>);
+pub struct ConfigBlock<K: ConfigKey, T>(Dict<K, Fields<T>>);
 
-impl<T> ConfigBlock<T>
+impl<K, T> ConfigBlock<K, T>
 where
+    K: ConfigKey,
     T: Serialize + Clone,
 {
     // Deserialize current fields for a given key into a type.
     // Private and public fields will be merged.
-    pub fn get<U>(&self, key: &str) -> Result<U, ConfigValidationError>
+    pub fn get<U, Q: ?Sized + Display + Ord>(&self, key: &Q) -> Result<U, ConfigValidationError>
     where
+        K: Borrow<Q>,
         U: DeserializeOwned,
     {
         let fields = self
             .0
             .get(key)
-            .ok_or_else(|| ConfigValidationError::EntryNotFound(key.to_owned()))?;
+            .ok_or_else(|| ConfigValidationError::EntryNotFound(key.to_string()))?;
 
         fields
             .deserialize()
             .map_err(|source| ConfigValidationError::FieldsDeserialization {
-                key: key.to_owned(),
+                key: key.to_string(),
                 source,
             })
+    }
+
+    pub fn get_type<Q: ?Sized + Display + Ord>(&self, key: &Q) -> Result<T, ConfigValidationError>
+    where
+        K: Borrow<Q>,
+    {
+        self.get_fields(key).map(|fields| fields.r#type.clone())
     }
 
     pub fn get_by_type<U>(&self, r#type: T) -> Result<U, ConfigValidationError>
     where
         U: DeserializeOwned,
-        T: PartialEq + std::fmt::Display,
+        T: PartialEq + Display,
     {
         self.iter()
             .find(|(_, v)| v.r#type == r#type)
@@ -595,7 +891,25 @@ where
             })
     }
 
-    pub fn get_fields(&self, key: &str) -> Result<&Fields<T>, ConfigValidationError> {
+    pub fn get_key_by_type(&self, r#type: T) -> Result<K, ConfigValidationError>
+    where
+        T: PartialEq + Display,
+    {
+        Ok(self
+            .iter()
+            .find(|(_, v)| v.r#type == r#type)
+            .ok_or_else(|| ConfigValidationError::TypeNotFound(r#type.to_string()))?
+            .0
+            .clone())
+    }
+
+    pub fn get_fields<Q: ?Sized + Display + Ord>(
+        &self,
+        key: &Q,
+    ) -> Result<&Fields<T>, ConfigValidationError>
+    where
+        K: Borrow<Q>,
+    {
         let fields = self
             .0
             .get(key)
@@ -604,31 +918,21 @@ where
         Ok(fields)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &Fields<T>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &Fields<T>)> {
         self.0.iter().map(|(k, v)| (k as _, v))
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&str, &mut Fields<T>)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut Fields<T>)> {
         self.0.iter_mut().map(|(k, v)| (k as _, v))
     }
 
-    pub fn get_if_enabled(&self, key: &str) -> Result<&Fields<T>, ConfigValidationError> {
-        let fields = self.get_fields(key)?;
-
-        if !fields.enabled() {
-            return Err(ConfigValidationError::EntryDisabled(key.to_owned()));
-        }
-
-        Ok(fields)
-    }
-
     #[cfg(test)]
-    pub fn insert(&mut self, key: String, fields: Fields<T>) {
+    pub fn insert(&mut self, key: K, fields: Fields<T>) {
         self.0.insert(key, fields);
     }
 }
 
-impl ConfigBlock<TransportType> {
+impl ConfigBlock<String, TransportType> {
     pub fn ble_enabled_for(&self, key: &str) -> bool {
         self.transport_enabled_for(key, &TransportType::Ble)
     }
@@ -655,7 +959,67 @@ impl ConfigBlock<TransportType> {
     }
 }
 
-impl<T> Default for ConfigBlock<T> {
+trait ConfigFields {
+    fn enabled(&self) -> bool;
+}
+
+pub trait ConfigExt<K, T> {
+    fn iter_enabled<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a T)>
+    where
+        K: 'a,
+        T: 'a;
+
+    fn get_if_enabled<Q>(&self, key: &Q) -> Result<&T, ConfigValidationError>
+    where
+        K: Borrow<Q> + Ord,
+        Q: ?Sized + Ord + Display;
+}
+
+impl<K, T> ConfigExt<K, T> for Dict<K, T>
+where
+    K: Ord,
+    T: ConfigFields,
+{
+    fn iter_enabled<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a T)>
+    where
+        K: 'a,
+        T: 'a,
+    {
+        self.iter().filter(|(_, value)| value.enabled())
+    }
+
+    fn get_if_enabled<Q>(&self, key: &Q) -> Result<&T, ConfigValidationError>
+    where
+        K: Borrow<Q> + Ord,
+        Q: ?Sized + Ord + Display,
+    {
+        let fields = self
+            .get(key)
+            .ok_or(ConfigValidationError::EntryNotFound(key.to_string()))?;
+        if !fields.enabled() {
+            return Err(ConfigValidationError::EntryDisabled(key.to_string()));
+        }
+        Ok(fields)
+    }
+}
+
+impl<K: ConfigKey, T> ConfigExt<K, Fields<T>> for ConfigBlock<K, T> {
+    fn iter_enabled<'a>(&'a self) -> impl Iterator<Item = (&'a K, &'a Fields<T>)>
+    where
+        T: 'a,
+    {
+        self.0.iter_enabled()
+    }
+
+    fn get_if_enabled<Q>(&self, key: &Q) -> Result<&Fields<T>, ConfigValidationError>
+    where
+        K: Borrow<Q> + Ord,
+        Q: ?Sized + Ord + Display,
+    {
+        self.0.get_if_enabled(key)
+    }
+}
+impl<K: ConfigKey, T> Default for ConfigBlock<K, T> {
     fn default() -> Self {
         Self(Dict::default())
     }
@@ -668,9 +1032,9 @@ pub enum ConfigEntryDisplay {
     Translated(HashMap<String, String>),
 }
 
-impl<T: Into<String>> From<T> for ConfigEntryDisplay {
+impl<T: Display> From<T> for ConfigEntryDisplay {
     fn from(value: T) -> Self {
-        Self::TranslationId(value.into())
+        Self::TranslationId(value.to_string())
     }
 }
 
@@ -681,11 +1045,19 @@ pub struct Fields<T> {
     pub r#type: T,
     pub display: ConfigEntryDisplay,
     pub order: Option<u64>,
-    pub enabled: Option<bool>,
+    /// Selection priority of the given provider (used to disambiguate between multiple providers of
+    /// the same type). Higher priority providers will be preferred over lower priority ones.
+    pub priority: Option<u64>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(skip_deserializing)]
     pub capabilities: Option<Value>,
     #[serde(default, deserialize_with = "deserialize_params")]
     pub params: Option<Params>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl<T> Fields<T>
@@ -694,10 +1066,6 @@ where
 {
     pub fn r#type(&self) -> &T {
         &self.r#type
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.enabled != Some(false)
     }
 
     /// Deserialize current fields into a type.
@@ -728,6 +1096,12 @@ where
         }
 
         map
+    }
+}
+
+impl<T> ConfigFields for Fields<T> {
+    fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -809,6 +1183,7 @@ fn check_overlapping_params(object: &serde_json::Map<String, Value>) -> Result<(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use similar_asserts::assert_eq;
 
     use super::*;
 
@@ -818,7 +1193,8 @@ mod tests {
             r#type: "JWT".to_string(),
             display: "jwt".into(),
             order: Some(0),
-            enabled: None,
+            priority: None,
+            enabled: true,
             capabilities: None,
             params: Some(Params {
                 public: Some(json!({ "leeway": 60 })),
@@ -834,6 +1210,7 @@ mod tests {
                 "type": "JWT",
                 "display": "jwt",
                 "order": 0,
+                "enabled": true,
                 //params
                 "leeway": 60,
                 "other": "thing"

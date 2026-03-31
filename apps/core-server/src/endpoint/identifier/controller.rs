@@ -1,20 +1,25 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
+use one_core::error::ContextWithErrorCode;
 use one_core::service::error::ServiceError;
-use shared_types::IdentifierId;
+use proc_macros::endpoint;
+use shared_types::{IdentifierId, Permission};
 
 use super::dto::{
     CreateIdentifierRequestRestDTO, GetIdentifierListResponseRestDTO, GetIdentifierQuery,
-    GetIdentifierResponseRestDTO,
+    GetIdentifierResponseRestDTO, ResolveTrustEntitiesRequestRestDTO,
+    ResolveTrustEntitiesResponseRestDTO,
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierCreate],
     post,
     path = "/api/identifier/v1",
     request_body = CreateIdentifierRequestRestDTO,
@@ -24,7 +29,40 @@ use crate::router::AppState;
         ("bearer" = [])
     ),
     summary = "Create an identifier",
-    description = "Creates a new identifier of the specified type.",
+    description = indoc::formatdoc! {"
+    Creates a new identifier to use for issuing or verifying.
+
+    All identifiers have an identifier ID used in credential operations
+    (like the `issuer` field). The underlying resource (key, certificate,
+    DID, or CA) has its own separate ID used with resource-specific APIs
+    for management operations.
+
+    For a key identifier: First, create the key using the key API. Then,
+    use this API, passing the key ID and a name for the identifier. The
+    identifier ID is used for credential operations. The key ID is used
+    with the key API for key-specific management operations.
+
+    For a certificate identifier: Use the key API to generate a key and
+    a Certificate Signing Request (CSR). When you have a signed certificate,
+    pass the certificate in PEM format, also specifying the original key
+    ID and a name for the identifier. The identifier ID is used for
+    credential operations. The certificate ID is used with the certificate
+    API for certificate-specific operations like viewing certificate details
+    or checking expiration.
+    
+    For a Certificate Authority identifier: Import an existing certificate
+    chain by passing the full chain in PEM format (where the leaf certificate
+    is a CA certificate signed by the key specified in `keyId`). Alternatively,
+    generate a self-signed root CA by specifying a key and passing the
+    certificate subject information in `selfSigned`. The identifier ID is used
+    for credential operations. The CA certificate ID is used with the
+    certificate API for CA-specific operations.
+    
+    For a DID identifier: Specify a name, the DID method, and the key(s) to
+    use for the verification methods. The system assigns an identifier ID and
+    a DID. The identifier ID is used for credential operations. The DID ID is
+    used with the DID API for operations like deactivation or resolution.
+    "},
 )]
 pub(crate) async fn post_identifier(
     state: State<AppState>,
@@ -33,16 +71,22 @@ pub(crate) async fn post_identifier(
         ErrorResponseRestDTO,
     >,
 ) -> CreatedOrErrorResponse<EntityResponseRestDTO> {
-    let result = state
-        .core
-        .identifier_service
-        .create_identifier(request.into())
-        .await;
-
+    let result = async {
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .identifier_service
+                .create_identifier(request.try_into()?)
+                .await
+                .error_while("creating identifier")?,
+        )
+    }
+    .await;
     CreatedOrErrorResponse::from_result(result, state, "creating identifier")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierDetail],
     get,
     path = "/api/identifier/v1/{id}",
     responses(OkOrErrorResponse<GetIdentifierResponseRestDTO>),
@@ -67,20 +111,21 @@ pub(crate) async fn get_identifier(
             Ok(value) => OkOrErrorResponse::ok(value),
             Err(error) => {
                 tracing::error!("Error while converting identifier response: {:?}", error);
-                OkOrErrorResponse::from_service_error(
-                    ServiceError::MappingError(error.to_string()),
+                OkOrErrorResponse::from_error(
+                    &ServiceError::MappingError(error.to_string()),
                     state.config.hide_error_response_cause,
                 )
             }
         },
         Err(error) => {
             tracing::error!("Error while getting identifier details: {:?}", error);
-            OkOrErrorResponse::from_service_error(error, state.config.hide_error_response_cause)
+            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
         }
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierDelete],
     delete,
     path = "/api/identifier/v1/{id}",
     responses(EmptyOrErrorResponse),
@@ -103,7 +148,8 @@ pub(crate) async fn delete_identifier(
     EmptyOrErrorResponse::from_result(result, state, "deleting identifier")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierList],
     get,
     path = "/api/identifier/v1",
     responses(OkOrErrorResponse<GetIdentifierListResponseRestDTO>),
@@ -113,16 +159,61 @@ pub(crate) async fn delete_identifier(
         ("bearer" = [])
     ),
     summary = "List identifiers",
-    description = "Returns a list of identifiers within an organization. See the [guidelines](/api/general_guidelines) for handling list endpoints.",
+    description = "Returns a list of identifiers within an organization.",
 )]
 pub(crate) async fn get_identifier_list(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetIdentifierQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetIdentifierListResponseRestDTO> {
+    let result = async {
+        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .identifier_service
+                .get_identifier_list(&organisation_id, query.try_into()?)
+                .await
+                .error_while("getting identifier list")?,
+        )
+    }
+    .await;
+    OkOrErrorResponse::from_result(result, state, "getting identifiers")
+}
+
+#[endpoint(
+    permissions = [Permission::TrustEntityDetail],
+    post,
+    path = "/api/identifier/v1/resolve-trust-entity",
+    request_body = ResolveTrustEntitiesRequestRestDTO,
+    responses(OkOrErrorResponse<ResolveTrustEntitiesResponseRestDTO>),
+    tag = "identifier_management",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Resolve trust entities",
+    description = indoc::formatdoc! {"
+    Resolves trust entity information of supplied identifiers.
+
+    For holders and verifiers: get identifiers from offered credentials or shared
+    proofs and pass them here. The system checks the identifiers against your trust
+    anchors and returns information for trusted entities.
+
+    Note that trust information is informational only. Holders and verifiers can
+    decide how to proceed with any given interaction.
+"},
+)]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+pub(crate) async fn resolve_trust_entity(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<ResolveTrustEntitiesRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> OkOrErrorResponse<ResolveTrustEntitiesResponseRestDTO> {
     let result = state
         .core
-        .identifier_service
-        .get_identifier_list(query.into())
+        .trust_entity_service
+        .resolve_identifiers(request.into())
         .await;
-    OkOrErrorResponse::from_result(result, state, "getting identifiers")
+    OkOrErrorResponse::from_result(result, state, "resolving trust entities for identifiers")
 }

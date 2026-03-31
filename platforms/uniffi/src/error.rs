@@ -1,10 +1,9 @@
+use one_core::error::ErrorCodeMixin;
 use one_core::provider::key_storage::error::KeyStorageError;
-use one_core::service::error::ErrorCodeMixin;
 use one_crypto::SignerError;
 use one_dto_mapper::{From, Into};
+use strum::EnumMessage;
 use thiserror::Error;
-
-use super::error_code::ErrorCode;
 
 #[derive(Debug, Error)]
 pub(crate) enum SDKError {
@@ -16,10 +15,10 @@ pub(crate) enum SDKError {
 }
 
 impl ErrorCodeMixin for SDKError {
-    fn error_code(&self) -> one_core::service::error::ErrorCode {
+    fn error_code(&self) -> one_core::error::ErrorCode {
         match self {
-            Self::InitializationFailure(_) => one_core::service::error::ErrorCode::BR_0183,
-            Self::NotInitialized => one_core::service::error::ErrorCode::BR_0184,
+            Self::InitializationFailure(_) => one_core::error::ErrorCode::BR_0183,
+            Self::NotInitialized => one_core::error::ErrorCode::BR_0184,
         }
     }
 }
@@ -37,7 +36,7 @@ pub struct Cause {
 }
 
 impl Cause {
-    pub fn with_message_from_error(error: &impl std::error::Error) -> Cause {
+    pub(crate) fn with_message_from_error(error: &impl std::error::Error) -> Cause {
         Cause {
             message: error.to_string(),
         }
@@ -57,7 +56,8 @@ impl<T: Into<ErrorResponseBindingDTO>> From<T> for BindingError {
 }
 
 impl ErrorResponseBindingDTO {
-    pub fn hide_cause(mut self, hide: bool) -> ErrorResponseBindingDTO {
+    #[expect(dead_code)]
+    pub(crate) fn hide_cause(mut self, hide: bool) -> ErrorResponseBindingDTO {
         if hide {
             self.cause = None;
         }
@@ -72,8 +72,8 @@ impl<T: ErrorCodeMixin + std::error::Error> From<T> for ErrorResponseBindingDTO 
         let cause = Cause::with_message_from_error(&error);
 
         ErrorResponseBindingDTO {
-            code: ErrorCode::from(code).to_string(),
-            message: code.to_string(),
+            code: Into::<&'static str>::into(code).to_string(),
+            message: code.get_message().unwrap_or_default().to_string(),
             cause: Some(cause),
         }
     }
@@ -122,8 +122,8 @@ impl From<NativeKeyStorageError> for SignerError {
 }
 
 #[derive(Debug, Clone, From, Into, Error, uniffi::Error)]
-#[from(one_core::provider::bluetooth_low_energy::BleError)]
-#[into(one_core::provider::bluetooth_low_energy::BleError)]
+#[from(one_core::proto::bluetooth_low_energy::BleError)]
+#[into(one_core::proto::bluetooth_low_energy::BleError)]
 pub enum BleError {
     #[error("BLE adapter not enabled")]
     AdapterNotEnabled,
@@ -169,7 +169,35 @@ pub enum BleError {
 
 impl From<uniffi::UnexpectedUniFFICallbackError> for BleError {
     fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
-        BleError::Unknown {
+        Self::Unknown {
+            reason: e.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, From, Into, Error, uniffi::Error)]
+#[from(one_core::proto::nfc::NfcError)]
+#[into(one_core::proto::nfc::NfcError)]
+pub enum NfcError {
+    #[error("NFC Adapter not enabled")]
+    NotEnabled,
+    #[error("The device does not support NFC")]
+    NotSupported,
+    #[error("Already started")]
+    AlreadyStarted,
+    #[error("Not started")]
+    NotStarted,
+    #[error("Operation cancelled")]
+    Cancelled,
+    #[error("Session closed")]
+    SessionClosed,
+    #[error("Unknown NFC error: {reason}")]
+    Unknown { reason: String },
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for NfcError {
+    fn from(e: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Unknown {
             reason: e.to_string(),
         }
     }

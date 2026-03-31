@@ -1,3 +1,5 @@
+use similar_asserts::assert_eq;
+
 use crate::utils::context::TestContext;
 use crate::utils::db_clients::proof_schemas::{CreateProofClaim, CreateProofInputSchema};
 use crate::utils::field_match::FieldHelpers;
@@ -10,7 +12,7 @@ async fn test_get_proof_schema_success() {
     let credential_schema = context
         .db
         .credential_schemas
-        .create("test", &organisation, "NONE", Default::default())
+        .create("test", &organisation, None, Default::default())
         .await;
 
     let claim_schema = credential_schema
@@ -19,7 +21,6 @@ async fn test_get_proof_schema_success() {
         .unwrap()
         .first()
         .unwrap()
-        .schema
         .to_owned();
 
     let proof_schema = context
@@ -37,7 +38,6 @@ async fn test_get_proof_schema_success() {
                     array: true,
                 }],
                 credential_schema: &credential_schema,
-                validity_constraint: Some(10),
             }],
         )
         .await;
@@ -58,5 +58,4 @@ async fn test_get_proof_schema_success() {
     assert_eq!(claim_schema_item["key"], claim_schema.key);
     assert_eq!(claim_schema_item["dataType"], claim_schema.data_type);
     assert!(claim_schema_item["required"].as_bool().unwrap());
-    assert_eq!(resp["proofInputSchemas"][0]["validityConstraint"], 10);
 }

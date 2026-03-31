@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
-use one_core::repository::did_repository::DidRepository;
+use one_core::repository::organisation_repository::OrganisationRepository;
 use one_core::repository::trust_anchor_repository::TrustAnchorRepository;
-use sea_orm::DatabaseConnection;
 
-pub mod history;
+use crate::transaction_context::TransactionManagerImpl;
+
 pub mod mapper;
 pub mod model;
 pub mod repository;
 
 pub(crate) struct TrustEntityProvider {
+    pub db: TransactionManagerImpl,
     pub trust_anchor_repository: Arc<dyn TrustAnchorRepository>,
-    pub did_repository: Arc<dyn DidRepository>,
-    pub db: DatabaseConnection,
+    pub organisation_repository: Arc<dyn OrganisationRepository>,
 }

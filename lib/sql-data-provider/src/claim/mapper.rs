@@ -9,12 +9,13 @@ impl TryFrom<Claim> for claim::ActiveModel {
 
     fn try_from(value: Claim) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: Set(value.id.into()),
+            id: Set(value.id),
             credential_id: Set(value.credential_id),
             created_date: Set(value.created_date),
             last_modified: Set(value.last_modified),
-            value: Set(value.value.as_bytes().to_owned()),
+            value: Set(value.value.map(|val| val.as_bytes().to_vec())),
             claim_schema_id: Set(value.schema.ok_or(DataLayerError::IncorrectParameters)?.id),
+            selectively_disclosable: Set(value.selectively_disclosable),
             path: Set(value.path),
         })
     }
@@ -23,12 +24,15 @@ impl TryFrom<Claim> for claim::ActiveModel {
 impl From<claim::Model> for Claim {
     fn from(value: claim::Model) -> Self {
         Self {
-            id: value.id.into(),
+            id: value.id,
             credential_id: value.credential_id,
-            value: String::from_utf8_lossy(&value.value).into_owned(),
+            value: value
+                .value
+                .map(|data| String::from_utf8_lossy(&data).into_owned()),
             created_date: value.created_date,
             last_modified: value.last_modified,
             path: value.path,
+            selectively_disclosable: value.selectively_disclosable,
             schema: None,
         }
     }

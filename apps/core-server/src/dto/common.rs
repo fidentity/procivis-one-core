@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fmt;
 
-use one_dto_mapper::{From, Into};
-use serde::{Deserialize, Serialize};
+use one_dto_mapper::Into;
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -10,14 +11,19 @@ use crate::endpoint::credential_schema::dto::CredentialSchemaListItemResponseRes
 use crate::endpoint::did::dto::DidListItemResponseRestDTO;
 use crate::endpoint::history::dto::HistoryResponseRestDTO;
 use crate::endpoint::key::dto::KeyListItemResponseRestDTO;
+use crate::endpoint::organisation::dto::OrganisationListItemResponseRestDTO;
 use crate::endpoint::proof::dto::ProofListItemResponseRestDTO;
 use crate::endpoint::proof_schema::dto::GetProofSchemaListItemResponseRestDTO;
+use crate::endpoint::statistics::dto::{
+    IssuerSchemaStatsResponseRestDTO, SystemInteractionStatsResponseRestDTO,
+    SystemManagementStatsResponseRestDTO, VerifierSchemaStatsResponseRestDTO,
+};
 use crate::endpoint::trust_anchor::dto::ListTrustAnchorsResponseItemRestDTO;
 use crate::endpoint::trust_entity::dto::ListTrustEntitiesResponseItemRestDTO;
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct GetListResponseRestDTO<T>
+pub(crate) struct GetListResponseRestDTO<T>
 where
     T: fmt::Debug + Serialize,
 {
@@ -26,22 +32,33 @@ where
     pub total_items: u64,
 }
 
-pub type GetProofsResponseRestDTO = GetListResponseRestDTO<ProofListItemResponseRestDTO>;
-pub type GetCredentialSchemasResponseDTO =
+pub(crate) type GetProofsResponseRestDTO = GetListResponseRestDTO<ProofListItemResponseRestDTO>;
+pub(crate) type GetCredentialSchemasResponseDTO =
     GetListResponseRestDTO<CredentialSchemaListItemResponseRestDTO>;
-pub type GetDidsResponseRestDTO = GetListResponseRestDTO<DidListItemResponseRestDTO>;
-pub type GetCredentialsResponseDTO = GetListResponseRestDTO<CredentialListItemResponseRestDTO>;
-pub type GetProofSchemaListResponseRestDTO =
+pub(crate) type GetDidsResponseRestDTO = GetListResponseRestDTO<DidListItemResponseRestDTO>;
+pub(crate) type GetCredentialsResponseDTO =
+    GetListResponseRestDTO<CredentialListItemResponseRestDTO>;
+pub(crate) type GetProofSchemaListResponseRestDTO =
     GetListResponseRestDTO<GetProofSchemaListItemResponseRestDTO>;
-pub type GetKeyListResponseRestDTO = GetListResponseRestDTO<KeyListItemResponseRestDTO>;
-pub type GetHistoryListResponseRestDTO = GetListResponseRestDTO<HistoryResponseRestDTO>;
-pub type GetTrustAnchorListResponseRestDTO =
+pub(crate) type GetKeyListResponseRestDTO = GetListResponseRestDTO<KeyListItemResponseRestDTO>;
+pub(crate) type GetHistoryListResponseRestDTO = GetListResponseRestDTO<HistoryResponseRestDTO>;
+pub(crate) type GetOrganisationListResponseRestDTO =
+    GetListResponseRestDTO<OrganisationListItemResponseRestDTO>;
+pub(crate) type GetTrustAnchorListResponseRestDTO =
     GetListResponseRestDTO<ListTrustAnchorsResponseItemRestDTO>;
-pub type GetTrustEntityListResponseRestDTO =
+pub(crate) type GetTrustEntityListResponseRestDTO =
     GetListResponseRestDTO<ListTrustEntitiesResponseItemRestDTO>;
+pub(crate) type GetIssuerStatsResponseRestDTO =
+    GetListResponseRestDTO<IssuerSchemaStatsResponseRestDTO>;
+pub(crate) type GetVerifierStatsResponseRestDTO =
+    GetListResponseRestDTO<VerifierSchemaStatsResponseRestDTO>;
+pub(crate) type GetSystemInteractionStatsResponseRestDTO =
+    GetListResponseRestDTO<SystemInteractionStatsResponseRestDTO>;
+pub(crate) type GetSystemManagementStatsResponseRestDTO =
+    GetListResponseRestDTO<SystemManagementStatsResponseRestDTO>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
-pub struct NoIncludesSupported {}
+pub(crate) struct NoIncludesSupported {}
 
 impl From<NoIncludesSupported> for one_core::model::list_query::NoInclude {
     fn from(_: NoIncludesSupported) -> Self {
@@ -51,7 +68,7 @@ impl From<NoIncludesSupported> for one_core::model::list_query::NoInclude {
 
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct ListQueryParamsRest<Filter, SortColumn, Include = NoIncludesSupported> {
+pub(crate) struct ListQueryParamsRest<Filter, SortColumn, Include = NoIncludesSupported> {
     // pagination
     pub page: u32,
     pub page_size: PageSize<1000>,
@@ -65,11 +82,15 @@ pub struct ListQueryParamsRest<Filter, SortColumn, Include = NoIncludesSupported
     pub filter: Filter,
 
     pub include: Option<Vec<Include>>,
+
+    // "deny_unknown_fields" cannot be used with "flatten", replaced with custom logic
+    #[serde(flatten, deserialize_with = "refuse_unknown_params")]
+    _refuse_unknown_params: (),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ToSchema, Into)]
 #[into("one_core::model::common::SortDirection")]
-pub enum SortDirection {
+pub(crate) enum SortDirection {
     #[serde(rename = "ASC")]
     Ascending,
     #[serde(rename = "DESC")]
@@ -78,14 +99,14 @@ pub enum SortDirection {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ToSchema, Into)]
 #[into("one_core::model::common::ExactColumn")]
-pub enum ExactColumn {
+pub(crate) enum ExactColumn {
     #[serde(rename = "name")]
     Name,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct EntityResponseRestDTO {
+pub(crate) struct EntityResponseRestDTO {
     pub id: Uuid,
 }
 
@@ -98,18 +119,11 @@ where
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
-#[from("one_core::model::common::EntityShareResponseDTO")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct EntityShareResponseRestDTO {
-    pub url: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum Boolean {
-    True,
+pub(crate) enum Boolean {
     False,
+    True,
 }
 
 impl From<Boolean> for bool {
@@ -119,7 +133,7 @@ impl From<Boolean> for bool {
 }
 
 #[derive(Clone, Debug)]
-pub struct PageSize<const MAX: u32>(u32);
+pub(crate) struct PageSize<const MAX: u32>(u32);
 
 impl<const MAX: u32> PageSize<MAX> {
     pub fn inner(&self) -> u32 {
@@ -144,9 +158,26 @@ impl<'de, const MAX: u32> Deserialize<'de> for PageSize<MAX> {
     }
 }
 
+fn refuse_unknown_params<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let unknown_params = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    if unknown_params.is_empty() {
+        return Ok(());
+    }
+
+    let extra_keys: Vec<_> = unknown_params.keys().map(|k| k.as_str()).collect();
+    Err(serde::de::Error::custom(format!(
+        "Unknown query params: {}",
+        extra_keys.join(", ")
+    )))
+}
+
 #[cfg(test)]
 mod test {
     use serde_json::json;
+    use similar_asserts::assert_eq;
 
     use super::ListQueryParamsRest;
 

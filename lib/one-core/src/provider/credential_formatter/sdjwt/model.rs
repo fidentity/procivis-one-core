@@ -1,12 +1,21 @@
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+use maplit::hashmap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::{OneOrMany, serde_as, skip_serializing_none};
-use shared_types::DidValue;
 use time::OffsetDateTime;
+use url::Url;
 
-use crate::provider::credential_formatter::model::{CredentialSchema, CredentialStatus, Issuer};
+use crate::model::certificate::Certificate;
+use crate::model::identifier::Identifier;
+use crate::proto::jwt::WithMetadata;
+use crate::provider::credential_formatter::error::FormatterError;
+use crate::provider::credential_formatter::model::{
+    CredentialClaim, CredentialClaimValue, CredentialSchema, CredentialStatus, Issuer,
+    SettableClaims,
+};
 use crate::provider::credential_formatter::vcdm::{ContextType, JwtVcdmCredential};
 
 #[skip_serializing_none]
@@ -33,18 +42,6 @@ pub struct VCContent {
     pub valid_until: Option<OffsetDateTime>,
 }
 
-// TODO: remove the presentation models, since only JWT formatted presentations are used
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VPContent {
-    #[serde(rename = "@context")]
-    pub context: Vec<String>,
-    #[serde(rename = "type")]
-    pub r#type: Vec<String>,
-    #[serde(rename = "_sd_jwt")]
-    pub verifiable_credential: Vec<String>,
-}
-
 #[skip_serializing_none]
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,19 +54,102 @@ pub struct VcClaim {
     /// https://www.iana.org/assignments/named-information/named-information.xhtml
     #[serde(rename = "_sd_alg", default)]
     pub hash_alg: Option<String>,
+
+    /// Copy of all the claims to retain selective disclosability info.
+    /// Used later to retrieve metadata claims.
+    #[serde(skip)]
+    pub all_claims: Option<CredentialClaim>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Sdvp {
-    pub vp: VPContent,
-    pub nonce: Option<String>,
+impl WithMetadata for VcClaim {
+    fn get_metadata_claims(&self) -> Result<HashMap<String, CredentialClaim>, FormatterError> {
+        let Some(claims) = &self.all_claims else {
+            return Ok(HashMap::new());
+        };
+        let Some(vc) = claims.value.as_object().and_then(|o| o.get("vc")) else {
+            return Ok(HashMap::new());
+        };
+        let mut vc_claim = vc.clone();
+        if let Some(obj) = vc_claim.value.as_object_mut() {
+            obj.retain(|k, _| k == "type" || k == "id");
+        }
+        vc_claim.set_metadata(true);
+
+        Ok(hashmap! {
+            "vc".to_string() => vc_claim,
+        })
+    }
+}
+
+impl SettableClaims for VcClaim {
+    fn set_claims(&mut self, mut claims: CredentialClaim) -> Result<(), FormatterError> {
+        // store all claims for later use
+        self.all_claims = Some(claims.clone());
+        let Some(subject) = self.vc.credential_subject.first_mut() else {
+            return Err(FormatterError::CouldNotExtractCredentials(
+                "Missing vc.credential_subject".to_string(),
+            ));
+        };
+        let first_level =
+            claims
+                .value
+                .as_object_mut()
+                .ok_or(FormatterError::CouldNotExtractCredentials(
+                    "Expected claims to be an object".to_string(),
+                ))?;
+        let vc = first_level
+            .get_mut("vc")
+            .ok_or(FormatterError::CouldNotExtractCredentials(
+                "vc not found".to_string(),
+            ))?
+            .value
+            .as_object_mut()
+            .ok_or(FormatterError::CouldNotExtractCredentials(
+                "vc is not an object".to_string(),
+            ))?;
+        let credential_subject =
+            vc.get_mut("credentialSubject")
+                .ok_or(FormatterError::CouldNotExtractCredentials(
+                    "Missing credentialSubject".to_string(),
+                ))?;
+
+        let subject_claims = match &mut credential_subject.value {
+            CredentialClaimValue::Array(arr) => {
+                let first = arr
+                    .first_mut()
+                    .ok_or(FormatterError::CouldNotExtractCredentials(
+                        "Empty credentialSubject".to_string(),
+                    ))?;
+                first
+                    .value
+                    .as_object_mut()
+                    .ok_or(FormatterError::CouldNotExtractCredentials(
+                        "credentialSubject must be an object or array of objects".to_string(),
+                    ))?
+            }
+            CredentialClaimValue::Object(obj) => obj,
+            _ => {
+                return Err(FormatterError::CouldNotExtractCredentials(
+                    "credentialSubject must be array or object".to_string(),
+                ));
+            }
+        };
+
+        let id = subject_claims.remove("id");
+        if let Some(id) = id {
+            subject.id = Some(Url::parse(id.value.as_str().ok_or(
+                FormatterError::CouldNotExtractCredentials("id must be a URL string".to_string()),
+            )?)?);
+        };
+        subject.claims = IndexMap::from_iter(subject_claims.drain());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Disclosure {
     pub salt: String,
-    pub key: String,
+    pub key: Option<String>,
     pub value: Value,
     pub disclosure_array: String,
     pub disclosure: String,
@@ -91,12 +171,11 @@ pub struct DecomposedToken<'a> {
 }
 
 pub struct SdJwtFormattingInputs {
-    pub holder_did: Option<DidValue>,
+    pub holder_identifier: Option<Identifier>,
     pub holder_key_id: Option<String>,
     pub leeway: u64,
     pub token_type: String,
-    // Toggles the malformed `cnf` claim required for SWIYU interop
-    pub swiyu_proof_of_possession: bool,
+    pub issuer_certificate: Option<Certificate>,
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]

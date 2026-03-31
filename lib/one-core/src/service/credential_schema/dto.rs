@@ -1,7 +1,9 @@
 use one_dto_mapper::{From, Into, convert_inner};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use shared_types::{ClaimSchemaId, CredentialSchemaId, OrganisationId};
+use shared_types::{
+    ClaimSchemaId, CredentialFormat, CredentialSchemaId, OrganisationId, RevocationMethodId,
+};
 use strum::{Display, EnumString};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -9,13 +11,13 @@ use uuid::Uuid;
 use crate::model;
 use crate::model::common::GetListResponse;
 use crate::model::credential_schema::{
-    CredentialFormat, CredentialSchema, LayoutType, RevocationMethod,
-    SortableCredentialSchemaColumn, WalletStorageTypeEnum,
+    CredentialSchema, KeyStorageSecurity, LayoutType, SortableCredentialSchemaColumn,
+    TransactionCode, TransactionCodeType,
 };
-use crate::model::list_filter::{ListFilterValue, StringMatch};
+use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
 use crate::model::list_query::ListQuery;
+use crate::proto::credential_schema::transaction_code::TransactionCodeLength;
 use crate::service::common_dto::{BoundedB64Image, KB, MB};
-use crate::service::credential::dto::CredentialSchemaType;
 
 pub type CredentialSchemaLogo = BoundedB64Image<{ 500 * KB }>;
 #[allow(clippy::identity_op)]
@@ -34,17 +36,15 @@ pub struct CredentialSchemaListItemResponseDTO {
     pub deleted_at: Option<OffsetDateTime>,
     pub name: String,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub revocation_method: Option<RevocationMethodId>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
     pub imported_source_url: String,
-    pub schema_type: CredentialSchemaType,
     pub layout_type: Option<LayoutType>,
     #[from(with_fn = convert_inner)]
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesResponseDTO>,
     pub allow_suspension: bool,
-    #[serde(default)]
-    pub external_schema: bool,
+    pub requires_wallet_instance_attestation: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -57,17 +57,27 @@ pub struct CredentialSchemaDetailResponseDTO {
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
-    pub external_schema: bool,
+    pub revocation_method: Option<RevocationMethodId>,
     pub organisation_id: OrganisationId,
     pub claims: Vec<CredentialClaimSchemaDTO>,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
     pub imported_source_url: String,
-    pub schema_type: CredentialSchemaType,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesResponseDTO>,
     pub allow_suspension: bool,
+    pub requires_wallet_instance_attestation: bool,
+    pub transaction_code: Option<CredentialSchemaTransactionCodeDTO>,
+}
+
+#[derive(Clone, Debug, Deserialize, Into, From)]
+#[into(TransactionCode)]
+#[from(TransactionCode)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialSchemaTransactionCodeDTO {
+    pub r#type: TransactionCodeType,
+    pub length: u32,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,8 +107,12 @@ pub enum CredentialSchemaFilterValue {
     Name(StringMatch),
     OrganisationId(OrganisationId),
     SchemaId(StringMatch),
-    Format(StringMatch),
+    Formats(Vec<String>),
+    RequiresWalletInstanceAttestation(bool),
+    KeyStorageSecurity(Vec<KeyStorageSecurity>),
     CredentialSchemaIds(Vec<CredentialSchemaId>),
+    CreatedDate(ValueComparison<OffsetDateTime>),
+    LastModified(ValueComparison<OffsetDateTime>),
 }
 
 impl ListFilterValue for CredentialSchemaFilterValue {}
@@ -113,16 +127,25 @@ pub type GetCredentialSchemaQueryDTO = ListQuery<
 #[derive(Clone, Debug)]
 pub struct CreateCredentialSchemaRequestDTO {
     pub name: String,
-    pub format: String,
-    pub revocation_method: String,
+    pub format: CredentialFormat,
+    pub revocation_method: Option<RevocationMethodId>,
     pub organisation_id: OrganisationId,
     pub claims: Vec<CredentialClaimSchemaRequestDTO>,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
-    pub external_schema: bool,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub layout_type: LayoutType,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesRequestDTO>,
     pub schema_id: Option<String>,
     pub allow_suspension: Option<bool>,
+    pub requires_wallet_instance_attestation: bool,
+    pub transaction_code: Option<CredentialSchemaTransactionCodeRequestDTO>,
+}
+
+#[derive(Clone, Debug, Into)]
+#[into(TransactionCode)]
+pub struct CredentialSchemaTransactionCodeRequestDTO {
+    pub r#type: TransactionCodeType,
+    pub length: TransactionCodeLength,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, From)]
@@ -233,6 +256,7 @@ pub enum CredentialSchemaCodeTypeEnum {
     QrCode,
 }
 
+#[derive(Clone, Debug)]
 pub struct CredentialSchemaShareResponseDTO {
     pub url: String,
 }
@@ -243,7 +267,8 @@ pub struct ImportCredentialSchemaRequestDTO {
     pub schema: ImportCredentialSchemaRequestSchemaDTO,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Into)]
+#[into(crate::proto::credential_schema::dto::ImportCredentialSchemaRequestSchemaDTO)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportCredentialSchemaRequestSchemaDTO {
     pub id: Uuid,
@@ -253,21 +278,35 @@ pub struct ImportCredentialSchemaRequestSchemaDTO {
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub format: String,
-    pub revocation_method: String,
+    #[into(with_fn = convert_inner)]
+    pub revocation_method: Option<String>,
     pub organisation_id: Uuid,
+    #[into(with_fn = convert_inner)]
     pub claims: Vec<ImportCredentialSchemaClaimSchemaDTO>,
-    #[serde(default)]
-    pub external_schema: bool,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
-    pub schema_type: CredentialSchemaType,
     pub imported_source_url: String,
+    #[into(with_fn = convert_inner)]
     pub layout_type: Option<LayoutType>,
+    #[into(with_fn = convert_inner)]
     pub layout_properties: Option<ImportCredentialSchemaLayoutPropertiesDTO>,
     pub allow_suspension: Option<bool>,
+    pub requires_wallet_instance_attestation: Option<bool>,
+    #[into(with_fn = convert_inner)]
+    pub transaction_code: Option<ImportCredentialSchemaTransactionCodeDTO>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Into)]
+#[into(crate::proto::credential_schema::dto::ImportCredentialSchemaTransactionCodeDTO)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCredentialSchemaTransactionCodeDTO {
+    pub r#type: TransactionCodeType,
+    pub length: TransactionCodeLength,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Into)]
+#[into(crate::proto::credential_schema::dto::ImportCredentialSchemaClaimSchemaDTO)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportCredentialSchemaClaimSchemaDTO {
     pub id: Uuid,
@@ -280,11 +319,12 @@ pub struct ImportCredentialSchemaClaimSchemaDTO {
     pub required: bool,
     pub array: Option<bool>,
     #[serde(default)]
+    #[into(with_fn = convert_inner)]
     pub claims: Vec<ImportCredentialSchemaClaimSchemaDTO>,
 }
 
 #[derive(Clone, Debug, Into, Deserialize)]
-#[into(CredentialSchemaLayoutPropertiesRequestDTO)]
+#[into(crate::proto::credential_schema::dto::ImportCredentialSchemaLayoutPropertiesDTO)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportCredentialSchemaLayoutPropertiesDTO {
     #[serde(default)]

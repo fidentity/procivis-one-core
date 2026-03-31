@@ -1,27 +1,39 @@
 use one_dto_mapper::convert_inner;
 
+use super::error::BackupServiceError;
 use crate::config::core_config::CoreConfig;
+use crate::error::ContextWithErrorCode;
 use crate::model::backup::UnexportableEntities;
 use crate::service::backup::dto::UnexportableEntitiesResponseDTO;
+use crate::service::credential::dto::CredentialAttestationBlobs;
 use crate::service::credential::mapper::credential_detail_response_from_model;
-use crate::service::error::ServiceError;
 
 pub(super) fn unexportable_entities_to_response_dto(
     entities: UnexportableEntities,
     config: &CoreConfig,
-) -> Result<UnexportableEntitiesResponseDTO, ServiceError> {
+) -> Result<UnexportableEntitiesResponseDTO, BackupServiceError> {
     Ok(UnexportableEntitiesResponseDTO {
         credentials: entities
             .credentials
             .into_iter()
-            .map(|credential| credential_detail_response_from_model(credential, config, None))
-            .collect::<Result<Vec<_>, _>>()?,
+            .map(|credential| {
+                credential_detail_response_from_model(
+                    credential,
+                    config,
+                    None,
+                    CredentialAttestationBlobs::default(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .error_while("converting credential")?,
         keys: convert_inner(entities.keys),
         dids: convert_inner(entities.dids),
         identifiers: convert_inner(entities.identifiers),
+        history: convert_inner(entities.histories),
         total_credentials: entities.total_credentials,
         total_keys: entities.total_keys,
         total_dids: entities.total_dids,
         total_identifiers: entities.total_identifiers,
+        total_histories: entities.total_histories,
     })
 }

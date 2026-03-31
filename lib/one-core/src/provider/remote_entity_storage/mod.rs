@@ -12,12 +12,12 @@
 //!
 //! [cac]: https://docs.procivis.ch/api/caching
 
-use std::cmp::Ordering;
-
 use one_dto_mapper::From;
+use strum::Display;
 use thiserror::Error;
 use time::OffsetDateTime;
 
+use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::remote_entity_cache::RemoteEntityCacheEntry;
 
 pub mod db_storage;
@@ -26,9 +26,10 @@ pub mod in_memory;
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait::async_trait]
 pub trait RemoteEntityStorage: Send + Sync {
-    async fn delete_oldest(
+    async fn delete_expired_or_least_used(
         &self,
         entity_type: RemoteEntityType,
+        target_max_size: usize,
     ) -> Result<(), RemoteEntityStorageError>;
 
     async fn get_by_key(&self, key: &str)
@@ -47,18 +48,20 @@ pub trait RemoteEntityStorage: Send + Sync {
 pub struct RemoteEntity {
     pub last_modified: OffsetDateTime,
 
+    /// `None` means the entry is persistent
+    pub expiration_date: Option<OffsetDateTime>,
+
     #[from(rename = "r#type")]
     pub entity_type: RemoteEntityType,
     pub key: String,
     pub value: Vec<u8>,
 
-    pub hit_counter: u32,
+    pub last_used: OffsetDateTime,
 
     pub media_type: Option<String>,
-    pub persistent: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, Eq, PartialEq)]
 pub enum RemoteEntityType {
     DidDocument,
     JsonLdContext,
@@ -66,6 +69,9 @@ pub enum RemoteEntityType {
     VctMetadata,
     JsonSchema,
     TrustList,
+    X509Crl,
+    AndroidAttestationCrl,
+    OpenIDMetadata,
 }
 
 #[derive(Clone, Error, Debug)]
@@ -82,17 +88,8 @@ pub enum RemoteEntityStorageError {
     NotUpdated,
 }
 
-impl PartialOrd<Self> for RemoteEntity {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for RemoteEntity {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.hit_counter.cmp(&other.hit_counter) {
-            Ordering::Equal => self.last_modified.cmp(&other.last_modified),
-            value => value,
-        }
+impl ErrorCodeMixin for RemoteEntityStorageError {
+    fn error_code(&self) -> ErrorCode {
+        ErrorCode::BR_0354
     }
 }

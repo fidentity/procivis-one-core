@@ -1,4 +1,5 @@
 use serde_json::json;
+use similar_asserts::assert_eq;
 
 use crate::utils::context::TestContext;
 
@@ -18,17 +19,17 @@ async fn test_format_capabilities_for_verification_key_algorithms() {
         (
             "JWT",
             "verificationKeyAlgorithms",
-            json!(["EDDSA", "ECDSA", "DILITHIUM"]),
+            json!(["EDDSA", "ECDSA", "ML_DSA"]),
         ),
         (
             "SD_JWT",
             "verificationKeyAlgorithms",
-            json!(["EDDSA", "ECDSA", "DILITHIUM"]),
+            json!(["EDDSA", "ECDSA", "ML_DSA"]),
         ),
         (
             "SD_JWT_VC",
             "verificationKeyAlgorithms",
-            json!(["ECDSA", "EDDSA", "DILITHIUM"]),
+            json!(["ECDSA", "EDDSA", "ML_DSA"]),
         ),
         (
             "JSON_LD_CLASSIC",
@@ -38,7 +39,7 @@ async fn test_format_capabilities_for_verification_key_algorithms() {
         (
             "JSON_LD_BBSPLUS",
             "verificationKeyAlgorithms",
-            json!(["EDDSA", "ECDSA", "DILITHIUM"]),
+            json!(["EDDSA", "ECDSA", "ML_DSA"]),
         ),
         (
             "MDOC",
@@ -66,38 +67,56 @@ async fn test_expected_format_features() {
         resp["format"]["MDOC"]["capabilities"]["features"],
         json!([
             "SELECTIVE_DISCLOSURE",
-            "REQUIRES_SCHEMA_ID",
+            "SUPPORTS_SCHEMA_ID",
             "SUPPORTS_CREDENTIAL_DESIGN",
-            "REQUIRES_PRESENTATION_ENCRYPTION"
+            "REQUIRES_PRESENTATION_ENCRYPTION",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
         ])
     );
     assert_eq!(
         resp["format"]["SD_JWT"]["capabilities"]["features"],
-        json!(["SELECTIVE_DISCLOSURE", "SUPPORTS_CREDENTIAL_DESIGN"])
+        json!([
+            "SELECTIVE_DISCLOSURE",
+            "SUPPORTS_CREDENTIAL_DESIGN",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
+        ])
     );
     assert_eq!(
         resp["format"]["SD_JWT_VC"]["capabilities"]["features"],
         json!([
             "SELECTIVE_DISCLOSURE",
-            "REQUIRES_SCHEMA_ID",
-            "SUPPORTS_CREDENTIAL_DESIGN"
+            "SUPPORTS_SCHEMA_ID",
+            "SUPPORTS_CREDENTIAL_DESIGN",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
         ])
     );
     assert_eq!(
         resp["format"]["JSON_LD_CLASSIC"]["capabilities"]["features"],
-        json!(["SUPPORTS_CREDENTIAL_DESIGN"])
+        json!([
+            "SUPPORTS_CREDENTIAL_DESIGN",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
+        ])
     );
     assert_eq!(
         resp["format"]["JSON_LD_BBSPLUS"]["capabilities"]["features"],
-        json!(["SUPPORTS_CREDENTIAL_DESIGN", "SELECTIVE_DISCLOSURE"])
-    );
-    assert_eq!(
-        resp["format"]["PHYSICAL_CARD"]["capabilities"]["features"],
-        json!(["REQUIRES_SCHEMA_ID"])
+        json!([
+            "SUPPORTS_CREDENTIAL_DESIGN",
+            "SELECTIVE_DISCLOSURE",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
+        ])
     );
     assert_eq!(
         resp["format"]["JWT"]["capabilities"]["features"],
-        json!(["SUPPORTS_CREDENTIAL_DESIGN"])
+        json!([
+            "SUPPORTS_CREDENTIAL_DESIGN",
+            "SUPPORTS_COMBINED_PRESENTATION",
+            "SUPPORTS_TX_CODE"
+        ])
     );
 }
 
@@ -132,10 +151,6 @@ async fn test_expected_format_selective_disclosure() {
     assert_eq!(
         resp["format"]["JSON_LD_BBSPLUS"]["capabilities"]["selectiveDisclosure"],
         json!(["ANY_LEVEL"])
-    );
-    assert_eq!(
-        resp["format"]["PHYSICAL_CARD"]["capabilities"]["selectiveDisclosure"],
-        json!([])
     );
     assert_eq!(
         resp["format"]["JWT"]["capabilities"]["selectiveDisclosure"],
@@ -177,16 +192,16 @@ async fn test_config_formatter_issuance_did_methods_capability() {
             &resp,
             format,
             "issuanceDidMethods",
-            json!(["KEY", "WEB", "JWK", "X509", "WEBVH"]),
+            json!(["KEY", "WEB", "JWK", "WEBVH"]),
         );
     }
 
-    check(&resp, "MDOC", "issuanceDidMethods", json!(["MDL"]));
+    check(&resp, "MDOC", "issuanceDidMethods", json!([]));
     check(
         &resp,
         "SD_JWT_VC",
         "issuanceDidMethods",
-        json!(["WEBVH", "KEY", "WEB", "JWK", "X509"]),
+        json!(["WEBVH", "KEY", "WEB", "JWK"]),
     );
     check(
         &resp,
@@ -202,4 +217,56 @@ fn check(resp: &serde_json::Value, format: &str, capability: &str, expected: ser
         resp["format"][format]["capabilities"][capability], expected,
         "Failed for format:{format} and capability:{capability}"
     );
+}
+
+#[tokio::test]
+async fn test_format_capabilities_for_issuance_identifier_types() {
+    // GIVEN
+    let context = TestContext::new(None).await;
+
+    // WHEN
+    let resp = context.api.config.get().await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+
+    let capability = "issuanceIdentifierTypes";
+    for (format, expected) in [
+        ("JWT", json!(["DID"])),
+        ("SD_JWT", json!(["DID"])),
+        ("SD_JWT_VC", json!(["DID", "CERTIFICATE"])),
+        ("SD_JWT_VC_SWIYU", json!(["DID"])),
+        ("JSON_LD_CLASSIC", json!(["DID"])),
+        ("JSON_LD_BBSPLUS", json!(["DID"])),
+        ("MDOC", json!(["CERTIFICATE"])),
+    ] {
+        check(&resp, format, capability, expected);
+    }
+}
+
+#[tokio::test]
+async fn test_format_capabilities_for_verification_identifier_types() {
+    // GIVEN
+    let context = TestContext::new(None).await;
+
+    // WHEN
+    let resp = context.api.config.get().await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+
+    let capability = "verificationIdentifierTypes";
+    for (format, expected) in [
+        ("JWT", json!(["DID", "CERTIFICATE"])),
+        ("SD_JWT", json!(["DID", "CERTIFICATE"])),
+        ("SD_JWT_VC", json!(["DID", "CERTIFICATE"])),
+        ("SD_JWT_VC_SWIYU", json!(["DID"])),
+        ("JSON_LD_CLASSIC", json!(["DID", "CERTIFICATE"])),
+        ("JSON_LD_BBSPLUS", json!(["DID", "CERTIFICATE"])),
+        ("MDOC", json!(["DID", "CERTIFICATE"])),
+    ] {
+        check(&resp, format, capability, expected);
+    }
 }

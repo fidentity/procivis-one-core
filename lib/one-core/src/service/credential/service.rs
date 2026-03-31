@@ -1,50 +1,49 @@
-use shared_types::CredentialId;
+use one_dto_mapper::convert_inner;
+use shared_types::{CredentialId, OrganisationId};
 use uuid::Uuid;
 
-use super::mapper::credential_detail_response_from_model;
-use super::validator::{validate_redirect_uri, verify_suspension_support};
-use crate::common_mapper::list_response_try_into;
-use crate::common_validator::{throw_if_credential_state_eq, throw_if_state_not_in};
-use crate::config::core_config::RevocationType;
+use super::CredentialService;
+use super::dto::{
+    CreateCredentialRequestDTO, CredentialAttestationBlobs, CredentialDetailResponseDTO,
+    CredentialRevocationCheckResponseDTO, DetailCredentialClaimResponseDTO,
+    GetCredentialListResponseDTO, GetCredentialQueryDTO, ShareCredentialResponseDTO,
+    SuspendCredentialRequestDTO,
+};
+use super::error::CredentialServiceError;
+use super::mapper::{
+    claims_from_create_request, credential_detail_response_from_model, from_create_request,
+};
+use super::validator::{
+    throw_if_credential_state_eq, validate_format_and_did_method_compatibility,
+    validate_redirect_uri, validate_webhook_url,
+};
+use crate::config::validator::protocol::validate_protocol_did_compatibility;
+use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::mapper::list_response_try_into;
+use crate::model::certificate::CertificateRelations;
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
-use crate::model::common::EntityShareResponseDTO;
 use crate::model::credential::{
-    Clearable, Credential, CredentialRelations, CredentialRole, CredentialStateEnum,
-    UpdateCredentialRequest,
+    Credential, CredentialRelations, CredentialRole, CredentialStateEnum, UpdateCredentialRequest,
 };
 use crate::model::credential_schema::CredentialSchemaRelations;
-use crate::model::did::{DidRelations, KeyRole, RelatedKey};
-use crate::model::history::HistoryAction;
-use crate::model::identifier::{IdentifierRelations, IdentifierState};
-use crate::model::interaction::InteractionRelations;
-use crate::model::key::KeyRelations;
+use crate::model::did::{DidRelations, KeyRole};
+use crate::model::identifier::{IdentifierRelations, IdentifierState, IdentifierType};
+use crate::model::interaction::{InteractionRelations, InteractionType};
 use crate::model::organisation::OrganisationRelations;
 use crate::model::validity_credential::ValidityCredentialType;
-use crate::provider::issuance_protocol::error::IssuanceProtocolError;
-use crate::provider::issuance_protocol::openid4vci_draft13::model::ShareResponse;
-use crate::provider::revocation::error::RevocationError;
-use crate::provider::revocation::model::{
-    CredentialDataByRole, CredentialRevocationState, Operation, RevocationMethodCapabilities,
-};
+use crate::provider::blob_storage_provider::BlobStorageType;
+use crate::provider::issuance_protocol::model::ShareResponse;
+use crate::provider::revocation::model::RevocationState;
 use crate::repository::error::DataLayerError;
-use crate::service::credential::CredentialService;
-use crate::service::credential::dto::{
-    CreateCredentialRequestDTO, CredentialDetailResponseDTO, CredentialRevocationCheckResponseDTO,
-    GetCredentialListResponseDTO, GetCredentialQueryDTO, SuspendCredentialRequestDTO,
+use crate::service::credential_schema::validator::validate_key_storage_security_supported;
+use crate::service::error::MissingProviderError;
+use crate::util::interactions::{add_new_interaction, clear_previous_interaction};
+use crate::util::key_selection::{KeyFilter, KeySelection, SelectedKey};
+use crate::validator::{
+    throw_if_credential_schema_not_in_session_org, throw_if_org_not_matching_session,
+    throw_if_org_relation_not_matching_session,
 };
-use crate::service::credential::mapper::{
-    claims_from_create_request, credential_revocation_state_to_model_state, from_create_request,
-};
-use crate::service::error::{
-    BusinessLogicError, EntityNotFoundError, MissingProviderError, ServiceError, ValidationError,
-};
-use crate::util::history::log_history_event_credential;
-use crate::util::interactions::{
-    add_new_interaction, clear_previous_interaction, update_credentials_interaction,
-};
-use crate::util::oidc::detect_format_with_crypto_suite;
-use crate::util::revocation_update::{generate_credential_additional_data, process_update};
 
 impl CredentialService {
     /// Creates a credential according to request
@@ -55,40 +54,32 @@ impl CredentialService {
     pub async fn create_credential(
         &self,
         request: CreateCredentialRequestDTO,
-    ) -> Result<CredentialId, ServiceError> {
+    ) -> Result<CredentialId, CredentialServiceError> {
         let issuer_identifier = match request.issuer {
-            Some(issuer_identifier_id) => {
-                let identifier = self
-                    .identifier_repository
-                    .get(
-                        issuer_identifier_id,
-                        &IdentifierRelations {
-                            did: Some(DidRelations {
-                                keys: Some(Default::default()),
-                                ..Default::default()
-                            }),
+            Some(issuer_identifier_id) => self
+                .identifier_repository
+                .get(
+                    issuer_identifier_id,
+                    &IdentifierRelations {
+                        did: Some(DidRelations {
+                            keys: Some(Default::default()),
                             ..Default::default()
-                        },
-                    )
-                    .await?
-                    .ok_or(ServiceError::from(EntityNotFoundError::Identifier(
-                        issuer_identifier_id,
-                    )))?;
-
-                if let Some(issuer_did_id) = request.issuer_did {
-                    if Some(issuer_did_id) != identifier.did.as_ref().map(|did| did.id) {
-                        return Err(ServiceError::ValidationError(
-                            "Mismatching issuer and issuerDid specified".to_string(),
-                        ));
-                    }
-                }
-
-                identifier
-            }
+                        }),
+                        certificates: Some(CertificateRelations {
+                            key: Some(Default::default()),
+                            ..Default::default()
+                        }),
+                        key: Some(Default::default()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .error_while("getting identifier")?
+                .ok_or(CredentialServiceError::MissingIdentifier(
+                    issuer_identifier_id,
+                ))?,
             None => {
-                let issuer_did_id = request.issuer_did.ok_or(ServiceError::ValidationError(
-                    "No issuer or issuerDid specified".to_string(),
-                ))?;
+                let issuer_did_id = request.issuer_did.ok_or(CredentialServiceError::NoIssuer)?;
 
                 self.identifier_repository
                     .get_from_did_id(
@@ -101,28 +92,11 @@ impl CredentialService {
                             ..Default::default()
                         },
                     )
-                    .await?
-                    .ok_or(ServiceError::from(EntityNotFoundError::Did(issuer_did_id)))?
+                    .await
+                    .error_while("getting identifier")?
+                    .ok_or(CredentialServiceError::MissingDid(issuer_did_id))?
             }
         };
-
-        let issuer_did = issuer_identifier
-            .did
-            .to_owned()
-            .ok_or(ServiceError::MappingError(
-                "missing identifier did".to_string(),
-            ))?;
-
-        if issuer_did.is_remote() || issuer_identifier.is_remote {
-            return Err(BusinessLogicError::IncompatibleDidType {
-                reason: "Issuer is remote".to_string(),
-            }
-            .into());
-        }
-
-        if issuer_did.deactivated || issuer_identifier.state != IdentifierState::Active {
-            return Err(BusinessLogicError::DidIsDeactivated(issuer_did.id).into());
-        }
 
         let Some(schema) = self
             .credential_schema_repository
@@ -133,45 +107,100 @@ impl CredentialService {
                     organisation: Some(Default::default()),
                 },
             )
-            .await?
+            .await
+            .error_while("getting credential schema")?
         else {
-            return Err(EntityNotFoundError::CredentialSchema(request.credential_schema_id).into());
+            return Err(CredentialServiceError::MissingCredentialSchema(
+                request.credential_schema_id,
+            ));
         };
+        throw_if_org_relation_not_matching_session(
+            schema.organisation.as_ref(),
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
 
-        let claim_schemas = schema
-            .claim_schemas
-            .to_owned()
-            .ok_or(ServiceError::MappingError(
-                "claim_schemas is None".to_string(),
-            ))?;
+        validate_key_storage_security_supported(schema.key_storage_security, &self.config)
+            .error_while("validating key storage security")?;
+
+        let claim_schemas =
+            schema
+                .claim_schemas
+                .to_owned()
+                .ok_or(CredentialServiceError::MappingError(
+                    "claim_schemas is None".to_string(),
+                ))?;
 
         let formatter_capabilities = self
             .formatter_provider
-            .get_formatter(&schema.format)
-            .ok_or(MissingProviderError::Formatter(schema.format.to_owned()))?
+            .get_credential_formatter(&schema.format)
+            .ok_or(MissingProviderError::Formatter(schema.format.to_string()))
+            .error_while("getting formatter")?
             .get_capabilities();
 
         let exchange_capabilities = self
             .protocol_provider
-            .get_protocol(&request.exchange)
+            .get_protocol(&request.protocol)
             .ok_or(MissingProviderError::ExchangeProtocol(
-                request.exchange.to_owned(),
-            ))?
+                request.protocol.to_owned(),
+            ))
+            .error_while("getting protocol")?
             .get_capabilities();
 
+        let key_filter = KeyFilter {
+            did_role: Some(KeyRole::AssertionMethod),
+            algorithms: Some(formatter_capabilities.signing_key_algorithms.clone()),
+            ..Default::default()
+        };
+        let selection = issuer_identifier
+            .select_key(KeySelection {
+                key: request.issuer_key,
+                did: request.issuer_did,
+                certificate: request.issuer_certificate,
+                key_filter: Some(key_filter),
+            })
+            .error_while("selecting key")?;
+
+        let (issuer_key, issuer_certificate) = match selection {
+            SelectedKey::Key(_) => {
+                return Err(CredentialServiceError::InvalidIdentifierType(
+                    IdentifierType::Key,
+                ));
+            }
+            SelectedKey::Certificate { certificate, key } => (key, Some(certificate.to_owned())),
+            SelectedKey::Did { did, key } => {
+                validate_protocol_did_compatibility(
+                    &exchange_capabilities.did_methods,
+                    &did.did_method,
+                    &self.config.did,
+                )
+                .error_while("checking did compatibility")?;
+                validate_format_and_did_method_compatibility(
+                    &did.did_method,
+                    &formatter_capabilities,
+                    &self.config,
+                )?;
+                (&key.key, None)
+            }
+        };
+
         super::validator::validate_create_request(
-            &issuer_did.did_method,
-            &request.exchange,
-            &exchange_capabilities,
+            &request.protocol,
             &request.claim_values,
             &schema,
             &formatter_capabilities,
             &self.config,
         )?;
         validate_redirect_uri(
-            &request.exchange,
+            &request.protocol,
             request.redirect_uri.as_deref(),
             &self.config,
+        )?;
+        validate_webhook_url(
+            request.webhook_destination_url.as_ref(),
+            &request.protocol,
+            &self.config,
+            self.notification_scheduler.as_ref(),
         )?;
 
         let credential_id = Uuid::new_v4().into();
@@ -181,58 +210,33 @@ impl CredentialService {
             &claim_schemas,
         )?;
 
-        let valid_keys_filter = |entry: &&RelatedKey| {
-            if let Some(key_algorithm) = entry
-                .key
-                .key_algorithm_type()
-                .and_then(|alg| self.key_algorithm_provider.key_algorithm_from_type(alg))
-            {
-                entry.role == KeyRole::AssertionMethod
-                    && formatter_capabilities
-                        .signing_key_algorithms
-                        .contains(&key_algorithm.algorithm_type())
-            } else {
-                false
-            }
-        };
-
-        let did_keys = issuer_did
-            .keys
-            .as_ref()
-            .ok_or_else(|| ServiceError::MappingError("keys is None".to_string()))?;
-
-        let key = match request.issuer_key {
-            Some(key_id) => did_keys
-                .iter()
-                .filter(valid_keys_filter)
-                .find(|entry| entry.key.id == key_id)
-                .ok_or(ServiceError::Validation(ValidationError::InvalidKey(
-                    "key not found or invalid".into(),
-                )))?,
-            // no explicit key specified, pick first valid key
-            None => did_keys.iter().find(valid_keys_filter).ok_or_else(|| {
-                ServiceError::Validation(ValidationError::InvalidKey(
-                    "no valid keys found in did".to_string(),
-                ))
-            })?,
-        }
-        .key
-        .clone();
-
+        let success_log = format!(
+            "Created credential {} using schema `{}` ({}) and issuer `{}` ({}): protocol `{}`",
+            credential_id,
+            schema.name,
+            schema.id,
+            issuer_identifier.name,
+            issuer_identifier.id,
+            request.protocol
+        );
+        let issuer_key = issuer_key.to_owned();
         let credential = from_create_request(
             request,
             credential_id,
             claims,
             issuer_identifier,
+            issuer_certificate,
             schema,
-            key,
+            issuer_key,
         );
 
         let result = self
             .credential_repository
-            .create_credential(credential.to_owned())
-            .await?;
+            .create_credential(credential)
+            .await
+            .error_while("creating credential")?;
 
+        tracing::info!(message = success_log);
         Ok(result)
     }
 
@@ -244,7 +248,7 @@ impl CredentialService {
     pub async fn delete_credential(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), CredentialServiceError> {
         let credential = self
             .credential_repository
             .get_credential(
@@ -254,40 +258,35 @@ impl CredentialService {
                         organisation: Some(Default::default()),
                         ..Default::default()
                     }),
-                    issuer_identifier: Some(Default::default()),
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .error_while("getting credential")?;
 
         let Some(credential) = credential else {
-            return Err(EntityNotFoundError::Credential(*credential_id).into());
+            return Err(CredentialServiceError::NotFound(*credential_id));
         };
 
         let schema = credential
             .schema
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(CredentialServiceError::MappingError(
                 "credential_schema is None".to_string(),
             ))?;
+        throw_if_org_relation_not_matching_session(
+            schema.organisation.as_ref(),
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
 
-        let revocation_type = &self
-            .config
-            .revocation
-            .get_fields(&schema.revocation_method)
-            .map_err(|err| {
-                ServiceError::MappingError(format!(
-                    "Unknown revocation method: {}: {err}",
-                    schema.revocation_method
-                ))
-            })?
-            .r#type();
-
-        let is_issuer = credential
-            .issuer_identifier
-            .as_ref()
-            .is_some_and(|identifier| !identifier.is_remote);
-        if is_issuer && **revocation_type != RevocationType::None {
+        let is_issuer = credential.role == CredentialRole::Issuer;
+        if is_issuer && let Some(method_id) = &schema.revocation_method {
+            let _revocation_fields = self
+                .config
+                .revocation
+                .get_fields(method_id)
+                .error_while("getting revocation config")?;
             throw_if_credential_state_eq(&credential, CredentialStateEnum::Accepted)?;
         }
 
@@ -297,11 +296,12 @@ impl CredentialService {
             .map_err(|error| match error {
                 // credential not found or already deleted
                 DataLayerError::RecordNotUpdated => {
-                    EntityNotFoundError::Credential(*credential_id).into()
+                    CredentialServiceError::NotFound(*credential_id)
                 }
-                error => ServiceError::from(error),
+                error => error.error_while("deleting credential").into(),
             })?;
 
+        tracing::info!("Deleted credential {}", credential.id);
         Ok(())
     }
 
@@ -313,7 +313,8 @@ impl CredentialService {
     pub async fn get_credential(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<CredentialDetailResponseDTO, ServiceError> {
+    ) -> Result<CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO>, CredentialServiceError>
+    {
         let credential = self
             .credential_repository
             .get_credential(
@@ -326,53 +327,91 @@ impl CredentialService {
                         claim_schemas: Some(ClaimSchemaRelations::default()),
                         organisation: Some(OrganisationRelations::default()),
                     }),
-                    issuer_identifier: Some(IdentifierRelations {
-                        did: Some(Default::default()),
-                        ..Default::default()
-                    }),
-                    holder_identifier: Some(IdentifierRelations {
-                        did: Some(Default::default()),
-                        ..Default::default()
-                    }),
+                    issuer_identifier: Some(Default::default()),
+                    issuer_certificate: Some(CertificateRelations::default()),
+                    holder_identifier: Some(Default::default()),
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .error_while("getting credential")?;
 
-        let credential = credential.ok_or(EntityNotFoundError::Credential(*credential_id))?;
+        let credential = credential.ok_or(CredentialServiceError::NotFound(*credential_id))?;
+        throw_if_credential_schema_not_in_session_org(&credential, &*self.session_provider)
+            .error_while("checking session")?;
 
         if credential.deleted_at.is_some() {
-            return Err(EntityNotFoundError::Credential(*credential_id).into());
+            return Err(CredentialServiceError::NotFound(*credential_id));
         }
 
         let mdoc_validity_credentials = match &credential.schema {
-            Some(schema) if schema.format == "MDOC" => {
-                self.validity_credential_repository
-                    .get_latest_by_credential_id(*credential_id, ValidityCredentialType::Mdoc)
-                    .await?
-            }
+            Some(schema) if schema.format.to_string() == "MDOC" => self
+                .validity_credential_repository
+                .get_latest_by_credential_id(*credential_id, ValidityCredentialType::Mdoc)
+                .await
+                .error_while("getting validity credential")?,
             _ => None,
         };
 
-        let mut response = credential_detail_response_from_model(
+        let attestation_blobs = self.get_wallet_attestation_blobs(&credential).await?;
+
+        let response = credential_detail_response_from_model(
             credential,
             &self.config,
             mdoc_validity_credentials,
-        )
-        .map_err(|err| ServiceError::ResponseMapping(err.to_string()))?;
-
-        if response.schema.revocation_method == "LVVC" {
-            let latest_lvvc = self
-                .validity_credential_repository
-                .get_latest_by_credential_id(credential_id.to_owned(), ValidityCredentialType::Lvvc)
-                .await?;
-
-            if let Some(latest_lvvc) = latest_lvvc {
-                response.lvvc_issuance_date = Some(latest_lvvc.created_date);
-            }
-        }
+            attestation_blobs,
+        )?;
 
         Ok(response)
+    }
+
+    async fn get_wallet_attestation_blobs(
+        &self,
+        credential: &Credential,
+    ) -> Result<CredentialAttestationBlobs, CredentialServiceError> {
+        if credential.wallet_instance_attestation_blob_id.is_none()
+            && credential.wallet_unit_attestation_blob_id.is_none()
+        {
+            return Ok(CredentialAttestationBlobs::default());
+        }
+
+        let db_blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let wallet_instance_attestation_blob = match &credential.wallet_instance_attestation_blob_id
+        {
+            Some(blob_id) => Some(
+                db_blob_storage
+                    .get(blob_id)
+                    .await
+                    .error_while("getting WIA blob")?
+                    .ok_or(CredentialServiceError::MappingError(
+                        "wallet instance attestation blob is None".to_string(),
+                    ))?,
+            ),
+            None => None,
+        };
+        let wallet_unit_attestation_blob = match &credential.wallet_unit_attestation_blob_id {
+            Some(blob_id) => Some(
+                db_blob_storage
+                    .get(blob_id)
+                    .await
+                    .error_while("getting WUA blob")?
+                    .ok_or(CredentialServiceError::MappingError(
+                        "wallet unit attestation blob is None".to_string(),
+                    ))?,
+            ),
+            None => None,
+        };
+
+        Ok(CredentialAttestationBlobs {
+            wallet_instance_attestation_blob,
+            wallet_unit_attestation_blob,
+        })
     }
 
     /// Returns list of credentials according to query
@@ -382,12 +421,16 @@ impl CredentialService {
     /// * `query` - query parameters
     pub async fn get_credential_list(
         &self,
+        organisation_id: &OrganisationId,
         query: GetCredentialQueryDTO,
-    ) -> Result<GetCredentialListResponseDTO, ServiceError> {
+    ) -> Result<GetCredentialListResponseDTO, CredentialServiceError> {
+        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
+            .error_while("checking session")?;
         let result = self
             .credential_repository
             .get_credential_list(query)
-            .await?;
+            .await
+            .error_while("getting credentials")?;
 
         list_response_try_into(result)
     }
@@ -395,12 +438,12 @@ impl CredentialService {
     pub async fn reactivate_credential(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<(), ServiceError> {
-        self.change_issued_credential_revocation_state(
-            credential_id,
-            CredentialRevocationState::Valid,
-        )
-        .await?;
+    ) -> Result<(), CredentialServiceError> {
+        self.credential_validity_manager
+            .change_credential_validity_state(credential_id, RevocationState::Valid)
+            .await
+            .error_while("reactivating credential")?;
+        tracing::info!("Reactivated credential {credential_id}");
         Ok(())
     }
 
@@ -408,14 +451,17 @@ impl CredentialService {
         &self,
         credential_id: &CredentialId,
         request: SuspendCredentialRequestDTO,
-    ) -> Result<(), ServiceError> {
-        self.change_issued_credential_revocation_state(
-            credential_id,
-            CredentialRevocationState::Suspended {
-                suspend_end_date: request.suspend_end_date,
-            },
-        )
-        .await?;
+    ) -> Result<(), CredentialServiceError> {
+        self.credential_validity_manager
+            .change_credential_validity_state(
+                credential_id,
+                RevocationState::Suspended {
+                    suspend_end_date: request.suspend_end_date,
+                },
+            )
+            .await
+            .error_while("suspending credential")?;
+        tracing::info!("Suspended credential {credential_id}");
         Ok(())
     }
 
@@ -427,12 +473,12 @@ impl CredentialService {
     pub async fn revoke_credential(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<(), ServiceError> {
-        self.change_issued_credential_revocation_state(
-            credential_id,
-            CredentialRevocationState::Revoked,
-        )
-        .await?;
+    ) -> Result<(), CredentialServiceError> {
+        self.credential_validity_manager
+            .change_credential_validity_state(credential_id, RevocationState::Revoked)
+            .await
+            .error_while("revoking credential")?;
+        tracing::info!("Revoked credential {credential_id}");
         Ok(())
     }
 
@@ -445,15 +491,17 @@ impl CredentialService {
         &self,
         credential_ids: Vec<CredentialId>,
         force_refresh: bool,
-    ) -> Result<Vec<CredentialRevocationCheckResponseDTO>, ServiceError> {
+    ) -> Result<Vec<CredentialRevocationCheckResponseDTO>, CredentialServiceError> {
         let mut result = vec![];
         for credential_id in credential_ids {
             result.push(
-                self.check_credential_revocation_status(credential_id, force_refresh)
-                    .await?,
+                self.credential_validity_manager
+                    .check_holder_credential_validity(credential_id, force_refresh)
+                    .await
+                    .error_while("checking credential validity")?,
             );
         }
-        Ok(result)
+        Ok(convert_inner(result))
     }
 
     /// Returns URL of shared credential
@@ -464,90 +512,101 @@ impl CredentialService {
     pub async fn share_credential(
         &self,
         credential_id: &CredentialId,
-    ) -> Result<EntityShareResponseDTO, ServiceError> {
+    ) -> Result<ShareCredentialResponseDTO, CredentialServiceError> {
         let credential = self.get_credential_with_state(credential_id).await?;
 
         if credential.deleted_at.is_some() {
-            return Err(EntityNotFoundError::Credential(*credential_id).into());
+            return Err(CredentialServiceError::NotFound(*credential_id));
+        }
+        let Some(credential_schema) = credential.schema.as_ref() else {
+            return Err(CredentialServiceError::MappingError(
+                "Missing credential schema".to_string(),
+            ));
+        };
+        throw_if_org_relation_not_matching_session(
+            credential_schema.organisation.as_ref(),
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
+        if !matches!(
+            credential.state,
+            CredentialStateEnum::Created
+                | CredentialStateEnum::Pending
+                | CredentialStateEnum::InteractionExpired
+        ) {
+            return Err(CredentialServiceError::InvalidState(credential.state));
         }
 
-        match credential.state {
-            CredentialStateEnum::Created => {
-                self.credential_repository
-                    .update_credential(
-                        *credential_id,
-                        UpdateCredentialRequest {
-                            state: Some(CredentialStateEnum::Pending),
-                            suspend_end_date: Clearable::DontTouch,
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-            }
-            CredentialStateEnum::Pending => {}
-            state => return Err(BusinessLogicError::InvalidCredentialState { state }.into()),
+        let Some(issuer_identifier) = credential.issuer_identifier.as_ref() else {
+            return Err(CredentialServiceError::MappingError(
+                "Missing issuer identifier".to_string(),
+            ));
+        };
+
+        if issuer_identifier.state != IdentifierState::Active {
+            return Err(CredentialServiceError::IdentifierIsDeactivated(
+                issuer_identifier.id,
+            ));
         }
 
-        let credential_exchange = &credential.exchange;
-        credential
-            .schema
-            .as_ref()
-            .ok_or(IssuanceProtocolError::Failed(
-                "credential schema missing".to_string(),
-            ))?;
+        let Some(organisation) = &credential_schema.organisation else {
+            return Err(CredentialServiceError::MappingError(
+                "Missing organisation".to_string(),
+            ));
+        };
 
-        self.config
-            .issuance_protocol
-            .get_fields(credential_exchange)
-            .map_err(|err| {
-                ServiceError::MissingExchangeProtocol(format!("{credential_exchange}: {err}"))
-            })?;
-
+        let credential_exchange = &credential.protocol;
         let exchange = self
             .protocol_provider
             .get_protocol(credential_exchange)
             .ok_or(MissingProviderError::ExchangeProtocol(
                 credential_exchange.clone(),
-            ))?;
+            ))
+            .error_while("getting protocol")?;
 
         let ShareResponse {
             url,
             interaction_id,
-            context,
-        } = exchange.issuer_share_credential(&credential).await?;
-
-        let Some(credential_schema) = credential.schema.as_ref() else {
-            return Err(ServiceError::MappingError(
-                "Missing credential schema".to_string(),
-            ));
-        };
-
-        let Some(organisation) = &credential_schema.organisation else {
-            return Err(ServiceError::MappingError(
-                "Missing organisation".to_string(),
-            ));
-        };
+            interaction_data,
+            expires_at,
+            transaction_code,
+        } = exchange
+            .issuer_share_credential(&credential)
+            .await
+            .error_while("sharing credential")?;
 
         add_new_interaction(
             interaction_id,
-            &self.base_url,
             &*self.interaction_repository,
-            serde_json::to_vec(&context).ok(),
+            interaction_data,
             Some(organisation.to_owned()),
+            InteractionType::Issuance,
+            expires_at,
         )
-        .await?;
-        update_credentials_interaction(credential.id, interaction_id, &*self.credential_repository)
-            .await?;
-        clear_previous_interaction(&*self.interaction_repository, &credential.interaction).await?;
-
-        log_history_event_credential(
-            &*self.history_repository,
-            &credential,
-            HistoryAction::Shared,
-        )
-        .await;
-
-        Ok(EntityShareResponseDTO { url })
+        .await
+        .error_while("adding interaction")?;
+        self.credential_repository
+            .update_credential(
+                *credential_id,
+                UpdateCredentialRequest {
+                    state: (credential.state != CredentialStateEnum::Pending)
+                        .then_some(CredentialStateEnum::Pending),
+                    interaction: Some(interaction_id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .error_while("updating credential")?;
+        clear_previous_interaction(&*self.interaction_repository, &credential.interaction)
+            .await
+            .error_while("clearing interaction")?;
+        tracing::info!("Shared credential {credential_id}");
+        Ok(ShareCredentialResponseDTO {
+            url,
+            expires_at,
+            transaction_code,
+        })
     }
 
     // ============ Private methods
@@ -556,7 +615,7 @@ impl CredentialService {
     async fn get_credential_with_state(
         &self,
         id: &CredentialId,
-    ) -> Result<Credential, ServiceError> {
+    ) -> Result<Credential, CredentialServiceError> {
         let credential = self
             .credential_repository
             .get_credential(
@@ -578,407 +637,14 @@ impl CredentialService {
                         ..Default::default()
                     }),
                     interaction: Some(InteractionRelations::default()),
+                    issuer_certificate: Some(Default::default()),
                     ..Default::default()
                 },
             )
-            .await?
-            .ok_or(EntityNotFoundError::Credential(*id))?;
+            .await
+            .error_while("getting credential")?
+            .ok_or(CredentialServiceError::NotFound(*id))?;
 
         Ok(credential)
-    }
-
-    async fn change_issued_credential_revocation_state(
-        &self,
-        credential_id: &CredentialId,
-        revocation_state: CredentialRevocationState,
-    ) -> Result<(), ServiceError> {
-        let credential = self
-            .credential_repository
-            .get_credential(
-                credential_id,
-                &CredentialRelations {
-                    issuer_identifier: Some(IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(KeyRelations::default()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    holder_identifier: Some(IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(KeyRelations::default()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    schema: Some(CredentialSchemaRelations {
-                        organisation: Some(OrganisationRelations::default()),
-                        ..Default::default()
-                    }),
-                    key: Some(KeyRelations::default()),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        let Some(credential) = credential else {
-            return Err(EntityNotFoundError::Credential(*credential_id).into());
-        };
-
-        if credential.deleted_at.is_some() {
-            return Err(EntityNotFoundError::Credential(*credential_id).into());
-        }
-
-        let credential_schema = credential
-            .schema
-            .as_ref()
-            .ok_or(ServiceError::MappingError(
-                "credential schema is None".to_string(),
-            ))?;
-
-        verify_suspension_support(credential_schema, &revocation_state)?;
-
-        let issuer_did = credential
-            .issuer_identifier
-            .as_ref()
-            .ok_or(ServiceError::MappingError(
-                "issuer_identifier is None".to_string(),
-            ))?
-            .did
-            .as_ref()
-            .ok_or(ServiceError::MappingError("issuer did is None".to_string()))?;
-
-        let did_document = self.did_method_provider.resolve(&issuer_did.did).await?;
-
-        let Some(verification_method) =
-            did_document.find_verification_method(None, Some(KeyRole::AssertionMethod))
-        else {
-            return Err(ServiceError::Revocation(
-                RevocationError::KeyWithRoleNotFound(KeyRole::AssertionMethod),
-            ));
-        };
-
-        let current_state = &credential.state;
-
-        let valid_states: &[CredentialStateEnum] = match revocation_state {
-            CredentialRevocationState::Revoked => &[
-                CredentialStateEnum::Accepted,
-                CredentialStateEnum::Suspended,
-            ],
-            CredentialRevocationState::Valid => &[CredentialStateEnum::Suspended],
-            CredentialRevocationState::Suspended { .. } => &[CredentialStateEnum::Accepted],
-        };
-        throw_if_state_not_in(current_state, valid_states)?;
-
-        let revocation_method_key = &credential_schema.revocation_method;
-
-        let revocation_method = self
-            .revocation_method_provider
-            .get_revocation_method(revocation_method_key)
-            .ok_or(MissingProviderError::RevocationMethod(
-                revocation_method_key.to_owned(),
-            ))?;
-
-        let capabilities: RevocationMethodCapabilities = revocation_method.get_capabilities();
-        let required_capability = match revocation_state {
-            CredentialRevocationState::Valid | CredentialRevocationState::Suspended { .. } => {
-                Operation::Suspend
-            }
-            CredentialRevocationState::Revoked => Operation::Revoke,
-        };
-        if !capabilities.operations.contains(&required_capability) {
-            return Err(
-                BusinessLogicError::OperationNotSupportedByRevocationMethod {
-                    operation: revocation_state.to_string(),
-                }
-                .into(),
-            );
-        }
-        let update = revocation_method
-            .mark_credential_as(
-                &credential,
-                revocation_state.to_owned(),
-                generate_credential_additional_data(
-                    &credential,
-                    &*self.credential_repository,
-                    &*self.revocation_list_repository,
-                    &*revocation_method,
-                    &*self.formatter_provider,
-                    &self.key_provider,
-                    &self.key_algorithm_provider,
-                    &self.base_url,
-                    verification_method.id.to_owned(),
-                )
-                .await?,
-            )
-            .await?;
-        process_update(
-            update,
-            &*self.validity_credential_repository,
-            &*self.revocation_list_repository,
-        )
-        .await?;
-
-        let suspend_end_date =
-            if let CredentialRevocationState::Suspended { suspend_end_date } = &revocation_state {
-                suspend_end_date.to_owned()
-            } else {
-                None
-            };
-        self.credential_repository
-            .update_credential(
-                *credential_id,
-                UpdateCredentialRequest {
-                    state: Some(credential_revocation_state_to_model_state(
-                        revocation_state.to_owned(),
-                    )),
-                    suspend_end_date: Clearable::ForceSet(suspend_end_date),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        Ok(())
-    }
-
-    async fn check_credential_revocation_status(
-        &self,
-        credential_id: CredentialId,
-        force_refresh: bool,
-    ) -> Result<CredentialRevocationCheckResponseDTO, ServiceError> {
-        let credential = self
-            .credential_repository
-            .get_credential(
-                &credential_id,
-                &CredentialRelations {
-                    schema: Some(CredentialSchemaRelations {
-                        organisation: Some(OrganisationRelations::default()),
-                        ..Default::default()
-                    }),
-                    issuer_identifier: Some(IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(KeyRelations::default()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    holder_identifier: Some(IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(KeyRelations::default()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
-                    interaction: Some(InteractionRelations {
-                        organisation: Some(OrganisationRelations::default()),
-                    }),
-                    key: Some(KeyRelations::default()),
-                    ..Default::default()
-                },
-            )
-            .await?
-            .ok_or(ServiceError::EntityNotFound(
-                EntityNotFoundError::Credential(credential_id),
-            ))?;
-
-        if credential.deleted_at.is_some() {
-            return Err(EntityNotFoundError::Credential(credential_id).into());
-        }
-
-        if credential.role != CredentialRole::Holder {
-            return Err(BusinessLogicError::RevocationCheckNotAllowedForRole {
-                role: credential.role,
-                credential_id,
-            }
-            .into());
-        }
-
-        let current_state = credential.state;
-        match current_state {
-            CredentialStateEnum::Accepted | CredentialStateEnum::Suspended => {
-                // continue flow
-            }
-            CredentialStateEnum::Revoked => {
-                // credential already revoked, no need to check further
-                return Ok(CredentialRevocationCheckResponseDTO {
-                    credential_id,
-                    status: CredentialStateEnum::Revoked.into(),
-                    success: true,
-                    reason: None,
-                });
-            }
-            _ => {
-                // cannot check pending/offered credentials etc
-                return Ok(CredentialRevocationCheckResponseDTO {
-                    credential_id,
-                    success: false,
-                    reason: Some(format!("Invalid credential state: {current_state}")),
-                    status: current_state.into(),
-                });
-            }
-        };
-
-        let credential_schema = credential
-            .schema
-            .as_ref()
-            .ok_or(ServiceError::MappingError("schema is None".to_string()))?
-            .clone();
-
-        let credential_str = String::from_utf8(credential.credential.clone())
-            .map_err(|e| ServiceError::MappingError(e.to_string()))?;
-
-        // Workaround credential format detection
-        let format = detect_format_with_crypto_suite(&credential_schema.format, &credential_str)?;
-
-        let Some(formatter) = self.formatter_provider.get_formatter(&format) else {
-            return Err(MissingProviderError::Formatter(credential_schema.format).into());
-        };
-
-        let detail_credential = formatter
-            .extract_credentials_unverified(&credential_str, Some(&credential_schema))
-            .await?;
-
-        if format == "MDOC" {
-            let new_state = self
-                .check_mdoc_update(&credential, &detail_credential, force_refresh)
-                .await?;
-
-            if new_state != current_state {
-                let update_request = UpdateCredentialRequest {
-                    state: Some(new_state),
-                    suspend_end_date: Clearable::DontTouch,
-                    ..Default::default()
-                };
-
-                self.credential_repository
-                    .update_credential(credential_id, update_request)
-                    .await?;
-                if current_state == CredentialStateEnum::Suspended
-                    && new_state == CredentialStateEnum::Accepted
-                {
-                    log_history_event_credential(
-                        &*self.history_repository,
-                        &credential,
-                        HistoryAction::Reactivated,
-                    )
-                    .await;
-                }
-            }
-
-            //Mdoc flow ends here. Nothing else to do for MDOC
-            return Ok(CredentialRevocationCheckResponseDTO {
-                credential_id,
-                status: new_state.into(),
-                success: true,
-                reason: None,
-            });
-        }
-
-        let credential_status = if !detail_credential.status.is_empty() {
-            detail_credential.status
-        } else {
-            // no credential status -> credential is irrevocable
-            return Ok(CredentialRevocationCheckResponseDTO {
-                credential_id,
-                status: CredentialStateEnum::Accepted.into(),
-                success: true,
-                reason: None,
-            });
-        };
-
-        let revocation_method = self
-            .revocation_method_provider
-            .get_revocation_method(&credential_schema.revocation_method)
-            .ok_or(MissingProviderError::RevocationMethod(
-                credential_schema.revocation_method.clone(),
-            ))?;
-
-        let issuer_did = credential
-            .issuer_identifier
-            .as_ref()
-            .ok_or(ServiceError::MappingError(
-                "issuer_identifier is None".to_string(),
-            ))?
-            .did
-            .to_owned()
-            .ok_or(ServiceError::MappingError("issuer_did is None".to_string()))?;
-
-        let credential_data_by_role = match credential.role {
-            CredentialRole::Holder => {
-                Some(CredentialDataByRole::Holder(Box::new(credential.clone())))
-            }
-            CredentialRole::Issuer | CredentialRole::Verifier => None,
-        };
-
-        let mut worst_revocation_state = CredentialRevocationState::Valid;
-        for status in credential_status {
-            match revocation_method
-                .check_credential_revocation_status(
-                    &status,
-                    &issuer_did.did,
-                    credential_data_by_role.to_owned(),
-                    force_refresh,
-                )
-                .await
-            {
-                Err(error) => {
-                    return Ok(CredentialRevocationCheckResponseDTO {
-                        credential_id,
-                        status: current_state.into(),
-                        success: false,
-                        reason: Some(error.to_string()),
-                    });
-                }
-                Ok(state) => match state {
-                    CredentialRevocationState::Valid => {}
-                    CredentialRevocationState::Revoked => {
-                        worst_revocation_state = state;
-                        break;
-                    }
-                    CredentialRevocationState::Suspended { .. } => {
-                        worst_revocation_state = state;
-                    }
-                },
-            };
-        }
-
-        let detected_state =
-            credential_revocation_state_to_model_state(worst_revocation_state.to_owned());
-
-        let suspend_end_date = match worst_revocation_state {
-            CredentialRevocationState::Suspended { suspend_end_date } => suspend_end_date,
-            _ => None,
-        };
-
-        // update local credential state if change detected
-        if current_state != detected_state {
-            self.credential_repository
-                .update_credential(
-                    credential_id,
-                    UpdateCredentialRequest {
-                        state: Some(detected_state.to_owned()),
-                        suspend_end_date: Clearable::ForceSet(suspend_end_date),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            if current_state == CredentialStateEnum::Suspended
-                && detected_state == CredentialStateEnum::Accepted
-            {
-                log_history_event_credential(
-                    &*self.history_repository,
-                    &credential,
-                    HistoryAction::Reactivated,
-                )
-                .await;
-            }
-        }
-
-        Ok(CredentialRevocationCheckResponseDTO {
-            credential_id,
-            status: detected_state.into(),
-            success: true,
-            reason: None,
-        })
     }
 }

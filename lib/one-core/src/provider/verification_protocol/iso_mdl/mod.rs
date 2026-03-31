@@ -10,47 +10,53 @@ use ble::ISO_MDL_FLOW;
 use ble_holder::{MdocBleHolderInteractionData, send_mdl_response};
 use common::{DeviceRequest, to_cbor};
 use futures::future::BoxFuture;
+use serde_json::Value;
 use url::Url;
 
 use super::dto::{
-    InvitationResponseDTO, PresentationDefinitionFieldDTO,
+    FormattedCredentialPresentation, InvitationResponseDTO, PresentationDefinitionFieldDTO,
     PresentationDefinitionRequestGroupResponseDTO,
     PresentationDefinitionRequestedCredentialResponseDTO, PresentationDefinitionResponseDTO,
-    PresentationDefinitionRuleDTO, PresentationDefinitionRuleTypeEnum, PresentedCredential,
-    ShareResponse, UpdateResponse, VerificationProtocolCapabilities,
+    PresentationDefinitionRuleDTO, PresentationDefinitionRuleTypeEnum,
+    PresentationDefinitionV2ResponseDTO, PresentationDefinitionVersion, ShareResponse,
+    UpdateResponse, VerificationProtocolCapabilities,
 };
 use super::{
     FormatMapper, StorageAccess, TypeToDescriptorMapper, VerificationProtocol,
     VerificationProtocolError,
 };
-use crate::common_mapper::{NESTED_CLAIM_MARKER, PublicKeyWithJwk, decode_cbor_base64};
-use crate::config::core_config::{CoreConfig, DidType, TransportType};
-use crate::model::credential::CredentialStateEnum;
-use crate::model::did::Did;
-use crate::model::key::Key;
+use crate::config::core_config::{
+    CoreConfig, DidType, IdentifierType, TransportType, VerificationEngagement,
+};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::{NESTED_CLAIM_MARKER, decode_cbor_base64};
 use crate::model::organisation::Organisation;
-use crate::model::proof::Proof;
-use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{
-    DeviceResponse, DeviceResponseVersion, DocumentError, EmbeddedCbor, SessionTranscript,
-};
-use crate::provider::credential_formatter::model::{
-    DetailCredential, FormatPresentationCtx, HolderBindingCtx,
-};
-use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
+use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
+use crate::proto::bluetooth_low_energy::ble_resource::{Abort, BleWaiter};
+use crate::proto::nfc::NfcError;
+use crate::proto::nfc::hce::NfcHce;
+use crate::provider::credential_formatter::mdoc_formatter::util::EmbeddedCbor;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
+use crate::provider::presentation_formatter::model::{
+    CredentialToPresent, FormatPresentationCtx, FormattedPresentation,
+};
+use crate::provider::presentation_formatter::mso_mdoc::model::{
+    DeviceResponse, DeviceResponseVersion, DocumentError,
+};
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::SessionTranscript;
+use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
 use crate::provider::verification_protocol::deserialize_interaction_data;
-use crate::provider::verification_protocol::openid4vp::model::OpenID4VpPresentationFormat;
+use crate::service::credential::dto::CredentialAttestationBlobs;
 use crate::service::credential::mapper::credential_detail_response_from_model;
 use crate::service::proof::dto::ShareProofRequestParamsDTO;
-use crate::util::ble_resource::{Abort, BleWaiter};
 
 mod ble;
 pub(crate) mod ble_holder;
 pub(crate) mod ble_verifier;
 pub(crate) mod common;
 pub(crate) mod device_engagement;
+pub(crate) mod nfc;
 mod session;
 
 #[cfg(test)]
@@ -59,26 +65,29 @@ mod verify_proof;
 
 pub(crate) struct IsoMdl {
     config: Arc<CoreConfig>,
-    formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
     key_provider: Arc<dyn KeyProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     ble: Option<BleWaiter>,
+    nfc_hce: Option<Arc<dyn NfcHce>>,
 }
 
 impl IsoMdl {
     pub(crate) fn new(
         config: Arc<CoreConfig>,
-        formatter_provider: Arc<dyn CredentialFormatterProvider>,
+        presentation_formatter_provider: Arc<dyn PresentationFormatterProvider>,
         key_provider: Arc<dyn KeyProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         ble: Option<BleWaiter>,
+        nfc_hce: Option<Arc<dyn NfcHce>>,
     ) -> Self {
         Self {
             config,
-            formatter_provider,
+            presentation_formatter_provider,
             key_provider,
             key_algorithm_provider,
             ble,
+            nfc_hce,
         }
     }
 }
@@ -87,14 +96,6 @@ impl IsoMdl {
 impl VerificationProtocol for IsoMdl {
     fn holder_can_handle(&self, _url: &Url) -> bool {
         false
-    }
-
-    fn holder_get_holder_binding_context(
-        &self,
-        _proof: &Proof,
-        _context: serde_json::Value,
-    ) -> Result<Option<HolderBindingCtx>, VerificationProtocolError> {
-        Ok(None)
     }
 
     async fn holder_handle_invitation(
@@ -151,10 +152,7 @@ impl VerificationProtocol for IsoMdl {
     async fn holder_submit_proof(
         &self,
         proof: &Proof,
-        credential_presentations: Vec<PresentedCredential>,
-        holder_did: &Did,
-        key: &Key,
-        _jwk_key_id: Option<String>,
+        credential_presentations: Vec<FormattedCredentialPresentation>,
     ) -> Result<UpdateResponse, VerificationProtocolError> {
         let ble = self.ble.clone().ok_or_else(|| {
             VerificationProtocolError::Failed("Missing BLE central for submit proof".to_string())
@@ -171,11 +169,6 @@ impl VerificationProtocol for IsoMdl {
             VerificationProtocolError::Failed("invalid interaction data".to_string())
         })?;
 
-        let auth_fn = self
-            .key_provider
-            .get_signature_provider(key, None, self.key_algorithm_provider.clone())
-            .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
-
         let credential_presentation =
             credential_presentations
                 .first()
@@ -183,51 +176,69 @@ impl VerificationProtocol for IsoMdl {
                     "no credentials to format".into(),
                 ))?;
 
-        let formatter = self
-            .formatter_provider
-            .get_formatter(&credential_presentation.credential_schema.format)
+        let auth_fn = self
+            .key_provider
+            .get_signature_provider(
+                &credential_presentation.key,
+                credential_presentation.jwk_key_id.to_owned(),
+                self.key_algorithm_provider.clone(),
+            )
+            .error_while("getting signature provider")?;
+
+        let holder_did = credential_presentation
+            .holder_did
+            .as_ref()
+            .map(|did| did.did.to_owned());
+
+        let format_type = self
+            .config
+            .format
+            .get_type(&credential_presentation.credential_schema.format)
+            .error_while("getting format type")?;
+        let (_, presentation_formatter) = self
+            .presentation_formatter_provider
+            .get_presentation_formatter_by_type(format_type)
             .ok_or(VerificationProtocolError::Failed(format!(
                 "unknown format: {}",
                 credential_presentation.credential_schema.format
             )))?;
 
         let session_transcript_bytes: EmbeddedCbor<SessionTranscript> =
-            ciborium::from_reader(session.session_transcript_bytes.as_slice())
-                .map_err(|err| VerificationProtocolError::Failed(err.to_string()))?;
+            ciborium::from_reader(session.session_transcript_bytes.as_slice())?;
 
         let ctx = FormatPresentationCtx {
-            mdoc_session_transcript: Some(
-                to_cbor(session_transcript_bytes.inner())
-                    .map_err(|err| VerificationProtocolError::Failed(err.to_string()))?,
-            ),
+            mdoc_session_transcript: Some(to_cbor(session_transcript_bytes.inner())?),
             ..Default::default()
         };
 
-        let presentaitons = credential_presentations
+        let presentations = credential_presentations
             .into_iter()
-            .map(|credential| credential.presentation)
-            .collect::<Vec<_>>();
+            .map(|credential| {
+                let format = self
+                    .config
+                    .format
+                    .get_type(&credential.credential_schema.format)
+                    .error_while("getting format type")?;
+                Ok(CredentialToPresent {
+                    credential_token: credential.presentation,
+                    credential_format: format,
+                })
+            })
+            .collect::<Result<Vec<_>, VerificationProtocolError>>()?;
 
-        let key_algorithm = key
-            .key_algorithm_type()
-            .ok_or(VerificationProtocolError::Failed(
-                FormatterError::Failed("Missing key algorithm".to_string()).to_string(),
-            ))?;
-
-        let device_response = formatter
-            .format_presentation(&presentaitons, &holder_did.did, key_algorithm, auth_fn, ctx)
+        let FormattedPresentation { vp_token, .. } = presentation_formatter
+            .format_presentation(presentations, auth_fn, &holder_did, ctx)
             .await
-            .map_err(|err| VerificationProtocolError::Failed(err.to_string()))?;
+            .error_while("formatting presentation")?;
 
-        let device_response = decode_cbor_base64(&device_response)
-            .map_err(|err| VerificationProtocolError::Failed(err.to_string()))?;
+        let device_response = decode_cbor_base64(&vp_token).error_while("decoding vp_token")?;
 
         send_mdl_response(&ble, device_response, interaction_data).await?;
 
         Ok(UpdateResponse { update_proof: None })
     }
 
-    async fn retract_proof(&self, _proof: &Proof) -> Result<(), VerificationProtocolError> {
+    async fn retract_proof(&self, proof: &Proof) -> Result<(), VerificationProtocolError> {
         let ble = self.ble.as_ref().ok_or_else(|| {
             VerificationProtocolError::Failed("Missing BLE interface".to_string())
         })?;
@@ -235,6 +246,35 @@ impl VerificationProtocol for IsoMdl {
         // There is one shared flowId for both holder and verifier logic.
         // So this call cancels either one, if it is running
         ble.abort(Abort::Flow(*ISO_MDL_FLOW)).await;
+
+        // explicitly stop NFC HCE if running
+        if proof.role == ProofRole::Holder && proof.state == ProofStateEnum::Pending {
+            let interaction_data: MdocBleHolderInteractionData = deserialize_interaction_data(
+                proof
+                    .interaction
+                    .as_ref()
+                    .and_then(|interaction| interaction.data.as_ref()),
+            )?;
+
+            if interaction_data
+                .engagement
+                .contains(&VerificationEngagement::NFC)
+            {
+                match self
+                    .nfc_hce
+                    .as_ref()
+                    .ok_or_else(|| {
+                        VerificationProtocolError::Failed("Missing NFC HCE interface".to_string())
+                    })?
+                    .stop_hosting(false)
+                    .await
+                {
+                    Ok(_) | Err(NfcError::NotStarted) => {}
+                    Err(err) => tracing::error!("Failed to stop NFC hosting: {err}"),
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -242,12 +282,10 @@ impl VerificationProtocol for IsoMdl {
         &self,
         _proof: &Proof,
         _format_to_type_mapper: FormatMapper,
-        _encryption_key_jwk: Option<PublicKeyWithJwk>,
-        _vp_formats: HashMap<String, OpenID4VpPresentationFormat>,
         _type_to_descriptor: TypeToDescriptorMapper,
         _callback: Option<BoxFuture<'static, ()>>,
         _params: Option<ShareProofRequestParamsDTO>,
-    ) -> Result<ShareResponse<serde_json::Value>, VerificationProtocolError> {
+    ) -> Result<ShareResponse, VerificationProtocolError> {
         unimplemented!()
     }
 
@@ -258,8 +296,7 @@ impl VerificationProtocol for IsoMdl {
         storage_access: &StorageAccess,
     ) -> Result<PresentationDefinitionResponseDTO, VerificationProtocolError> {
         let interaction_data: MdocBleHolderInteractionData =
-            serde_json::from_value(interaction_data)
-                .map_err(VerificationProtocolError::JsonError)?;
+            serde_json::from_value(interaction_data)?;
 
         let device_request_bytes = interaction_data
             .session
@@ -281,23 +318,9 @@ impl VerificationProtocol for IsoMdl {
             let namespaces = items_request.name_spaces;
 
             let credentials: Vec<_> = storage_access
-                .get_credentials_by_credential_schema_id(&schema_id, organisation_id)
+                .get_presentation_credentials_by_schema_id(schema_id.to_owned(), organisation_id)
                 .await
-                .map_err(|err| {
-                    VerificationProtocolError::Failed(format!(
-                        "Failed loading credentials for schema: {err}"
-                    ))
-                })?
-                .into_iter()
-                .filter(|credential| {
-                    credential
-                        .schema
-                        .as_ref()
-                        .and_then(|schema| schema.organisation.as_ref())
-                        .filter(|organisation| organisation.id == organisation_id)
-                        .is_some()
-                })
-                .collect();
+                .map_err(VerificationProtocolError::StorageAccessError)?;
 
             let mut fields: Vec<PresentationDefinitionFieldDTO> = namespaces
                 .into_iter()
@@ -319,17 +342,6 @@ impl VerificationProtocol for IsoMdl {
             let mut applicable_credentials = vec![];
 
             for credential in credentials {
-                let credential_state = credential.state;
-
-                if !matches!(
-                    credential_state,
-                    CredentialStateEnum::Accepted
-                        | CredentialStateEnum::Revoked
-                        | CredentialStateEnum::Suspended
-                ) {
-                    continue;
-                }
-
                 let claims = credential.claims.as_ref().ok_or_else(|| {
                     VerificationProtocolError::Failed("Claims missing for credential".to_string())
                 })?;
@@ -350,22 +362,22 @@ impl VerificationProtocol for IsoMdl {
                     }) {
                         field_description
                             .key_map
-                            .insert(credential.id.to_string(), field_description.id.to_owned());
+                            .insert(credential.id, field_description.id.to_owned());
 
                         credential_claim_requested = true;
                     }
                 }
 
                 if credential_claim_requested {
-                    applicable_credentials.push(credential.id.to_string());
+                    applicable_credentials.push(credential.id);
 
-                    let credential =
-                        credential_detail_response_from_model(credential, &self.config, None)
-                            .map_err(|err| {
-                                VerificationProtocolError::Failed(format!(
-                                    "Credential model mapping error: {err}"
-                                ))
-                            })?;
+                    let credential = credential_detail_response_from_model(
+                        credential,
+                        &self.config,
+                        None,
+                        CredentialAttestationBlobs::default(),
+                    )
+                    .error_while("creating credential detail")?;
                     relevant_credentials.push(credential);
                 }
             }
@@ -374,10 +386,10 @@ impl VerificationProtocol for IsoMdl {
                 id: schema_id,
                 name: None,
                 purpose: None,
+                multiple: None,
                 fields,
                 applicable_credentials,
                 inapplicable_credentials: vec![],
-                validity_credential_nbf: None,
             };
 
             requested_credentials.push(credential_response);
@@ -402,18 +414,22 @@ impl VerificationProtocol for IsoMdl {
         })
     }
 
-    async fn verifier_handle_proof(
+    async fn holder_get_presentation_definition_v2(
         &self,
         _proof: &Proof,
-        _submission: &[u8],
-    ) -> Result<Vec<DetailCredential>, VerificationProtocolError> {
-        todo!()
+        _context: Value,
+        _storage_access: &StorageAccess,
+    ) -> Result<PresentationDefinitionV2ResponseDTO, VerificationProtocolError> {
+        Err(VerificationProtocolError::OperationNotSupported)
     }
 
     fn get_capabilities(&self) -> VerificationProtocolCapabilities {
         VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![TransportType::Ble],
-            did_methods: vec![DidType::Key, DidType::Jwk, DidType::Web, DidType::MDL],
+            did_methods: vec![DidType::Key, DidType::Jwk, DidType::Web],
+            verifier_identifier_types: vec![IdentifierType::Did],
+            supported_presentation_definition: vec![PresentationDefinitionVersion::V1],
         }
     }
 }

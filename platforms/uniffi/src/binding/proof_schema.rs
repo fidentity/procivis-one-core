@@ -15,11 +15,11 @@ use super::OneCoreBinding;
 use super::common::SortDirection;
 use super::credential_schema::{
     CredentialSchemaBindingDTO, CredentialSchemaLayoutPropertiesBindingDTO,
-    CredentialSchemaTypeBindingEnum, LayoutTypeBindingEnum, WalletStorageTypeBindingEnum,
+    KeyStorageSecurityBindingEnum, LayoutTypeBindingEnum,
 };
 use super::mapper::optional_time;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
-use crate::utils::{TimestampFormat, into_id, into_timestamp};
+use crate::utils::{TimestampFormat, into_id, into_timestamp, into_timestamp_opt};
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCoreBinding {
@@ -58,10 +58,11 @@ impl OneCoreBinding {
         &self,
         filter: ListProofSchemasFiltersBindingDTO,
     ) -> Result<ProofSchemaListBindingDTO, BindingError> {
+        let organisation_id = into_id(filter.organisation_id.clone())?;
         let core = self.use_core().await?;
         Ok(core
             .proof_schema_service
-            .get_proof_schema_list(filter.try_into()?)
+            .get_proof_schema_list(&organisation_id, filter.try_into()?)
             .await?
             .into())
     }
@@ -176,7 +177,6 @@ pub struct ProofInputSchemaBindingDTO {
     #[from(with_fn = convert_inner)]
     pub claim_schemas: Vec<ProofClaimSchemaBindingDTO>,
     pub credential_schema: CredentialSchemaBindingDTO,
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Debug, TryInto, uniffi::Record)]
@@ -185,8 +185,6 @@ pub struct ImportProofSchemaInputSchemaBindingDTO {
     #[try_into(with_fn = try_convert_inner)]
     pub claim_schemas: Vec<ImportProofSchemaClaimSchemaBindingDTO>,
     pub credential_schema: ImportProofSchemaCredentialSchemaBindingDTO,
-    #[try_into(infallible)]
-    pub validity_constraint: Option<i64>,
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
@@ -198,24 +196,28 @@ pub struct ImportProofSchemaCredentialSchemaBindingDTO {
     pub created_date: String,
     #[try_into(with_fn_ref = into_timestamp)]
     pub last_modified: String,
+    #[try_into(with_fn = into_timestamp_opt)]
+    pub deleted_at: Option<String>,
     #[try_into(infallible)]
     pub name: String,
     #[try_into(infallible)]
     pub format: String,
-    #[try_into(infallible)]
-    pub revocation_method: String,
     #[try_into(with_fn = convert_inner, infallible)]
-    pub wallet_storage_type: Option<WalletStorageTypeBindingEnum>,
+    pub revocation_method: Option<String>,
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub key_storage_security: Option<KeyStorageSecurityBindingEnum>,
     #[try_into(infallible)]
     pub schema_id: String,
     #[try_into(infallible)]
     pub imported_source_url: String,
-    #[try_into(infallible)]
-    pub schema_type: CredentialSchemaTypeBindingEnum,
     #[try_into(with_fn = convert_inner, infallible)]
     pub layout_type: Option<LayoutTypeBindingEnum>,
     #[try_into(with_fn = try_convert_inner)]
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesBindingDTO>,
+    #[try_into(infallible)]
+    pub allow_suspension: Option<bool>,
+    #[try_into(infallible)]
+    pub requires_wallet_instance_attestation: Option<bool>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -285,8 +287,6 @@ pub struct CreateProofSchemaRequestDTO {
 pub struct ProofInputSchemaRequestDTO {
     #[try_into(with_fn_ref = into_id)]
     pub credential_schema_id: String,
-    #[try_into(with_fn = convert_inner, infallible)]
-    pub validity_constraint: Option<i64>,
     #[try_into(with_fn = try_convert_inner)]
     pub claim_schemas: Vec<CreateProofSchemaClaimRequestDTO>,
 }
@@ -318,6 +318,12 @@ pub struct ListProofSchemasFiltersBindingDTO {
     pub name: Option<String>,
     pub exact: Option<Vec<ProofSchemaListQueryExactColumnBinding>>,
     pub ids: Option<Vec<String>>,
+    pub formats: Option<Vec<String>>,
+
+    pub created_date_after: Option<String>,
+    pub created_date_before: Option<String>,
+    pub last_modified_after: Option<String>,
+    pub last_modified_before: Option<String>,
 }
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]

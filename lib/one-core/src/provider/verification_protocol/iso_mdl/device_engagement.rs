@@ -7,12 +7,15 @@ use serde::{Deserialize, Serialize, Serializer, de, ser};
 use uuid::Uuid;
 
 use super::common::EDeviceKey;
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{Bstr, EmbeddedCbor};
+use super::nfc::{BLE_RECORD_TYPE, BLECarrierConfigurationRecord, DEVICE_ENGAGMENT_RECORD_TYPE};
+use crate::provider::credential_formatter::mdoc_formatter::util::{Bstr, EmbeddedCbor};
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::nfc::NFCHandover;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DeviceEngagement {
     // pub version: DeviceEngagementVersion,
     pub security: Security,
+    // empty vector means missing entry in CBOR
     pub device_retrieval_methods: Vec<DeviceRetrievalMethod>,
     // ServerRetrievalMethods and ProtocolInfo ignored/not implemented
 }
@@ -52,48 +55,86 @@ pub(crate) struct BleOptions {
     pub peripheral_server_mac_address: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct GeneratedQRCode {
-    pub qr_code_content: String,
-    pub device_engagement: EmbeddedCbor<DeviceEngagement>,
-}
+const QR_CODE_PREFIX: &str = "mdoc:";
 
 impl DeviceEngagement {
-    const QR_CODE_PREFIX: &'static str = "mdoc:";
-
-    pub(crate) fn generate_qr_code(self) -> anyhow::Result<GeneratedQRCode> {
-        let device_engagement = EmbeddedCbor::new(self)?;
-
-        let ciborium::tag::Required::<_, 24>(Bstr(embedded_cbor)) =
-            ciborium::from_reader(device_engagement.bytes())?;
-
-        let qr_code_content = Base64UrlSafeNoPadding::encode_to_string(&embedded_cbor)
-            .map(|content| format!("{}{content}", Self::QR_CODE_PREFIX))
-            .context("QR code base64 encoding")?;
-
-        Ok(GeneratedQRCode {
-            qr_code_content,
-            device_engagement,
-        })
+    pub(crate) fn into_cbor(self) -> anyhow::Result<EmbeddedCbor<Self>> {
+        EmbeddedCbor::new(self).map_err(Into::into)
     }
 
     pub(crate) fn parse_qr_code(
         qr_code_content: &str,
     ) -> anyhow::Result<EmbeddedCbor<DeviceEngagement>> {
-        if !qr_code_content.starts_with(Self::QR_CODE_PREFIX) {
+        if !qr_code_content.starts_with(QR_CODE_PREFIX) {
             return Err(anyhow!("Invalid mdoc QR: {qr_code_content}"));
         }
 
-        let data = Base64UrlSafeNoPadding::decode_to_vec(
-            &qr_code_content[Self::QR_CODE_PREFIX.len()..],
-            None,
-        )?;
+        let data =
+            Base64UrlSafeNoPadding::decode_to_vec(&qr_code_content[QR_CODE_PREFIX.len()..], None)?;
 
-        let tagged_value = ciborium::tag::Required::<_, 24>(Bstr(data));
+        EmbeddedCbor::<DeviceEngagement>::from_raw_cbor(data)
+    }
+
+    // currently only NFC static handover supported
+    pub(crate) fn parse_nfc(
+        nfc_select_message: &str,
+    ) -> anyhow::Result<(
+        EmbeddedCbor<DeviceEngagement>,
+        NFCHandover,
+        DeviceRetrievalMethod,
+    )> {
+        let select_message = Base64UrlSafeNoPadding::decode_to_vec(nfc_select_message, None)?;
+        let ndef_message = ndef_rs::NdefMessage::decode(&select_message)?;
+
+        let device_engagement_record = ndef_message
+            .records()
+            .iter()
+            .find(|record| record.record_type() == DEVICE_ENGAGMENT_RECORD_TYPE)
+            .ok_or(anyhow!("Device engagement NDEF record not found"))?;
+        let device_engagement_cbor = device_engagement_record.payload().to_vec();
+
+        let ble: BLECarrierConfigurationRecord = ndef_message
+            .records()
+            .iter()
+            .find(|record| record.record_type() == BLE_RECORD_TYPE)
+            .ok_or(anyhow!("BLE NDEF record not found"))?
+            .try_into()?;
+
+        Ok((
+            EmbeddedCbor::<DeviceEngagement>::from_raw_cbor(device_engagement_cbor)?,
+            NFCHandover {
+                select_message: Bstr(select_message),
+                request_message: None,
+            },
+            DeviceRetrievalMethod {
+                retrieval_options: RetrievalOptions::Ble(BleOptions {
+                    peripheral_server_uuid: ble.peripheral_service_uuid,
+                    peripheral_server_mac_address: ble
+                        .peripheral_mac_address
+                        .as_ref()
+                        .map(deserialize_mac_address),
+                }),
+            },
+        ))
+    }
+}
+
+impl EmbeddedCbor<DeviceEngagement> {
+    fn from_raw_cbor(cbor_data: Vec<u8>) -> anyhow::Result<Self> {
+        let tagged_value = ciborium::tag::Required::<_, 24>(Bstr(cbor_data));
         let mut bytes: Vec<u8> = vec![];
         ciborium::into_writer(&tagged_value, &mut bytes)?;
-
         Ok(ciborium::from_reader(bytes.as_slice())?)
+    }
+
+    pub(crate) fn generate_qr_code(&self) -> anyhow::Result<String> {
+        let ciborium::tag::Required::<_, 24>(Bstr(embedded_cbor)) =
+            ciborium::from_reader(self.bytes())?;
+
+        let qr_code_content = Base64UrlSafeNoPadding::encode_to_string(&embedded_cbor)
+            .map(|content| format!("{QR_CODE_PREFIX}{content}"))
+            .context("QR code base64 encoding")?;
+        Ok(qr_code_content)
     }
 }
 
@@ -102,13 +143,18 @@ impl Serialize for DeviceEngagement {
     where
         S: Serializer,
     {
-        cbor!({
-            0 => DEVICE_ENGAGEMENT_VERSION,
-            1 => self.security,
-            2 => self.device_retrieval_methods
-        })
-        .map_err(ser::Error::custom)?
-        .serialize(serializer)
+        let mut entries = vec![
+            (0.into(), DEVICE_ENGAGEMENT_VERSION.into()),
+            (1.into(), cbor!(self.security).map_err(ser::Error::custom)?),
+        ];
+        if !self.device_retrieval_methods.is_empty() {
+            entries.push((
+                2.into(),
+                cbor!(self.device_retrieval_methods).map_err(ser::Error::custom)?,
+            ));
+        }
+
+        ciborium::Value::Map(entries).serialize(serializer)
     }
 }
 
@@ -133,13 +179,13 @@ impl<'de> Deserialize<'de> for DeviceEngagement {
 
         let security = get_cbor_map_value(&map, 1)
             .ok_or(de::Error::custom("Missing DeviceEngagement security"))?;
-        let device_retrieval_methods = get_cbor_map_value(&map, 2)
-            .ok_or(de::Error::custom(
-                "Missing DeviceEngagement device_retrieval_methods",
-            ))?
-            .to_owned()
-            .into_array()
-            .map_err(|_| de::Error::custom("Invalid DeviceEngagement device_retrieval_methods"))?;
+        let device_retrieval_methods = if let Some(value) = get_cbor_map_value(&map, 2) {
+            value.to_owned().into_array().map_err(|_| {
+                de::Error::custom("Invalid DeviceEngagement device_retrieval_methods")
+            })?
+        } else {
+            vec![]
+        };
 
         Ok(DeviceEngagement {
             security: deserialize_security::<D>(security.to_owned())?,
@@ -363,6 +409,7 @@ fn get_cbor_map_value(
 mod test {
     use hex_literal::hex;
     use one_crypto::utilities::get_rng;
+    use similar_asserts::assert_eq;
     use uuid::uuid;
 
     use super::*;
@@ -382,15 +429,13 @@ mod test {
     fn test_device_engagement_qr_code() {
         let engagement = get_example_engagement();
 
-        let generated = engagement.clone().generate_qr_code().unwrap();
-        let parsed = DeviceEngagement::parse_qr_code(&generated.qr_code_content).unwrap();
+        let cbor_device_engagement = engagement.clone().into_cbor().unwrap();
+        let qr_code_content = cbor_device_engagement.generate_qr_code().unwrap();
+        let parsed = DeviceEngagement::parse_qr_code(&qr_code_content).unwrap();
 
         assert_eq!(&engagement, parsed.inner());
-        assert_eq!(generated.device_engagement, parsed);
-        assert_eq!(
-            generated.device_engagement.into_bytes(),
-            parsed.into_bytes()
-        );
+        assert_eq!(cbor_device_engagement, parsed);
+        assert_eq!(cbor_device_engagement.into_bytes(), parsed.into_bytes());
     }
 
     #[test]
@@ -409,6 +454,48 @@ mod test {
             failure.to_string(),
             "Semantic(None, \"Custom(\\\"Semantic(None, \\\\\\\"Unsupported key type, expected OKP(x25519) found Assigned(EC2)\\\\\\\")\\\")\")"
         );
+    }
+
+    #[test]
+    fn test_device_engagement_parse_nfc() {
+        let select_message = hex!("9c1e510469736f2e6f72673a31383031333a646576696365656e676167656d656e746d646f63a30063312e30018201d8185828a30101200421582058ab3a35f030c957dbcae8062bf10768a83b80e5ca0b89b9d945b43812c0113a0281830201a300f501f40a509dbd8e030e73412d979324552b59970a110211487315d1020b61630103424c4501046d646f635a2015036170706c69636174696f6e2f766e642e626c7565746f6f74682e6c652e6f6f62424c45021c0011070a97592b552493972d41730e038ebd9d"
+        )
+        .to_vec();
+        let (_device_engagement, handover, device_retrieval_method) = DeviceEngagement::parse_nfc(
+            &Base64UrlSafeNoPadding::encode_to_string(&select_message).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(handover.select_message.0, select_message);
+        assert_eq!(handover.request_message, None);
+
+        assert_eq!(
+            device_retrieval_method,
+            DeviceRetrievalMethod {
+                retrieval_options: RetrievalOptions::Ble(BleOptions {
+                    peripheral_server_uuid: uuid!("9dbd8e03-0e73-412d-9793-24552b59970a"),
+                    peripheral_server_mac_address: None,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_device_engagement_nfc_iso_example() {
+        // ISO 18013-5, D.3.3
+        let data = hex!(
+            "91020f487315d10209616301013001046d646f631a200c016170706c69636174696f6e2f766e642e626c756574\
+             6f6f74682e6c652e6f6f6230081b28128b37282801021c015c1e580469736f2e6f72673a31383031333a646576\
+             696365656e676167656d656e746d646f63a20063312e30018201d818584ba4010220012158205a88d182bce5f4\
+             2efa59943f33359d2e8a968ff289d93e5fa444b624343167fe225820b16e8cf858ddc7690407ba61d4c338237a8\
+             cfcf3de6aa672fc60a557aa32fc67"
+        )
+        .to_vec();
+
+        // failing due to unsupported BLE mode
+        let failure =
+            DeviceEngagement::parse_nfc(&Base64UrlSafeNoPadding::encode_to_string(data).unwrap())
+                .unwrap_err();
+        assert_eq!(failure.to_string(), "Other error: Unsupported BLE role [1]");
     }
 
     fn get_example_engagement() -> DeviceEngagement {

@@ -2,6 +2,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum_extra::extract::WithRejection;
 use one_dto_mapper::convert_inner;
+use shared_types::Permission;
 
 use crate::dto::error::ErrorResponseRestDTO;
 use crate::dto::response::EmptyOrErrorResponse;
@@ -9,7 +10,8 @@ use crate::endpoint::cache::dto::DeleteCacheQuery;
 use crate::extractor::QsOpt;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[proc_macros::endpoint(
+    permissions = [Permission::CacheDelete],
     delete,
     path = "/api/cache/v1",
     params(DeleteCacheQuery),
@@ -23,9 +25,8 @@ use crate::router::AppState;
         Removes cached entities. If types are not specified, all cached entities are pruned.
 
         Related guide: [Caching](/configure/caching)
-    "},
+    "}
 )]
-#[axum::debug_handler]
 pub(crate) async fn prune_cache(
     state: State<AppState>,
     WithRejection(QsOpt(query), _): WithRejection<QsOpt<DeleteCacheQuery>, ErrorResponseRestDTO>,

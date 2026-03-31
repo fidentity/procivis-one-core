@@ -4,14 +4,14 @@ use one_core::repository::certificate_repository::CertificateRepository;
 use one_core::repository::did_repository::DidRepository;
 use one_core::repository::key_repository::KeyRepository;
 use one_core::repository::organisation_repository::OrganisationRepository;
-use sea_orm::DatabaseConnection;
 
-pub mod history;
+use crate::transaction_context::TransactionManagerImpl;
+
 pub mod mapper;
 pub mod repository;
 
 pub(crate) struct IdentifierProvider {
-    pub db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
 
     pub organisation_repository: Arc<dyn OrganisationRepository>,
     pub did_repository: Arc<dyn DidRepository>,

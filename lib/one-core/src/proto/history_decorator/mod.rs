@@ -1,0 +1,12 @@
+mod certificate;
+mod credential;
+mod credential_schema;
+pub(crate) mod decorator;
+mod did;
+mod identifier;
+mod key;
+mod organisation;
+mod proof;
+mod proof_schema;
+mod trust_entity;
+mod trust_list_publication;

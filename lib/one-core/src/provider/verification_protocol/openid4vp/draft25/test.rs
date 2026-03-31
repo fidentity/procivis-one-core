@@ -2,75 +2,84 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use time::OffsetDateTime;
+use shared_types::CredentialFormat;
+use similar_asserts::assert_eq;
+use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
 
 use super::OpenID4VP25HTTP;
 use super::model::OpenID4Vp25Params;
-use crate::common_mapper::PublicKeyWithJwk;
 use crate::config::core_config::{CoreConfig, FormatType};
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaType, LayoutType};
-use crate::model::key::{PublicKeyJwk, PublicKeyJwkEllipticData};
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
+use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
+use crate::model::identifier::Identifier;
+use crate::model::key::Key;
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputSchema, ProofSchema};
+use crate::proto::certificate_validator::MockCertificateValidator;
+use crate::proto::http_client::reqwest_client::ReqwestClient;
 use crate::provider::credential_formatter::MockCredentialFormatter;
 use crate::provider::credential_formatter::model::FormatterCapabilities;
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
 use crate::provider::did_method::provider::MockDidMethodProvider;
-use crate::provider::http_client::reqwest_client::ReqwestClient;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_storage::provider::MockKeyProvider;
+use crate::provider::presentation_formatter::provider::MockPresentationFormatterProvider;
 use crate::provider::verification_protocol::dto::ShareResponse;
+use crate::provider::verification_protocol::model::CommonParams;
+use crate::provider::verification_protocol::openid4vp::draft25::model::OpenID4VC25PresentationVerifierParams;
 use crate::provider::verification_protocol::openid4vp::model::{
-    AuthorizationEncryptedResponseAlgorithm,
-    AuthorizationEncryptedResponseContentEncryptionAlgorithm, ClientIdScheme,
-    OpenID4VCPresentationHolderParams, OpenID4VCPresentationVerifierParams,
-    OpenID4VCRedirectUriParams, OpenID4VPClientMetadata, OpenID4VPPresentationDefinition,
+    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
+    OpenID4VPDraftClientMetadata, OpenID4VPPresentationDefinition,
 };
 use crate::provider::verification_protocol::{
     FormatMapper, TypeToDescriptorMapper, VerificationProtocol,
 };
 use crate::service::proof::dto::ShareProofRequestParamsDTO;
+use crate::service::test_utilities::dummy_identifier;
 
 #[derive(Default)]
 struct TestInputs {
-    pub formatter_provider: MockCredentialFormatterProvider,
+    pub credential_formatter_provider: MockCredentialFormatterProvider,
+    pub presentation_formatter_provider: MockPresentationFormatterProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
     pub key_provider: MockKeyProvider,
     pub did_method_provider: MockDidMethodProvider,
+    pub certificate_validator: MockCertificateValidator,
     pub params: Option<OpenID4Vp25Params>,
 }
 
 fn setup_protocol(inputs: TestInputs) -> OpenID4VP25HTTP {
     OpenID4VP25HTTP::new(
         Some("http://base_url".to_string()),
-        Arc::new(inputs.formatter_provider),
+        Arc::new(inputs.credential_formatter_provider),
+        Arc::new(inputs.presentation_formatter_provider),
         Arc::new(inputs.did_method_provider),
         Arc::new(inputs.key_algorithm_provider),
         Arc::new(inputs.key_provider),
+        Arc::new(inputs.certificate_validator),
         Arc::new(ReqwestClient::default()),
-        inputs
-            .params
-            .unwrap_or(generic_params(ClientIdScheme::RedirectUri)),
+        inputs.params.unwrap_or(generic_params()),
         Arc::new(CoreConfig::default()),
     )
 }
 
-fn generic_params(client_id_scheme: ClientIdScheme) -> OpenID4Vp25Params {
+fn generic_params() -> OpenID4Vp25Params {
     OpenID4Vp25Params {
         allow_insecure_http_transport: true,
         use_request_uri: false,
         url_scheme: "openid4vp".to_string(),
-        x509_ca_certificate: None,
         holder: OpenID4VCPresentationHolderParams {
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
             ],
+            dcql_vp_token_single_presentation: false,
         },
-        verifier: OpenID4VCPresentationVerifierParams {
-            default_client_id_scheme: client_id_scheme,
+        verifier: OpenID4VC25PresentationVerifierParams {
+            interaction_expires_in: Some(Duration::seconds(1000)),
+            use_dcql: false,
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
@@ -80,43 +89,32 @@ fn generic_params(client_id_scheme: ClientIdScheme) -> OpenID4Vp25Params {
             enabled: true,
             allowed_schemes: vec!["https".to_string()],
         },
+        common: CommonParams { webhook_task: None },
     }
 }
 
 #[tokio::test]
 async fn test_share_proof() {
-    let mut formatter_provider = MockCredentialFormatterProvider::new();
+    let mut credential_formatter_provider = MockCredentialFormatterProvider::new();
     let mut credential_formatter = MockCredentialFormatter::new();
     credential_formatter
         .expect_get_capabilities()
         .returning(FormatterCapabilities::default);
     let arc = Arc::new(credential_formatter);
-    formatter_provider
-        .expect_get_formatter()
+    credential_formatter_provider
+        .expect_get_credential_formatter()
         .returning(move |_| Some(arc.clone()));
     let protocol = setup_protocol(TestInputs {
-        formatter_provider,
+        credential_formatter_provider,
         ..Default::default()
     });
 
     let proof_id = Uuid::new_v4();
-    let proof = test_proof(proof_id, "JWT");
+    let proof = test_proof(proof_id, "JWT".into());
 
     let format_type_mapper: FormatMapper = Arc::new(move |_| Ok(FormatType::Jwt));
 
     let type_to_descriptor_mapper: TypeToDescriptorMapper = Arc::new(move |_| Ok(HashMap::new()));
-
-    let encryption_key_jwk = PublicKeyWithJwk {
-        key_id: Uuid::new_v4().into(),
-        jwk: PublicKeyJwk::Ec(PublicKeyJwkEllipticData {
-            r#use: None,
-            kid: None,
-            crv: "P-256".to_string(),
-            x: "x".to_string(),
-            y: None,
-        }),
-    };
-    let vp_formats = HashMap::new();
 
     let ShareResponse {
         url,
@@ -126,8 +124,6 @@ async fn test_share_proof() {
         .verifier_share_proof(
             &proof,
             format_type_mapper,
-            Some(encryption_key_jwk),
-            vp_formats,
             type_to_descriptor_mapper,
             None,
             Some(ShareProofRequestParamsDTO {
@@ -178,20 +174,24 @@ async fn test_share_proof() {
     )
     .unwrap();
 
-    let returned_client_metadata = serde_json::from_str::<OpenID4VPClientMetadata>(
+    let returned_client_metadata = serde_json::from_str::<OpenID4VPDraftClientMetadata>(
         query_pairs.get("client_metadata").unwrap(),
     )
     .unwrap();
 
-    assert_eq!(returned_client_metadata.jwks.unwrap().keys.len(), 1);
+    // Direct post - no encryption, the verifier also does not have any key agreement keys
+    assert_eq!(returned_client_metadata.jwks, None);
     assert_eq!(
         returned_client_metadata.authorization_encrypted_response_alg,
-        Some(AuthorizationEncryptedResponseAlgorithm::EcdhEs)
+        None
     );
     assert_eq!(
         returned_client_metadata.authorization_encrypted_response_enc,
-        Some(AuthorizationEncryptedResponseContentEncryptionAlgorithm::A256GCM)
+        None
     );
+
+    assert!(!returned_client_metadata.vp_formats.is_empty());
+
     assert_eq!(returned_presentation_definition.input_descriptors.len(), 1);
     assert_eq!(
         returned_presentation_definition.input_descriptors[0].id,
@@ -213,13 +213,12 @@ async fn test_share_proof() {
     );
 }
 
-fn test_proof(proof_id: Uuid, credential_format: &str) -> Proof {
+fn test_proof(proof_id: Uuid, credential_format: CredentialFormat) -> Proof {
     Proof {
         id: proof_id.into(),
         created_date: OffsetDateTime::now_utc(),
         last_modified: OffsetDateTime::now_utc(),
-        issuance_date: OffsetDateTime::now_utc(),
-        exchange: "OPENID4VP_DRAFT25".to_string(),
+        protocol: "OPENID4VP_DRAFT25".to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
         state: ProofStateEnum::Created,
@@ -236,33 +235,75 @@ fn test_proof(proof_id: Uuid, credential_format: &str) -> Proof {
             imported_source_url: None,
             organisation: None,
             input_schemas: Some(vec![ProofInputSchema {
-                validity_constraint: None,
                 claim_schemas: None,
                 credential_schema: Some(CredentialSchema {
                     id: Uuid::new_v4().into(),
-                    external_schema: false,
                     deleted_at: None,
                     created_date: OffsetDateTime::now_utc(),
                     last_modified: OffsetDateTime::now_utc(),
                     name: "test-credential-schema".to_string(),
-                    format: credential_format.to_string(),
-                    revocation_method: "NONE".to_string(),
-                    wallet_storage_type: None,
+                    format: credential_format,
+                    revocation_method: None,
+                    key_storage_security: None,
                     layout_type: LayoutType::Card,
                     layout_properties: None,
                     schema_id: "test_schema_id".to_string(),
-                    schema_type: CredentialSchemaType::ProcivisOneSchema2024,
                     imported_source_url: "test_imported_src_url".to_string(),
                     allow_suspension: false,
+                    requires_wallet_instance_attestation: false,
                     claim_schemas: None,
                     organisation: None,
+                    transaction_code: None,
                 }),
             }]),
         }),
         claims: None,
-        verifier_identifier: None,
-        holder_identifier: None,
-        verifier_key: None,
+        verifier_identifier: Some(Identifier {
+            did: Some(Did {
+                id: Uuid::new_v4().into(),
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                name: "did".to_string(),
+                did: "did:example:123".parse().unwrap(),
+                did_type: DidType::Local,
+                did_method: "KEY".to_string(),
+                deactivated: false,
+                keys: Some(vec![RelatedKey {
+                    role: KeyRole::Authentication,
+                    key: Key {
+                        id: Uuid::new_v4().into(),
+                        created_date: OffsetDateTime::now_utc(),
+                        last_modified: OffsetDateTime::now_utc(),
+                        public_key: vec![],
+                        name: "".to_string(),
+                        key_reference: None,
+                        storage_type: "".to_string(),
+                        key_type: "".to_string(),
+                        organisation: None,
+                    },
+                    reference: "1".to_string(),
+                }]),
+                organisation: None,
+                log: None,
+            }),
+            ..dummy_identifier()
+        }),
+        verifier_key: Some(Key {
+            id: Uuid::new_v4().into(),
+            created_date: OffsetDateTime::now_utc(),
+            last_modified: OffsetDateTime::now_utc(),
+            public_key: vec![],
+            name: "verifier_key".to_string(),
+            key_reference: None,
+            storage_type: "".to_string(),
+            key_type: "".to_string(),
+            organisation: None,
+        }),
+        verifier_certificate: None,
         interaction: None,
+        profile: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     }
 }

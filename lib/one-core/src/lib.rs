@@ -1,105 +1,104 @@
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
-use config::ConfigError;
-use config::core_config::{
-    CoreConfig, DatatypeConfig, FormatConfig, KeyAlgorithmConfig, KeyStorageConfig,
+use one_crypto::initialize_crypto_provider;
+
+use crate::config::ConfigValidationError;
+use crate::config::core_config::CoreConfig;
+use crate::proto::bluetooth_low_energy::ble_resource::BleWaiter;
+use crate::proto::bluetooth_low_energy::low_level::ble_central::BleCentral;
+use crate::proto::bluetooth_low_energy::low_level::ble_peripheral::BlePeripheral;
+use crate::proto::certificate_validator::{
+    CertificateValidator, certificate_validator_from_config,
 };
-use one_crypto::CryptoProvider;
-use provider::bluetooth_low_energy::low_level::ble_central::BleCentral;
-use provider::bluetooth_low_energy::low_level::ble_peripheral::BlePeripheral;
-use provider::caching_loader::json_schema::JsonSchemaCache;
-use provider::caching_loader::trust_list::TrustListCache;
-use provider::caching_loader::vct::VctTypeMetadataCache;
-use provider::credential_formatter::json_ld::context::caching_loader::ContextCache;
-use provider::issuance_protocol::provider::IssuanceProtocolProviderImpl;
-use provider::mqtt_client::MqttClient;
-use provider::task::provider::TaskProviderImpl;
-use provider::task::tasks_from_config;
-use provider::trust_management::provider::TrustManagementProviderImpl;
-use provider::verification_protocol::provider::VerificationProtocolProviderImpl;
-use provider::verification_protocol::verification_protocol_providers_from_config;
-use repository::DataRepository;
-use service::backup::BackupService;
-use service::certificate::CertificateService;
-use service::config::ConfigService;
-use service::credential::CredentialService;
-use service::did::DidService;
-use service::jsonld::JsonLdService;
-use service::oid4vci_draft13::OID4VCIDraft13Service;
-use service::oid4vp_draft20::OID4VPDraft20Service;
-use service::oid4vp_draft25::OID4VPDraft25Service;
-use service::organisation::OrganisationService;
-use service::proof::ProofService;
-use service::proof_schema::ProofSchemaService;
-use service::ssi_holder::SSIHolderService;
-use service::ssi_issuer::SSIIssuerService;
-use service::task::TaskService;
-use service::trust_anchor::TrustAnchorService;
-use service::trust_entity::TrustEntityService;
-use service::vc_api::VCAPIService;
-use thiserror::Error;
-use util::ble_resource::BleWaiter;
-
-use crate::config::core_config::{DidConfig, RevocationConfig};
-use crate::provider::credential_formatter::json_ld::context::caching_loader::JsonLdCachingLoader;
-use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
-use crate::provider::did_method::mdl::DidMdlValidator;
-use crate::provider::did_method::provider::DidMethodProvider;
-use crate::provider::http_client::HttpClient;
-use crate::provider::http_client::reqwest_client::ReqwestClient;
-use crate::provider::issuance_protocol::issuance_protocol_providers_from_config;
-use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
-use crate::provider::key_storage::provider::KeyProvider;
-use crate::provider::revocation::provider::RevocationMethodProvider;
+use crate::proto::clock::DefaultClock;
+use crate::proto::credential_schema::importer::CredentialSchemaImporterProto;
+use crate::proto::credential_schema::parser::CredentialSchemaImportParserImpl;
+use crate::proto::credential_validity_manager::CredentialValidityManagerImpl;
+use crate::proto::csr_creator::CsrCreatorImpl;
+use crate::proto::history_decorator::decorator::decorate_data_provider as decorate_history;
+use crate::proto::http_client::HttpClient;
+use crate::proto::identifier_creator::creator::IdentifierCreatorProto;
+use crate::proto::mqtt_client::rumqttc_client::RumqttcClient;
+use crate::proto::nfc::hce::NfcHce;
+use crate::proto::nfc::scanner::NfcScanner;
+use crate::proto::notification_decorator::decorator::decorate_data_provider as decorate_notification;
+use crate::proto::notification_scheduler::NotificationSchedulerImpl;
+use crate::proto::notification_sender::NotificationSenderImpl;
+use crate::proto::openid4vp_proof_validator::validator::OpenId4VpProofValidatorProto;
+use crate::proto::os_provider::OSInfoProviderImpl;
+use crate::proto::session_provider::SessionProvider;
+use crate::proto::wallet_unit::HolderWalletUnitProtoImpl;
+use crate::provider::blob_storage_provider::blob_storage_provider_from_config;
+use crate::provider::caching_loader::json_ld_context::{
+    ContextCache, initialize_jsonld_cache_from_config,
+};
+use crate::provider::caching_loader::openid_metadata::openid_metadata_cache_from_config;
+use crate::provider::caching_loader::vct::initialize_vct_type_metadata_cache_from_config;
+use crate::provider::credential_formatter::provider::credential_formatter_provider_from_config;
+use crate::provider::data_type::provider::data_type_provider_from_config;
+use crate::provider::did_method::provider::did_method_provider_from_config;
+use crate::provider::issuance_protocol::provider::issuance_protocol_provider_from_config;
+use crate::provider::key_algorithm::provider::{
+    KeyAlgorithmProvider, key_algorithm_provider_from_config,
+};
+use crate::provider::key_security_level::provider::key_security_level_provider_from_config;
+use crate::provider::key_storage::provider::{KeyProvider, key_provider_from_config};
+use crate::provider::key_storage::secure_element::NativeKeyStorage;
+use crate::provider::presentation_formatter::provider::get_presentation_formatter_provider;
+use crate::provider::revocation::provider::revocation_method_provider_from_config;
+use crate::provider::signer::provider::signer_provider_from_config;
+use crate::provider::task::provider::task_provider_from_config;
+use crate::provider::trust_list_publisher::provider::trust_list_publisher_provider_from_config;
+use crate::provider::trust_management::provider::trust_management_provider_from_config;
+use crate::provider::verification_protocol::provider::verification_protocol_provider_from_config;
+use crate::provider::verifier::provider::verifier_provider_from_config;
+use crate::provider::wallet_provider_client::http_client::HTTPWalletProviderClient;
+use crate::repository::DataRepository;
+use crate::service::backup::BackupService;
 use crate::service::cache::CacheService;
+use crate::service::certificate::CertificateService;
+use crate::service::config::ConfigService;
+use crate::service::credential::CredentialService;
 use crate::service::credential_schema::CredentialSchemaService;
+use crate::service::did::DidService;
 use crate::service::history::HistoryService;
 use crate::service::identifier::IdentifierService;
+use crate::service::jsonld::JsonLdService;
 use crate::service::key::KeyService;
-use crate::service::oid4vci_draft13_swiyu::OID4VCIDraft13SwiyuService;
+use crate::service::nfc::NfcService;
+use crate::service::oid4vci_draft13::OID4VCIDraft13Service;
+use crate::service::oid4vci_final1_0::OID4VCIFinal1_0Service;
+use crate::service::oid4vci_final1_0_swiyu::OID4VCIFinal1_0SwiyuService;
+use crate::service::oid4vp_draft20::OID4VPDraft20Service;
+use crate::service::oid4vp_draft25::OID4VPDraft25Service;
+use crate::service::oid4vp_final1_0::OID4VPFinal1_0Service;
+use crate::service::organisation::OrganisationService;
+use crate::service::proof::ProofService;
+use crate::service::proof_schema::ProofSchemaService;
 use crate::service::revocation_list::RevocationListService;
-pub mod config;
-pub mod provider;
+use crate::service::signature::SignatureService;
+use crate::service::ssi_holder::SSIHolderService;
+use crate::service::ssi_issuer::SSIIssuerService;
+use crate::service::statistics::StatisticsService;
+use crate::service::task::TaskService;
+use crate::service::trust_anchor::TrustAnchorService;
+use crate::service::trust_entity::TrustEntityService;
+use crate::service::trust_list_publication::TrustListPublicationService;
+use crate::service::vc_api::VCAPIService;
+use crate::service::verifier_provider::VerifierProviderService;
+use crate::service::wallet_provider::WalletProviderService;
+use crate::service::wallet_unit::WalletUnitService;
 
+pub mod config;
+pub mod error;
+pub mod mapper;
 pub mod model;
+pub mod proto;
+pub mod provider;
 pub mod repository;
 pub mod service;
-
-pub mod common_mapper;
-mod common_validator;
 pub mod util;
-
-pub type DidMethodCreator = Box<
-    dyn FnOnce(
-            &mut DidConfig,
-            &OneCoreBuilderProviders,
-        ) -> (Arc<dyn DidMethodProvider>, Option<Arc<dyn DidMdlValidator>>)
-        + Send,
->;
-
-pub type KeyAlgorithmCreator = Box<
-    dyn FnOnce(&mut KeyAlgorithmConfig, &OneCoreBuilderProviders) -> Arc<dyn KeyAlgorithmProvider>
-        + Send,
->;
-
-pub type KeyStorageCreator =
-    Box<dyn FnOnce(&mut KeyStorageConfig, &OneCoreBuilderProviders) -> Arc<dyn KeyProvider> + Send>;
-
-pub type FormatterProviderCreator = Box<
-    dyn FnOnce(
-            &mut FormatConfig,
-            &DatatypeConfig,
-            &OneCoreBuilderProviders,
-        ) -> Arc<dyn CredentialFormatterProvider>
-        + Send,
->;
-
-pub type DataProviderCreator = Box<dyn FnOnce() -> Arc<dyn DataRepository> + Send>;
-
-pub type RevocationMethodCreator = Box<
-    dyn FnOnce(&mut RevocationConfig, &OneCoreBuilderProviders) -> Arc<dyn RevocationMethodProvider>
-        + Send,
->;
+pub mod validator;
 
 pub struct OneCore {
     pub organisation_service: OrganisationService,
@@ -118,211 +117,56 @@ pub struct OneCore {
     pub config_service: ConfigService,
     pub revocation_list_service: RevocationListService,
     pub oid4vci_draft13_service: OID4VCIDraft13Service,
-    pub oid4vci_draft13_swiyu_service: OID4VCIDraft13SwiyuService,
+    pub oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService,
+    pub oid4vci_final1_0_service: OID4VCIFinal1_0Service,
     pub oid4vp_draft20_service: OID4VPDraft20Service,
     pub oid4vp_draft25_service: OID4VPDraft25Service,
+    pub oid4vp_final1_0_service: OID4VPFinal1_0Service,
     pub ssi_issuer_service: SSIIssuerService,
     pub ssi_holder_service: SSIHolderService,
+    pub wallet_provider_service: WalletProviderService,
     pub task_service: TaskService,
     pub jsonld_service: JsonLdService,
     pub config: Arc<CoreConfig>,
     pub vc_api_service: VCAPIService,
     pub cache_service: CacheService,
+    pub wallet_unit_service: WalletUnitService,
+    pub signature_service: SignatureService,
+    pub nfc_service: NfcService,
+    pub statistics_service: StatisticsService,
+    pub verifier_provider_service: VerifierProviderService,
+    pub trust_list_publication_service: TrustListPublicationService,
 }
 
-#[derive(Default)]
-pub struct OneCoreBuilderProviders {
-    pub core_base_url: Option<String>,
-    pub crypto: Option<Arc<dyn CryptoProvider>>,
-    pub did_method_provider: Option<Arc<dyn DidMethodProvider>>,
-    pub key_algorithm_provider: Option<Arc<dyn KeyAlgorithmProvider>>,
-    pub key_storage_provider: Option<Arc<dyn KeyProvider>>,
-    pub did_mdl_validator: Option<Arc<dyn DidMdlValidator>>,
-    pub formatter_provider: Option<Arc<dyn CredentialFormatterProvider>>,
-    pub revocation_method_provider: Option<Arc<dyn RevocationMethodProvider>>,
-    //repository and providers that we initialize as we build
-}
+#[derive(Debug, thiserror::Error)]
+pub enum OneCoreInitializationError {
+    #[error("Config validation error: `{0}`")]
+    Config(#[from] ConfigValidationError),
 
-#[derive(Default)]
-pub struct OneCoreBuilder {
-    core_config: CoreConfig,
-    providers: OneCoreBuilderProviders,
-    ble_peripheral: Option<Arc<dyn BlePeripheral>>,
-    ble_central: Option<Arc<dyn BleCentral>>,
-    mqtt_client: Option<Arc<dyn MqttClient>>,
-    data_provider_creator: Option<DataProviderCreator>,
-    jsonld_caching_loader: Option<JsonLdCachingLoader>,
-    vct_type_metadata_cache: Option<Arc<VctTypeMetadataCache>>,
-    json_schema_cache: Option<Arc<JsonSchemaCache>>,
-    trust_list_cache: Option<Arc<TrustListCache>>,
-    client: Option<Arc<dyn HttpClient>>,
-}
-
-#[derive(Debug, Error)]
-pub enum OneCoreBuildError {
-    #[error("Missing required field: `{0}`")]
-    MissingRequiredField(&'static str),
-
-    #[error("Config error: `{0}`")]
-    Config(ConfigError),
-
-    #[error("Reqwest error: `{0}`")]
-    Reqwest(reqwest::Error),
-}
-
-impl OneCoreBuilder {
-    pub fn new(core_config: CoreConfig) -> Self {
-        OneCoreBuilder {
-            core_config,
-            ..Default::default()
-        }
-    }
-
-    pub fn with_crypto(mut self, crypto: Arc<dyn CryptoProvider>) -> Self {
-        self.providers.crypto = Some(crypto);
-        self
-    }
-
-    pub fn with_base_url(mut self, core_base_url: impl Into<String>) -> Self {
-        self.providers.core_base_url = Some(core_base_url.into());
-        self
-    }
-
-    pub fn with_key_algorithm_provider(
-        mut self,
-        key_algorithm_creator: KeyAlgorithmCreator,
-    ) -> Self {
-        let key_algorithm_provider =
-            key_algorithm_creator(&mut self.core_config.key_algorithm, &self.providers);
-        self.providers.key_algorithm_provider = Some(key_algorithm_provider);
-        self
-    }
-
-    pub fn with_key_storage_provider(mut self, key_storage_creator: KeyStorageCreator) -> Self {
-        let key_storage_provider =
-            key_storage_creator(&mut self.core_config.key_storage, &self.providers);
-        self.providers.key_storage_provider = Some(key_storage_provider);
-        self
-    }
-
-    pub fn with_did_method_provider(mut self, did_met_provider: DidMethodCreator) -> Self {
-        let (did_method_provider, did_mdl_validator) =
-            did_met_provider(&mut self.core_config.did, &self.providers);
-        self.providers.did_method_provider = Some(did_method_provider);
-        self.providers.did_mdl_validator = did_mdl_validator;
-        self
-    }
-
-    pub fn with_revocation_method_provider(
-        mut self,
-        revocation_met_provider: RevocationMethodCreator,
-    ) -> Self {
-        let revocation_method_provider =
-            revocation_met_provider(&mut self.core_config.revocation, &self.providers);
-        self.providers.revocation_method_provider = Some(revocation_method_provider);
-        self
-    }
-
-    pub fn with_formatter_provider(
-        mut self,
-        key_storage_creator: FormatterProviderCreator,
-    ) -> Self {
-        let formatter_provider = key_storage_creator(
-            &mut self.core_config.format,
-            &self.core_config.datatype,
-            &self.providers,
-        );
-        self.providers.formatter_provider = Some(formatter_provider);
-        self
-    }
-
-    pub fn with_mqtt_client(mut self, client: Arc<dyn MqttClient>) -> Self {
-        self.mqtt_client = Some(client);
-        self
-    }
-
-    // Temporary
-    pub fn with_data_provider_creator(mut self, data_provider: DataProviderCreator) -> Self {
-        self.data_provider_creator = Some(data_provider);
-        self
-    }
-
-    pub fn with_ble(
-        mut self,
-        peripheral: Option<Arc<dyn BlePeripheral>>,
-        central: Option<Arc<dyn BleCentral>>,
-    ) -> Self {
-        self.ble_peripheral = peripheral;
-        self.ble_central = central;
-        self
-    }
-
-    pub fn with_jsonld_caching_loader(mut self, loader: JsonLdCachingLoader) -> Self {
-        self.jsonld_caching_loader = Some(loader);
-        self
-    }
-
-    pub fn with_client(mut self, client: Arc<dyn HttpClient>) -> Self {
-        self.client = Some(client);
-        self
-    }
-
-    pub fn with_vct_type_metadata_cache(mut self, cache: Arc<VctTypeMetadataCache>) -> Self {
-        self.vct_type_metadata_cache = Some(cache);
-        self
-    }
-
-    pub fn with_json_schema_cache(mut self, cache: Arc<JsonSchemaCache>) -> Self {
-        self.json_schema_cache = Some(cache);
-        self
-    }
-
-    pub fn with_trust_listcache(mut self, cache: Arc<TrustListCache>) -> Self {
-        self.trust_list_cache = Some(cache);
-        self
-    }
-
-    pub fn build(self) -> Result<OneCore, OneCoreBuildError> {
-        OneCore::new(
-            self.data_provider_creator
-                .ok_or(OneCoreBuildError::MissingRequiredField(
-                    "Data provider is required",
-                ))?,
-            self.core_config,
-            self.ble_peripheral,
-            self.ble_central,
-            self.mqtt_client,
-            self.providers,
-            self.jsonld_caching_loader,
-            self.client.unwrap_or(Arc::new(ReqwestClient::default())),
-            self.vct_type_metadata_cache
-                .ok_or(OneCoreBuildError::MissingRequiredField(
-                    "VCT type metadata cache is required",
-                ))?,
-            self.trust_list_cache
-                .ok_or(OneCoreBuildError::MissingRequiredField(
-                    "Trust list cache is required",
-                ))?,
-        )
-    }
+    #[error("Other error: `{0}`")]
+    Other(#[from] anyhow::Error),
 }
 
 impl OneCore {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        data_provider_creator: DataProviderCreator,
-        mut core_config: CoreConfig,
+    #[expect(clippy::too_many_arguments)]
+    pub async fn new(
+        mut config: CoreConfig,
+        core_base_url: Option<String>,
+        session_provider: Arc<dyn SessionProvider>,
+
+        // mandatory dependencies
+        data_provider: Arc<dyn DataRepository>,
+        client: Arc<dyn HttpClient>,
+
+        // optional dependencies
         ble_peripheral: Option<Arc<dyn BlePeripheral>>,
         ble_central: Option<Arc<dyn BleCentral>>,
-        mqtt_client: Option<Arc<dyn MqttClient>>,
-        providers: OneCoreBuilderProviders,
-        jsonld_caching_loader: Option<JsonLdCachingLoader>,
-        client: Arc<dyn HttpClient>,
-        vct_type_metadata_cache: Arc<VctTypeMetadataCache>,
-        trust_list_cache: Arc<TrustListCache>,
-    ) -> Result<OneCore, OneCoreBuildError> {
-        // For now we will just put them here.
-        // We will introduce a builder later.
+        nfc_hce: Option<Arc<dyn NfcHce>>,
+        nfc_scanner: Option<Arc<dyn NfcScanner>>,
+        native_secure_element: Option<Arc<dyn NativeKeyStorage>>,
+        remote_secure_element: Option<Arc<dyn NativeKeyStorage>>,
+    ) -> Result<OneCore, OneCoreInitializationError> {
+        initialize_rustls()?;
 
         let ble_waiter = match (ble_peripheral, ble_central) {
             (Some(ble_peripheral), Some(ble_central)) => {
@@ -331,164 +175,302 @@ impl OneCore {
             _ => None,
         };
 
-        let did_mdl_validator = providers.did_mdl_validator.clone();
+        let mqtt_client = Arc::new(RumqttcClient::default());
 
-        let did_method_provider = providers
-            .did_method_provider
-            .as_ref()
-            .ok_or(OneCoreBuildError::MissingRequiredField(
-                "Did method provider is required",
-            ))?
-            .clone();
+        let clock = Arc::new(DefaultClock);
 
-        let key_algorithm_provider = providers
-            .key_algorithm_provider
-            .as_ref()
-            .ok_or(OneCoreBuildError::MissingRequiredField(
-                "Key algorithm provider is required",
-            ))?
-            .clone();
+        let crypto = initialize_crypto_provider();
 
-        let key_provider = providers
-            .key_storage_provider
-            .as_ref()
-            .ok_or(OneCoreBuildError::MissingRequiredField(
-                "Key provider is required",
-            ))?
-            .clone();
+        // data_provider variable gets replaced with the decorated variant, so that it cannot be misued later
+        let data_provider = decorate_history(
+            data_provider,
+            session_provider.clone(),
+            core_base_url.clone(),
+        );
 
-        let revocation_method_provider = providers
-            .revocation_method_provider
-            .as_ref()
-            .ok_or(OneCoreBuildError::MissingRequiredField(
-                "Revocation method provider is required",
-            ))?
-            .clone();
+        let notification_sender = Arc::new(NotificationSenderImpl::new(
+            data_provider.get_history_repository(),
+            data_provider.get_notification_repository(),
+            data_provider.get_tx_manager(),
+            client.clone(),
+            session_provider.clone(),
+        ));
+        let notification_scheduler = Arc::new(NotificationSchedulerImpl::new(
+            data_provider.get_notification_repository(),
+            notification_sender.clone(),
+            Arc::new(config.clone()),
+        ));
 
-        let jsonld_caching_loader = jsonld_caching_loader.ok_or(
-            OneCoreBuildError::MissingRequiredField("Caching loader is required"),
+        let data_provider = decorate_notification(
+            data_provider,
+            notification_scheduler.clone(),
+            Arc::new(config.clone()),
+        );
+
+        let key_algorithm_provider = key_algorithm_provider_from_config(&mut config)?;
+
+        let key_provider = key_provider_from_config(
+            &mut config,
+            key_algorithm_provider.clone(),
+            crypto.clone(),
+            client.clone(),
+            native_secure_element,
+            remote_secure_element,
         )?;
 
-        let data_provider = data_provider_creator();
-
-        let formatter_provider = providers
-            .formatter_provider
-            .as_ref()
-            .ok_or(OneCoreBuildError::MissingRequiredField(
-                "Formatter provider is required",
-            ))?
-            .clone();
-
-        let trust_managers = crate::provider::trust_management::provider::from_config(
+        let did_method_provider = did_method_provider_from_config(
+            &mut config,
+            core_base_url.clone(),
+            key_algorithm_provider.clone(),
+            key_provider.clone(),
             client.clone(),
-            &mut core_config.trust_management,
-            trust_list_cache,
-        )
-        .map_err(OneCoreBuildError::Config)?;
-        let trust_management_provider = Arc::new(TrustManagementProviderImpl::new(trust_managers));
+            data_provider.get_remote_entity_cache_repository(),
+        )?;
 
-        let issuance_protocols = issuance_protocol_providers_from_config(
-            Arc::new(core_config.clone()),
-            &mut core_config.issuance_protocol,
-            providers.core_base_url.clone(),
-            data_provider.get_credential_repository(),
-            data_provider.get_validity_credential_repository(),
+        let certificate_validator = certificate_validator_from_config(
+            &config,
+            key_algorithm_provider.clone(),
+            client.clone(),
+            data_provider.get_remote_entity_cache_repository(),
+        );
+
+        let json_ld_cache = initialize_jsonld_cache_from_config(
+            &config,
+            data_provider.get_remote_entity_cache_repository(),
+        );
+
+        let vct_type_metadata_cache = initialize_vct_type_metadata_cache_from_config(
+            &config,
+            data_provider.get_remote_entity_cache_repository(),
+            client.clone(),
+        )
+        .await?;
+
+        let data_type_provider = data_type_provider_from_config(&mut config)?;
+
+        let credential_formatter_provider = credential_formatter_provider_from_config(
+            &mut config,
+            key_algorithm_provider.clone(),
+            client.clone(),
+            data_type_provider.clone(),
+            crypto.clone(),
+            json_ld_cache.clone(),
+            did_method_provider.clone(),
+            vct_type_metadata_cache.clone(),
+            certificate_validator.clone(),
+        )?;
+
+        let revocation_method_provider = revocation_method_provider_from_config(
+            &mut config,
+            core_base_url.clone(),
+            credential_formatter_provider.clone(),
+            key_provider.clone(),
+            certificate_validator.clone(),
+            key_algorithm_provider.clone(),
+            did_method_provider.clone(),
+            data_provider.get_tx_manager(),
             data_provider.get_revocation_list_repository(),
-            formatter_provider.clone(),
+            data_provider.get_remote_entity_cache_repository(),
+            data_provider.get_wallet_unit_repository(),
+            data_provider.get_identifier_repository(),
+            client.clone(),
+        )?;
+
+        let credential_schema_import_parser = Arc::new(CredentialSchemaImportParserImpl::new(
+            Arc::new(config.clone()),
+            credential_formatter_provider.clone(),
+            revocation_method_provider.clone(),
+        ));
+
+        let credential_schema_importer = Arc::new(CredentialSchemaImporterProto::new(
+            credential_formatter_provider.clone(),
+            data_provider.get_credential_schema_repository(),
+        ));
+
+        let wallet_unit_proto = Arc::new(HolderWalletUnitProtoImpl::new(
+            key_provider.clone(),
+            key_algorithm_provider.clone(),
+            Arc::new(HTTPWalletProviderClient::new(client.clone())),
+            revocation_method_provider.clone(),
+            data_provider.get_holder_wallet_unit_repository(),
+            certificate_validator.clone(),
+        ));
+
+        let csr_creator = Arc::new(CsrCreatorImpl::new(
+            key_provider.clone(),
+            key_algorithm_provider.clone(),
+        ));
+
+        let signer_provider = signer_provider_from_config(
+            core_base_url.clone(),
+            &mut config,
+            clock.clone(),
             key_provider.clone(),
             key_algorithm_provider.clone(),
             revocation_method_provider.clone(),
-            did_method_provider.clone(),
-            client.clone(),
-        )
-        .map_err(|e| OneCoreBuildError::Config(ConfigError::Validation(e)))?;
+            data_provider.get_revocation_list_repository(),
+            session_provider.clone(),
+        )?;
 
-        let verification_protocols = verification_protocol_providers_from_config(
-            Arc::new(core_config.clone()),
-            &mut core_config.verification_protocol,
-            providers.core_base_url.clone(),
-            data_provider.clone(),
-            formatter_provider.clone(),
+        let verifier_provider = verifier_provider_from_config(&config)?;
+
+        let identifier_creator = Arc::new(IdentifierCreatorProto::new(
+            did_method_provider.clone(),
+            data_provider.get_did_repository(),
+            data_provider.get_certificate_repository(),
+            certificate_validator.clone(),
+            data_provider.get_key_repository(),
             key_provider.clone(),
             key_algorithm_provider.clone(),
-            did_method_provider.clone(),
-            ble_waiter.clone(),
-            client.clone(),
-            mqtt_client,
-        )
-        .map_err(|e| OneCoreBuildError::Config(ConfigError::Validation(e)))?;
-
-        let config = Arc::new(core_config);
-        let issuance_provider = Arc::new(IssuanceProtocolProviderImpl::new(issuance_protocols));
-
-        let verification_provider = Arc::new(VerificationProtocolProviderImpl::new(
-            verification_protocols,
+            data_provider.get_identifier_repository(),
+            signer_provider.clone(),
+            Arc::new(config.clone()),
+            data_provider.get_tx_manager(),
         ));
 
-        let certificate_service = CertificateService::new(
-            data_provider.get_certificate_repository(),
-            data_provider.get_key_repository(),
+        let presentation_formatter_provider = get_presentation_formatter_provider(
             key_algorithm_provider.clone(),
+            client.clone(),
+            core_base_url.clone(),
+            crypto.clone(),
+            json_ld_cache.clone(),
+            certificate_validator.clone(),
+        );
+
+        let trust_management_provider = trust_management_provider_from_config(
+            &mut config,
+            client.clone(),
+            data_provider.get_remote_entity_cache_repository(),
+        )?;
+
+        let trust_list_publisher_provider = trust_list_publisher_provider_from_config(
+            &mut config,
+            clock.clone(),
+            key_provider.clone(),
+            key_algorithm_provider.clone(),
+            data_provider.get_trust_list_publication_repository(),
+            data_provider.get_trust_entry_repository(),
+            data_provider.get_identifier_repository(),
+        )?;
+
+        let blob_storage_provider = blob_storage_provider_from_config(
+            &config.blob_storage,
+            data_provider.get_blob_repository(),
+        );
+
+        let key_security_level_provider = key_security_level_provider_from_config(&mut config)?;
+
+        let openid_metadata_cache = openid_metadata_cache_from_config(
+            &config,
+            data_provider.get_remote_entity_cache_repository(),
             client.clone(),
         );
 
-        let did_service = DidService::new(
-            data_provider.get_did_repository(),
+        let issuance_provider = issuance_protocol_provider_from_config(
+            &mut config,
+            core_base_url.clone(),
+            data_provider.get_credential_repository(),
             data_provider.get_key_repository(),
-            data_provider.get_identifier_repository(),
-            data_provider.get_organisation_repository(),
-            did_method_provider.clone(),
-            key_algorithm_provider.clone(),
+            data_provider.get_validity_credential_repository(),
+            credential_formatter_provider.clone(),
+            vct_type_metadata_cache,
             key_provider.clone(),
+            key_algorithm_provider.clone(),
+            key_security_level_provider.clone(),
+            revocation_method_provider.clone(),
+            did_method_provider.clone(),
+            certificate_validator.clone(),
+            identifier_creator.clone(),
+            client.clone(),
+            openid_metadata_cache.clone(),
+            blob_storage_provider.clone(),
+            credential_schema_importer.clone(),
+            credential_schema_import_parser.clone(),
+            wallet_unit_proto.clone(),
+        )?;
+
+        let verification_provider = verification_protocol_provider_from_config(
+            &mut config,
+            core_base_url.clone(),
+            data_provider.get_interaction_repository(),
+            data_provider.get_proof_repository(),
+            credential_formatter_provider.clone(),
+            presentation_formatter_provider.clone(),
+            key_provider.clone(),
+            certificate_validator.clone(),
+            key_algorithm_provider.clone(),
+            did_method_provider.clone(),
+            identifier_creator.clone(),
+            ble_waiter.clone(),
+            client.clone(),
+            openid_metadata_cache,
+            Some(mqtt_client),
+            nfc_hce.clone(),
+        )?;
+
+        let config = Arc::new(config);
+
+        let credential_validity_manager = Arc::new(CredentialValidityManagerImpl::new(
+            data_provider.get_credential_repository(),
+            data_provider.get_interaction_repository(),
+            client.clone(),
+            key_provider.clone(),
+            key_algorithm_provider.clone(),
+            certificate_validator.clone(),
+            did_method_provider.clone(),
+            revocation_method_provider.clone(),
+            credential_formatter_provider.clone(),
+            blob_storage_provider.clone(),
+            session_provider.clone(),
             config.clone(),
-        );
+        ));
 
         let credential_service = CredentialService::new(
             data_provider.get_credential_repository(),
             data_provider.get_credential_schema_repository(),
             data_provider.get_identifier_repository(),
-            data_provider.get_history_repository(),
             data_provider.get_interaction_repository(),
-            data_provider.get_revocation_list_repository(),
-            revocation_method_provider.clone(),
-            formatter_provider.clone(),
+            credential_formatter_provider.clone(),
             issuance_provider.clone(),
-            did_method_provider.clone(),
-            key_provider.clone(),
-            key_algorithm_provider.clone(),
             config.clone(),
             data_provider.get_validity_credential_repository(),
-            providers.core_base_url.clone(),
-            client.clone(),
+            blob_storage_provider.clone(),
+            session_provider.clone(),
+            credential_validity_manager.clone(),
+            notification_scheduler.clone(),
         );
 
-        let task_providers = tasks_from_config(
-            &config.task,
+        let task_provider = task_provider_from_config(
+            &config,
             data_provider.get_claim_repository(),
             data_provider.get_credential_repository(),
             data_provider.get_history_repository(),
-            revocation_method_provider.to_owned(),
-            data_provider.get_revocation_list_repository(),
-            data_provider.get_validity_credential_repository(),
-            formatter_provider.to_owned(),
-            did_method_provider.to_owned(),
-            key_provider.to_owned(),
-            key_algorithm_provider.to_owned(),
             data_provider.get_proof_repository(),
             data_provider.get_certificate_repository(),
             data_provider.get_identifier_repository(),
-            providers.core_base_url.clone(),
-            credential_service.clone(),
-            certificate_service.clone(),
-        )
-        .map_err(OneCoreBuildError::Config)?;
-        let task_provider = Arc::new(TaskProviderImpl::new(task_providers));
+            data_provider.get_interaction_repository(),
+            data_provider.get_notification_repository(),
+            credential_validity_manager,
+            certificate_validator.clone(),
+            blob_storage_provider.clone(),
+            session_provider.clone(),
+            notification_sender.clone(),
+        )?;
+
+        let openid4vp_proof_validator = Arc::new(OpenId4VpProofValidatorProto::new(
+            did_method_provider.clone(),
+            credential_formatter_provider.clone(),
+            presentation_formatter_provider.clone(),
+            key_algorithm_provider.clone(),
+            revocation_method_provider.clone(),
+            certificate_validator.clone(),
+        ));
 
         Ok(OneCore {
             trust_anchor_service: TrustAnchorService::new(
                 data_provider.get_trust_anchor_repository(),
                 data_provider.get_trust_entity_repository(),
-                providers.core_base_url.clone(),
+                core_base_url.clone(),
                 config.clone(),
             ),
             trust_entity_service: TrustEntityService::new(
@@ -496,11 +478,15 @@ impl OneCore {
                 data_provider.get_trust_entity_repository(),
                 data_provider.get_did_repository(),
                 data_provider.get_identifier_repository(),
+                data_provider.get_organisation_repository(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
                 trust_management_provider,
                 key_provider.clone(),
                 client.clone(),
+                certificate_validator.clone(),
+                identifier_creator.clone(),
+                config.clone(),
             ),
             backup_service: BackupService::new(
                 data_provider.get_backup_repository(),
@@ -510,47 +496,77 @@ impl OneCore {
             ),
             organisation_service: OrganisationService::new(
                 data_provider.get_organisation_repository(),
+                data_provider.get_identifier_repository(),
+                config.clone(),
             ),
             credential_service,
-            did_service: did_service.clone(),
-            certificate_service: certificate_service.clone(),
-            revocation_list_service: RevocationListService::new(
-                providers.core_base_url.clone(),
-                data_provider.get_credential_repository(),
-                data_provider.get_validity_credential_repository(),
-                data_provider.get_revocation_list_repository(),
+            did_service: DidService::new(
+                data_provider.get_did_repository(),
+                data_provider.get_identifier_repository(),
+                data_provider.get_organisation_repository(),
                 did_method_provider.clone(),
-                formatter_provider.clone(),
-                key_provider.clone(),
                 key_algorithm_provider.clone(),
+                identifier_creator.clone(),
+                session_provider.clone(),
+            ),
+            certificate_service: CertificateService::new(
+                data_provider.get_certificate_repository(),
+                data_provider.get_identifier_repository(),
+                session_provider.clone(),
+            ),
+            revocation_list_service: RevocationListService::new(
+                data_provider.get_revocation_list_repository(),
                 revocation_method_provider.clone(),
                 config.clone(),
             ),
             oid4vci_draft13_service: OID4VCIDraft13Service::new(
-                providers.core_base_url.clone(),
+                core_base_url.clone(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_credential_repository(),
                 data_provider.get_interaction_repository(),
                 config.clone(),
                 issuance_provider.clone(),
-                data_provider.get_did_repository(),
-                data_provider.get_identifier_repository(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                formatter_provider.clone(),
+                credential_formatter_provider.clone(),
+                revocation_method_provider.clone(),
+                certificate_validator.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
             ),
-            oid4vci_draft13_swiyu_service: OID4VCIDraft13SwiyuService::new(
-                providers.core_base_url.clone(),
+            oid4vci_final1_0_service: OID4VCIFinal1_0Service::new(
+                core_base_url.clone(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_credential_repository(),
                 data_provider.get_interaction_repository(),
                 config.clone(),
                 issuance_provider.clone(),
-                data_provider.get_did_repository(),
-                data_provider.get_identifier_repository(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                formatter_provider.clone(),
+                credential_formatter_provider.clone(),
+                revocation_method_provider.clone(),
+                certificate_validator.clone(),
+                blob_storage_provider.clone(),
+                data_provider.get_tx_manager(),
+                wallet_unit_proto.clone(),
+                identifier_creator.clone(),
+            ),
+            oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService::new(
+                core_base_url.clone(),
+                data_provider.get_credential_schema_repository(),
+                data_provider.get_credential_repository(),
+                data_provider.get_interaction_repository(),
+                config.clone(),
+                issuance_provider.clone(),
+                did_method_provider.clone(),
+                key_algorithm_provider.clone(),
+                credential_formatter_provider.clone(),
+                revocation_method_provider.clone(),
+                certificate_validator.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
+                blob_storage_provider.clone(),
+                wallet_unit_proto.clone(),
             ),
             oid4vp_draft20_service: OID4VPDraft20Service::new(
                 data_provider.get_credential_repository(),
@@ -558,13 +574,12 @@ impl OneCore {
                 data_provider.get_key_repository(),
                 key_provider.clone(),
                 config.clone(),
-                data_provider.get_did_repository(),
-                data_provider.get_identifier_repository(),
-                formatter_provider.clone(),
-                did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                revocation_method_provider.clone(),
                 data_provider.get_validity_credential_repository(),
+                blob_storage_provider.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
+                openid4vp_proof_validator.clone(),
             ),
             oid4vp_draft25_service: OID4VPDraft25Service::new(
                 data_provider.get_credential_repository(),
@@ -572,82 +587,107 @@ impl OneCore {
                 data_provider.get_key_repository(),
                 key_provider.clone(),
                 config.clone(),
-                data_provider.get_did_repository(),
-                data_provider.get_identifier_repository(),
-                formatter_provider.clone(),
-                did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                revocation_method_provider.clone(),
                 data_provider.get_validity_credential_repository(),
+                blob_storage_provider.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
+                openid4vp_proof_validator.clone(),
             ),
-            credential_schema_service: CredentialSchemaService::new(
-                providers.core_base_url.clone(),
-                data_provider.get_credential_schema_repository(),
-                data_provider.get_history_repository(),
-                data_provider.get_organisation_repository(),
-                formatter_provider.clone(),
-                revocation_method_provider.clone(),
-                config.clone(),
-            ),
-            history_service: HistoryService::new(data_provider.get_history_repository()),
-            key_service: KeyService::new(
+            oid4vp_final1_0_service: OID4VPFinal1_0Service::new(
+                data_provider.get_credential_repository(),
+                data_provider.get_proof_repository(),
                 data_provider.get_key_repository(),
-                data_provider.get_organisation_repository(),
-                did_mdl_validator,
                 key_provider.clone(),
                 config.clone(),
                 key_algorithm_provider.clone(),
+                data_provider.get_validity_credential_repository(),
+                blob_storage_provider.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
+                openid4vp_proof_validator.clone(),
+            ),
+            credential_schema_service: CredentialSchemaService::new(
+                core_base_url.clone(),
+                data_provider.get_credential_schema_repository(),
+                data_provider.get_organisation_repository(),
+                credential_formatter_provider.clone(),
+                revocation_method_provider.clone(),
+                config.clone(),
+                session_provider.clone(),
+                credential_schema_import_parser.clone(),
+                credential_schema_importer.clone(),
+            ),
+            history_service: HistoryService::new(
                 data_provider.get_history_repository(),
+                session_provider.clone(),
+            ),
+            key_service: KeyService::new(
+                data_provider.get_key_repository(),
+                data_provider.get_organisation_repository(),
+                key_provider.clone(),
+                config.clone(),
+                data_provider.get_history_repository(),
+                session_provider.clone(),
+                csr_creator,
             ),
             proof_schema_service: ProofSchemaService::new(
                 data_provider.get_proof_schema_repository(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_organisation_repository(),
-                data_provider.get_history_repository(),
-                formatter_provider.clone(),
-                revocation_method_provider.clone(),
+                credential_formatter_provider.clone(),
                 config.clone(),
-                providers.core_base_url.clone(),
+                core_base_url.clone(),
                 client.clone(),
+                session_provider.clone(),
+                credential_schema_import_parser,
+                credential_schema_importer,
             ),
             proof_service: ProofService::new(
                 data_provider.get_proof_repository(),
                 key_algorithm_provider.clone(),
-                key_provider.clone(),
                 data_provider.get_proof_schema_repository(),
-                data_provider.get_did_repository(),
                 data_provider.get_identifier_repository(),
                 data_provider.get_claim_repository(),
                 data_provider.get_credential_repository(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_history_repository(),
                 data_provider.get_interaction_repository(),
-                formatter_provider.clone(),
-                revocation_method_provider.clone(),
+                credential_formatter_provider.clone(),
+                presentation_formatter_provider.clone(),
                 verification_provider.clone(),
                 did_method_provider.clone(),
                 ble_waiter,
                 config.clone(),
-                providers.core_base_url.clone(),
-                data_provider.get_organisation_repository().clone(),
-                data_provider.get_validity_credential_repository().clone(),
+                data_provider.get_organisation_repository(),
+                data_provider.get_validity_credential_repository(),
+                certificate_validator.clone(),
+                blob_storage_provider.clone(),
+                nfc_hce,
+                session_provider.clone(),
+                identifier_creator.clone(),
+                data_provider.get_tx_manager(),
+                openid4vp_proof_validator,
+                notification_scheduler,
             ),
             ssi_issuer_service: SSIIssuerService::new(
                 data_provider.get_credential_schema_repository(),
                 config.clone(),
-                providers.core_base_url.clone(),
+                core_base_url.clone(),
             ),
             // TODO - config based
             vc_api_service: VCAPIService::new(
-                formatter_provider.clone(),
+                credential_formatter_provider.clone(),
+                presentation_formatter_provider,
                 key_provider.clone(),
                 data_provider.get_did_repository(),
                 data_provider.get_identifier_repository(),
-                did_method_provider.clone(),
+                did_method_provider,
                 key_algorithm_provider.clone(),
                 data_provider.get_revocation_list_repository(),
-                ContextCache::new(jsonld_caching_loader.clone(), client.clone()),
-                providers.core_base_url,
+                certificate_validator.clone(),
+                ContextCache::new(json_ld_cache.clone(), client.clone()),
+                core_base_url.clone(),
             ),
             ssi_holder_service: SSIHolderService::new(
                 data_provider.get_credential_repository(),
@@ -655,33 +695,81 @@ impl OneCore {
                 data_provider.get_organisation_repository(),
                 data_provider.get_interaction_repository(),
                 data_provider.get_credential_schema_repository(),
-                data_provider.get_validity_credential_repository(),
-                data_provider.get_did_repository(),
                 data_provider.get_identifier_repository(),
-                data_provider.get_history_repository(),
-                key_provider,
-                key_algorithm_provider,
-                formatter_provider,
+                key_algorithm_provider.clone(),
+                key_security_level_provider,
+                credential_formatter_provider,
                 issuance_provider,
                 verification_provider,
-                did_method_provider,
                 config.clone(),
                 client.clone(),
-                vct_type_metadata_cache,
+                blob_storage_provider,
+                session_provider.clone(),
+                identifier_creator.clone(),
+            ),
+            wallet_provider_service: WalletProviderService::new(
+                data_provider.get_organisation_repository(),
+                data_provider.get_wallet_unit_repository(),
+                data_provider.get_identifier_repository(),
+                data_provider.get_history_repository(),
+                data_provider.get_tx_manager(),
+                key_provider.clone(),
+                key_algorithm_provider.clone(),
+                revocation_method_provider,
+                certificate_validator,
+                clock,
+                session_provider.clone(),
+                config.clone(),
+                core_base_url.clone(),
             ),
             task_service: TaskService::new(task_provider),
             config_service: ConfigService::new(config.clone()),
-            jsonld_service: JsonLdService::new(jsonld_caching_loader, client),
+            jsonld_service: JsonLdService::new(json_ld_cache, client.clone()),
             config: config.clone(),
             cache_service: CacheService::new(data_provider.get_remote_entity_cache_repository()),
+            nfc_service: NfcService::new(config.clone(), nfc_scanner),
             identifier_service: IdentifierService::new(
                 data_provider.get_identifier_repository(),
                 data_provider.get_key_repository(),
-                data_provider.get_certificate_repository(),
                 data_provider.get_organisation_repository(),
-                did_service,
-                certificate_service,
+                identifier_creator,
+                config.clone(),
+                session_provider.clone(),
+            ),
+            wallet_unit_service: WalletUnitService::new(
+                data_provider.get_organisation_repository(),
+                data_provider.get_holder_wallet_unit_repository(),
+                data_provider.get_history_repository(),
+                data_provider.get_key_repository(),
+                key_provider,
+                key_algorithm_provider,
+                Arc::new(HTTPWalletProviderClient::new(client)),
+                wallet_unit_proto,
+                Arc::new(OSInfoProviderImpl),
+                Arc::new(DefaultClock),
+                core_base_url,
                 config,
+                session_provider.clone(),
+            ),
+            signature_service: SignatureService::new(
+                signer_provider,
+                data_provider.get_revocation_list_repository(),
+                data_provider.get_identifier_repository(),
+                data_provider.get_history_repository(),
+                session_provider.clone(),
+            ),
+            statistics_service: StatisticsService::new(
+                data_provider.get_history_repository(),
+                data_provider.get_organisation_repository(),
+                session_provider.clone(),
+            ),
+            verifier_provider_service: VerifierProviderService::new(verifier_provider),
+            trust_list_publication_service: TrustListPublicationService::new(
+                data_provider.get_identifier_repository(),
+                data_provider.get_trust_list_publication_repository(),
+                data_provider.get_trust_entry_repository(),
+                session_provider,
+                trust_list_publisher_provider,
             ),
         })
     }
@@ -711,4 +799,22 @@ pub struct Version {
     pub commit: String,
     pub rust_version: String,
     pub pipeline_id: String,
+}
+
+/// call rustls initialization only once
+static RUSTLS_INITIALIZATION: Once = Once::new();
+fn initialize_rustls() -> Result<(), OneCoreInitializationError> {
+    let mut result: Option<anyhow::Error> = None;
+
+    RUSTLS_INITIALIZATION.call_once(|| {
+        if rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_err()
+        {
+            tracing::error!("Rustls initialization failure");
+            result = Some(anyhow::anyhow!("Failed to install rustls crypto provider"));
+        }
+    });
+
+    result.map_or(Ok(()), |e| Err(e.into()))
 }

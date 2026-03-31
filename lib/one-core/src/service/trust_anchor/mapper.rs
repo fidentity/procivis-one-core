@@ -1,15 +1,18 @@
+use shared_types::DidValue;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{CreateTrustAnchorRequestDTO, GetTrustAnchorEntityListResponseDTO};
+use super::error::TrustAnchorServiceError;
+use crate::error::ContextWithErrorCode;
 use crate::model::trust_anchor::TrustAnchor;
-use crate::model::trust_entity::TrustEntity;
-use crate::service::error::ServiceError;
+use crate::model::trust_entity::{TrustEntity, TrustEntityType};
+use crate::provider::did_method::error::DidMethodError;
 
 pub(super) fn trust_anchor_from_request(
     request: CreateTrustAnchorRequestDTO,
     core_base_url: Option<&String>,
-) -> Result<TrustAnchor, ServiceError> {
+) -> Result<TrustAnchor, TrustAnchorServiceError> {
     let id = Uuid::new_v4().into();
     let now = OffsetDateTime::now_utc();
     let publisher_reference = if let Some(publisher_reference) = request.publisher_reference {
@@ -19,7 +22,9 @@ pub(super) fn trust_anchor_from_request(
             "{}/ssi/trust/v1/{id}",
             core_base_url
                 .as_ref()
-                .ok_or_else(|| ServiceError::Other("Missing core_base_url".to_string()))?,
+                .ok_or_else(|| TrustAnchorServiceError::MappingError(
+                    "Missing core_base_url".to_string()
+                ))?,
         )
     };
 
@@ -35,9 +40,18 @@ pub(super) fn trust_anchor_from_request(
 }
 
 impl TryFrom<TrustEntity> for GetTrustAnchorEntityListResponseDTO {
-    type Error = ServiceError;
+    type Error = TrustAnchorServiceError;
 
     fn try_from(value: TrustEntity) -> Result<Self, Self::Error> {
+        let did = if value.r#type == TrustEntityType::Did {
+            Some(
+                DidValue::from_did_url(&value.entity_key)
+                    .map_err(DidMethodError::DidValueError)
+                    .error_while("parsing DID")?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             id: value.id,
             created_date: value.created_date,
@@ -49,13 +63,10 @@ impl TryFrom<TrustEntity> for GetTrustAnchorEntityListResponseDTO {
             privacy_url: value.privacy_url,
             role: value.role,
             state: value.state,
-            did: value
-                .did
-                .map(Into::into)
-                .ok_or(ServiceError::MappingError(format!(
-                    "missing did for trust entity {}",
-                    value.id
-                )))?,
+            r#type: value.r#type,
+            entity_key: value.entity_key,
+            content: value.content,
+            did,
         })
     }
 }

@@ -1,5 +1,5 @@
 use sea_orm::entity::prelude::*;
-use shared_types::ProofSchemaId;
+use shared_types::{CredentialSchemaId, ProofSchemaId};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
@@ -9,13 +9,12 @@ pub struct Model {
     pub id: i64,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub order: i32,
-    pub validity_constraint: Option<i64>,
-    pub credential_schema: String,
+    pub order: u32,
+    pub credential_schema: CredentialSchemaId,
     pub proof_schema: ProofSchemaId,
 }
 
-#[allow(clippy::enum_variant_names)]
+#[expect(clippy::enum_variant_names)]
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(

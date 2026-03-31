@@ -3,22 +3,25 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use async_trait::async_trait;
+use serde::Deserialize;
 use shared_types::{DidId, DidValue};
 use url::Url;
 
 use super::{DidCreated, DidKeys, DidUpdate};
 use crate::config::core_config::KeyAlgorithmType;
+use crate::model::key::Key;
+use crate::proto::http_client::HttpClient;
 use crate::provider::did_method::DidMethod;
 use crate::provider::did_method::dto::DidDocumentDTO;
 use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::keys::Keys;
 use crate::provider::did_method::model::{AmountOfKeys, DidCapabilities, DidDocument, Operation};
-use crate::provider::http_client::HttpClient;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Params {
+    #[serde(default)]
     pub keys: Keys,
     pub resolve_to_insecure_http: Option<bool>,
 }
@@ -36,19 +39,20 @@ impl WebDidMethod {
         params: Params,
     ) -> Result<Self, DidMethodError> {
         let did_base_string = if let Some(base_url) = base_url {
-            let url =
-                Url::parse(base_url).map_err(|e| DidMethodError::CouldNotCreate(e.to_string()))?;
+            let url = Url::parse(base_url)?;
 
             let mut host_str = url
                 .host_str()
-                .ok_or(DidMethodError::CouldNotCreate("Missing host".to_string()))?
+                .ok_or(DidMethodError::InitializationError(
+                    "Missing host".to_string(),
+                ))?
                 .to_owned();
 
             if let Some(port) = url.port() {
                 host_str.push_str(&format!("%3A{port}"));
             }
 
-            let did_base_string = format!("did:web:{}:ssi:did-web:v1", host_str);
+            let did_base_string = format!("did:web:{host_str}:ssi:did-web:v1");
 
             Some(did_base_string)
         } else {
@@ -74,21 +78,15 @@ impl DidMethod for WebDidMethod {
         let did_base_string =
             self.did_base_string
                 .as_ref()
-                .ok_or(DidMethodError::CouldNotCreate(
+                .ok_or(DidMethodError::InitializationError(
                     "Missing base_url".to_string(),
                 ))?;
 
-        let id = id.ok_or(DidMethodError::ResolutionError(
-            "Missing did id".to_string(),
-        ))?;
+        let id = id.ok_or(DidMethodError::CreationError("Missing did id".to_string()))?;
 
         let did_value = format!("{did_base_string}:{id}");
 
-        did_value
-            .parse()
-            .map(|did| DidCreated { did, log: None })
-            .context("did parsing error")
-            .map_err(|e| DidMethodError::CouldNotCreate(e.to_string()))
+        Ok(did_value.parse().map(|did| DidCreated { did, log: None })?)
     }
 
     async fn resolve(&self, did_value: &DidValue) -> Result<DidDocument, DidMethodError> {
@@ -109,10 +107,6 @@ impl DidMethod for WebDidMethod {
         })
     }
 
-    fn can_be_deactivated(&self) -> bool {
-        true
-    }
-
     fn get_capabilities(&self) -> DidCapabilities {
         DidCapabilities {
             operations: vec![Operation::RESOLVE, Operation::CREATE, Operation::DEACTIVATE],
@@ -120,7 +114,7 @@ impl DidMethod for WebDidMethod {
                 KeyAlgorithmType::Ecdsa,
                 KeyAlgorithmType::Eddsa,
                 KeyAlgorithmType::BbsPlus,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
             method_names: vec!["web".to_string()],
             features: vec![],
@@ -134,6 +128,10 @@ impl DidMethod for WebDidMethod {
 
     fn get_keys(&self) -> Option<Keys> {
         Some(self.params.keys.to_owned())
+    }
+
+    fn get_reference_for_key(&self, key: &Key) -> Result<String, DidMethodError> {
+        Ok(format!("key-{}", key.id))
     }
 }
 

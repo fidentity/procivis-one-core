@@ -1,36 +1,34 @@
 use std::sync::Arc;
 
-use crate::provider::http_client::HttpClient;
-use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::proto::session_provider::SessionProvider;
 use crate::repository::certificate_repository::CertificateRepository;
-use crate::repository::key_repository::KeyRepository;
+use crate::repository::identifier_repository::IdentifierRepository;
 
 pub mod dto;
+pub mod error;
 pub(crate) mod mapper;
-mod revocation;
 pub mod service;
-mod x509_extension;
+
+#[cfg(test)]
+mod test;
 
 #[derive(Clone)]
 pub struct CertificateService {
     certificate_repository: Arc<dyn CertificateRepository>,
-    key_repository: Arc<dyn KeyRepository>,
-    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    client: Arc<dyn HttpClient>,
+    identifier_repository: Arc<dyn IdentifierRepository>,
+    session_provider: Arc<dyn SessionProvider>,
 }
 
 impl CertificateService {
-    pub fn new(
+    pub(crate) fn new(
         certificate_repository: Arc<dyn CertificateRepository>,
-        key_repository: Arc<dyn KeyRepository>,
-        key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-        client: Arc<dyn HttpClient>,
+        identifier_repository: Arc<dyn IdentifierRepository>,
+        session_provider: Arc<dyn SessionProvider>,
     ) -> Self {
         Self {
             certificate_repository,
-            key_repository,
-            key_algorithm_provider,
-            client,
+            identifier_repository,
+            session_provider,
         }
     }
 }

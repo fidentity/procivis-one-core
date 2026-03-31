@@ -3,16 +3,16 @@ use std::str::FromStr;
 use anyhow::Context;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use itertools::Itertools;
-use one_dto_mapper::convert_inner;
-use shared_types::ProofId;
-use time::OffsetDateTime;
+use shared_types::{BlobId, ProofId};
 use tracing::warn;
 use uuid::Uuid;
 
 use super::ProofService;
-use crate::common_mapper::{DidRole, encode_cbor_base64, get_or_create_did_and_identifier};
-use crate::config::core_config::TransportType;
+use super::error::ProofServiceError;
+use crate::config::core_config::{TransportType, VerificationProtocolType};
+use crate::error::ContextWithErrorCode;
+use crate::error::ErrorCode::BR_0000;
+use crate::model::blob::{Blob, BlobType};
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::history::HistoryErrorMetadata;
@@ -22,17 +22,20 @@ use crate::model::proof::{Proof, ProofRelations, ProofStateEnum, UpdateProofRequ
 use crate::model::proof_schema::{
     ProofInputSchemaRelations, ProofSchemaClaimRelations, ProofSchemaRelations,
 };
-use crate::model::validity_credential::Mdoc;
+use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::verification_protocol::openid4vp::error::OpenID4VCError;
-use crate::provider::verification_protocol::openid4vp::mapper::credential_from_proved;
 use crate::provider::verification_protocol::openid4vp::model::{
     OpenID4VPDirectPostResponseDTO, OpenID4VPVerifierInteractionContent, SubmissionRequestData,
+    VpSubmissionData,
 };
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::model::BLEOpenID4VPInteractionData;
-use crate::provider::verification_protocol::openid4vp::proximity_draft00::mqtt::model::MQTTOpenID4VPInteractionDataVerifier;
-use crate::provider::verification_protocol::openid4vp::service::oid4vp_verifier_process_submission;
-use crate::service::error::ErrorCode::BR_0000;
-use crate::service::error::ServiceError;
+use crate::provider::verification_protocol::openid4vp::proximity_draft00::ble::model::{
+    BLEOpenID4VPInteractionDataVerifier, BLEVerifierProtocolData,
+};
+use crate::provider::verification_protocol::openid4vp::proximity_draft00::mqtt::model::{
+    MQTTOpenID4VPInteractionDataVerifier, MQTTVerifierProtocolData,
+};
+use crate::service::error::MissingProviderError;
+use crate::util::openid4vp::persist_accepted_proof;
 
 impl ProofService {
     // TODO: This method is used as part of the OID4VP BLE/MQTT flow
@@ -67,6 +70,7 @@ impl ProofService {
                     interaction: Some(InteractionRelations::default()),
                     ..Default::default()
                 },
+                None,
             )
             .await
         else {
@@ -83,20 +87,32 @@ impl ProofService {
 
             if proof.transport == TransportType::Ble.as_ref() {
                 let interaction_data =
-                    serde_json::from_slice::<BLEOpenID4VPInteractionData>(interaction_data)
+                    serde_json::from_slice::<BLEOpenID4VPInteractionDataVerifier>(interaction_data)
                         .context("BLE interaction data deserialization")?;
 
-                let response = interaction_data
-                    .presentation_submission
-                    .context("BLE interaction missing presentation_submission")?;
-
-                let state = Uuid::from_str(&response.presentation_submission.definition_id)?;
+                let (state, submission_data) = match interaction_data.protocol_data {
+                    BLEVerifierProtocolData::V1 {
+                        submission: Some(submission),
+                        ..
+                    } => (
+                        Uuid::from_str(&submission.presentation_submission.definition_id)?.into(),
+                        VpSubmissionData::Pex(submission),
+                    ),
+                    BLEVerifierProtocolData::V2 {
+                        submission: Some(submission),
+                        ..
+                    } => (Uuid::new_v4().into(), VpSubmissionData::Dcql(submission)),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "BLE interaction missing presentation_submission"
+                        ));
+                    }
+                };
 
                 let request_data = SubmissionRequestData {
-                    presentation_submission: response.presentation_submission,
-                    vp_token: response.vp_token,
+                    submission_data,
                     state,
-                    mdoc_generated_nonce: interaction_data.identity_request_nonce,
+                    mdoc_generated_nonce: interaction_data.mdoc_generated_nonce,
                     encryption_key: None,
                 };
 
@@ -108,14 +124,20 @@ impl ProofService {
                     )
                     .context("MQTT interaction data deserialization")?;
 
-                let response = interaction_data.presentation_submission;
-                let state = Uuid::from_str(&response.presentation_submission.definition_id)?;
+                let (state, submission_data) = match interaction_data.protocol_data {
+                    MQTTVerifierProtocolData::V1 { submission, .. } => (
+                        Uuid::from_str(&submission.presentation_submission.definition_id)?.into(),
+                        VpSubmissionData::Pex(submission),
+                    ),
+                    MQTTVerifierProtocolData::V2 { submission, .. } => {
+                        (Uuid::new_v4().into(), VpSubmissionData::Dcql(submission))
+                    }
+                };
 
                 let request_data = SubmissionRequestData {
-                    presentation_submission: response.presentation_submission,
-                    vp_token: response.vp_token,
+                    submission_data,
                     state,
-                    mdoc_generated_nonce: Some(interaction_data.identity_request_nonce),
+                    mdoc_generated_nonce: interaction_data.mdoc_generated_nonce,
                     encryption_key: None,
                 };
 
@@ -127,7 +149,7 @@ impl ProofService {
             Ok(request_data) => request_data,
             Err(error) => {
                 let message = format!("Failed parsing interaction data: {error}");
-                self.mark_proof_as_failed(&proof.id, message).await;
+                self.mark_proof_as_failed(&proof.id, None, message).await;
                 return;
             }
         };
@@ -141,37 +163,45 @@ impl ProofService {
         &self,
         proof: Proof,
         unpacked_request: SubmissionRequestData,
-    ) -> Result<OpenID4VPDirectPostResponseDTO, ServiceError> {
+    ) -> Result<OpenID4VPDirectPostResponseDTO, ProofServiceError> {
         let organisation = proof
             .schema
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofServiceError::MappingError(
                 "missing proof schema".to_string(),
             ))?
             .organisation
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofServiceError::MappingError(
                 "missing organisation".to_string(),
             ))?;
 
         let interaction = proof
             .interaction
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofServiceError::MappingError(
                 "missing interaction".to_string(),
             ))?;
 
-        let interaction_data: OpenID4VPVerifierInteractionContent =
-            serde_json::from_slice(interaction.data.as_ref().unwrap())
-                .map_err(|e| ServiceError::MappingError(e.to_string()))?;
+        let interaction_data: OpenID4VPVerifierInteractionContent = interaction
+            .data
+            .as_ref()
+            .ok_or(ProofServiceError::MappingError(
+                "missing interaction data".to_string(),
+            ))
+            .and_then(|d| {
+                serde_json::from_slice(d)
+                    .map_err(|e| ProofServiceError::MappingError(e.to_string()))
+            })?;
 
         if let Some(used_key_id) = unpacked_request.encryption_key {
-            let verifier_key = proof
-                .verifier_key
-                .as_ref()
-                .ok_or(ServiceError::MappingError(
-                    "missing verifier_key".to_string(),
-                ))?;
+            let verifier_key =
+                proof
+                    .verifier_key
+                    .as_ref()
+                    .ok_or(ProofServiceError::MappingError(
+                        "missing verifier_key".to_string(),
+                    ))?;
 
             if used_key_id != verifier_key.id {
                 tracing::info!("Proof encrypted with an incorrect key");
@@ -182,103 +212,65 @@ impl ProofService {
             }
         }
 
-        match oid4vp_verifier_process_submission(
-            unpacked_request,
-            proof.to_owned(),
-            interaction_data,
-            &self.did_method_provider,
-            &self.credential_formatter_provider,
-            &self.key_algorithm_provider,
-            &self.revocation_method_provider,
-            &self.config,
-        )
-        .await
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob_value = serde_json::to_string(&unpacked_request.submission_data).map_err(|e| {
+            ProofServiceError::MappingError(format!("failed to serialize proof blob data: {e}"))
+        })?;
+
+        let blob = Blob::new(blob_value, BlobType::Proof);
+        let proof_blob_id = blob.id;
+        blob_storage
+            .create(blob)
+            .await
+            .error_while("creating proof blob")?;
+
+        match self
+            .proof_validator
+            .validate_submission(
+                unpacked_request,
+                proof.to_owned(),
+                interaction_data,
+                VerificationProtocolType::OpenId4VpProximityDraft00,
+            )
+            .await
         {
             Ok((accept_proof_result, response)) => {
-                // store holder did on proof if it is not ambiguous
-                let holder_did_value = accept_proof_result
-                    .proved_credentials
-                    .iter()
-                    .map(|cred| &cred.holder_did_value)
-                    .all_equal_value()
-                    .ok();
-                let holder_identifier_id = if let Some(holder_did_value) = holder_did_value {
-                    let (_, identifer) = get_or_create_did_and_identifier(
-                        &*self.did_method_provider,
-                        &*self.did_repository,
-                        &*self.identifier_repository,
-                        &Some(organisation.to_owned()),
-                        holder_did_value,
-                        DidRole::Holder,
-                    )
-                    .await?;
-                    Some(identifer.id)
-                } else {
-                    None
-                };
-
-                for proved_credential in accept_proof_result.proved_credentials {
-                    let credential_id = proved_credential.credential.id;
-                    let mdoc_mso = proved_credential.mdoc_mso.to_owned();
-
-                    let credential = credential_from_proved(
-                        proved_credential,
-                        organisation,
-                        &*self.did_repository,
-                        &*self.identifier_repository,
-                        &*self.did_method_provider,
-                    )
-                    .await?;
-
-                    self.credential_repository
-                        .create_credential(credential)
-                        .await?;
-
-                    if let Some(mso) = mdoc_mso {
-                        let mso_cbor = encode_cbor_base64(mso)
-                            .map_err(|e| OpenID4VCError::Other(e.to_string()))?;
-
-                        self.validity_credential_repository
-                            .insert(
-                                Mdoc {
-                                    id: Uuid::new_v4(),
-                                    created_date: OffsetDateTime::now_utc(),
-                                    credential: mso_cbor.into_bytes(),
-                                    linked_credential_id: credential_id,
-                                }
-                                .into(),
-                            )
-                            .await?;
-                    }
-                }
-
-                self.proof_repository
-                    .set_proof_claims(&proof.id, convert_inner(accept_proof_result.proved_claims))
-                    .await?;
-
-                self.proof_repository
-                    .update_proof(
-                        &proof.id,
-                        UpdateProofRequest {
-                            state: Some(ProofStateEnum::Accepted),
-                            holder_identifier_id,
-                            ..Default::default()
-                        },
-                        None,
-                    )
-                    .await?;
-
+                persist_accepted_proof(
+                    &proof,
+                    accept_proof_result,
+                    organisation,
+                    proof_blob_id,
+                    &*self.proof_repository,
+                    &*self.credential_repository,
+                    &*self.validity_credential_repository,
+                    &*self.transaction_manager,
+                    &*self.identifier_creator,
+                )
+                .await
+                .error_while("persisting accepted proof")?;
                 Ok(response)
             }
             Err(err) => {
                 let message = format!("Proof validation failed: {err}");
-                self.mark_proof_as_failed(&proof.id, message).await;
+                self.mark_proof_as_failed(&proof.id, Some(proof_blob_id), message)
+                    .await;
                 Err(err.into())
             }
         }
     }
 
-    async fn mark_proof_as_failed(&self, id: &ProofId, message: String) {
+    async fn mark_proof_as_failed(
+        &self,
+        id: &ProofId,
+        proof_blob_id: Option<BlobId>,
+        message: String,
+    ) {
         tracing::info!(message);
         let error_metadata = HistoryErrorMetadata {
             error_code: BR_0000,
@@ -291,6 +283,7 @@ impl ProofService {
                 id,
                 UpdateProofRequest {
                     state: Some(ProofStateEnum::Error),
+                    proof_blob_id: proof_blob_id.map(Some),
                     ..Default::default()
                 },
                 Some(error_metadata),

@@ -1,26 +1,45 @@
+walletProvider:
+  PROCIVIS_ONE:
+    params:
+      public:
+        walletName: "Procivis One Demo Wallet"
+        walletInstanceAttestation:
+          integrityCheck:
+            android:
+              bundleId: ch.procivis.one.wallet.demo
+              signingCertificateFingerprints: [
+                  "3C:54:08:A0:AB:59:9A:5B:51:72:3F:DA:58:8E:81:DB:4F:A0:65:41:0E:7D:C2:65:4D:F1:A5:67:5B:47:13:52", # bitrise
+                  "35:D7:F1:2E:39:BB:4A:12:59:1C:69:B4:A4:81:8B:80:76:06:5E:40:38:94:8C:82:90:7F:F7:CB:8F:E0:69:59", # google-play
+                ]
+            ios:
+              bundleId: AGG3V6QN4G.ch.procivis.one.wallet.demo
+              enforceProductionBuild: false
+        appVersion:
+          minimum: "v1.50.0"
+        eudiWalletInfo:
+          providerName: "Procivis One Demo"
+verifierProvider:
+  PROCIVIS_ONE:
+    params:
+      public:
+        verifierName: "Procivis One Demo Verifier"
 keyStorage:
   AZURE_VAULT:
     params:
       private:
         vaultUrl: "https://procivis-one-demo.vault.azure.net"
         clientId: "9b645db1-39eb-485c-af62-47b3a498bec2"
-verificationProtocol:
-  OPENID4VP_DRAFT25_EUDI:
+signer:
+  REGISTRATION_CERTIFICATE:
     display:
-      en: "OpenID4VP draft 25 (EUDI)"
-      de: "OpenID4VP draft 25 (EUDI)"
-    order: 8
-    type: "OPENID4VP_DRAFT25"
+      en: Wallet Relying Party Registration Certificate
+      de: Wallet Relying Party Registration Certificate
+    order: 0
+    type: REGISTRATION_CERTIFICATE
     params:
-      public:
-        useRequestUri: true
-        urlScheme: eudi-openid4vp
-        x509CaCertificate: MIIC3TCCAoOgAwIBAgIUEwybFc9Jw-az3r188OiHDaxCfHEwCgYIKoZIzj0EAwMwXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4XDTI1MDMyNDIwMjYxNFoXDTM0MDYyMDIwMjYxM1owXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEesDKj9rCIcrGj0wbSXYvCV953bOPSYLZH5TNmhTz2xa7VdlvQgQeGZRg1PrF5AFwt070wvL9qr1DUDdvLp6a1qOCASEwggEdMBIGA1UdEwEB_wQIMAYBAf8CAQAwHwYDVR0jBBgwFoAUYseURyi9D6IWIKeawkmURPEB08cwEwYDVR0lBAwwCgYIK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5ldWRpdy5kZXYvY3JsL3BpZF9DQV9VVF8wMi5jcmwwHQYDVR0OBBYEFGLHlEcovQ-iFiCnmsJJlETxAdPHMA4GA1UdDwEB_wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczovL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0dXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0gAMEUCIQCe4R9rO4JhFp821kO8Gkb8rXm4qGG_e5_Oi2XmnTQqOQIgfFs-LDbnP2_j1MB4rwZ1FgGdpr4oyrFB9daZyRIcP90
-        verifier:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
-          defaultClientIdScheme: x509_san_dns
-        holder:
-          supportedClientIdSchemes: [redirect_uri, verifier_attestation, did, x509_san_dns]
-        redirectUri:
-          enabled: true
-          allowedSchemes: ["https"]
+      private:
+        payload:
+          issuer: "https://core.demo.procivis-one"
+          audience: ["wrpr"]
+          maxValidityDuration: 604800 # 7 days
+        revocationMethod: TOKENSTATUSLIST

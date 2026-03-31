@@ -1,9 +1,9 @@
 use error::KeyAlgorithmError;
 use model::GeneratedKey;
 use secrecy::SecretSlice;
+use standardized_types::jwk::{JwkUse, PrivateJwk, PublicJwk};
 
 use crate::config::core_config::KeyAlgorithmType;
-use crate::model::key::PublicKeyJwk;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::key_algorithm::model::KeyAlgorithmCapabilities;
 
@@ -32,7 +32,7 @@ pub trait KeyAlgorithm: Send + Sync {
         &self,
         public_key: &[u8],
         private_key: Option<SecretSlice<u8>>,
-        r#use: Option<String>,
+        r#use: Option<JwkUse>,
     ) -> Result<KeyHandle, KeyAlgorithmError>;
 
     /// IANA jose/cose identifiers
@@ -44,7 +44,8 @@ pub trait KeyAlgorithm: Send + Sync {
     fn cose_alg_id(&self) -> Option<i32>;
 
     /// parse public keys coming from an external source
-    fn parse_jwk(&self, key: &PublicKeyJwk) -> Result<KeyHandle, KeyAlgorithmError>;
+    fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError>;
+    fn parse_private_jwk(&self, jwk: PrivateJwk) -> Result<GeneratedKey, KeyAlgorithmError>;
     fn parse_multibase(&self, multibase: &str) -> Result<KeyHandle, KeyAlgorithmError>;
     fn parse_raw(&self, public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError>;
 }
@@ -54,22 +55,25 @@ pub(crate) fn parse_multibase_with_tag(
     expected_tag: &[u8],
 ) -> Result<Vec<u8>, KeyAlgorithmError> {
     if !encoded.starts_with('z') {
-        return Err(KeyAlgorithmError::Failed(format!(
-            "Invalid multibase, expected 'z' prefix but got '{}'",
-            encoded
+        return Err(KeyAlgorithmError::InvalidEncoding(format!(
+            "Invalid multibase, expected 'z' prefix but got '{encoded}'"
         )));
     }
     let raw_bs58 = &encoded[1..];
-    let decoded = bs58::decode(&raw_bs58)
-        .into_vec()
-        .map_err(|err| KeyAlgorithmError::Failed(format!("Invalid multibase suffix: {err}")))?;
+    let decoded = bs58::decode(&raw_bs58).into_vec()?;
 
-    if decoded[..expected_tag.len()] != expected_tag[..] {
-        return Err(KeyAlgorithmError::Failed(format!(
+    if decoded
+        .get(..expected_tag.len())
+        .is_none_or(|tag| tag != expected_tag)
+    {
+        return Err(KeyAlgorithmError::InvalidEncoding(format!(
             "Invalid multibase tag, expected {}, but got {}",
             hex::encode(expected_tag),
-            hex::encode(&decoded[..2])
+            hex::encode(&decoded)
         )));
     };
-    Ok(decoded[expected_tag.len()..].to_vec())
+    Ok(decoded
+        .get(expected_tag.len()..)
+        .ok_or_else(|| KeyAlgorithmError::InvalidEncoding("Invalid multibase suffix".to_string()))?
+        .to_vec())
 }

@@ -1,26 +1,51 @@
+use shared_types::{RevocationMethodId, TaskId};
+use strum::Display;
+
 use self::validator::datatype::DatatypeValidationError;
+use crate::error::{ErrorCode, ErrorCodeMixin};
+use crate::provider::data_type::model::ValueType;
 
 pub mod validator;
 
 pub mod core_config;
 
 #[cfg(test)]
+#[cfg(all(
+    feature = "config_yaml",
+    feature = "config_json",
+    feature = "config_env"
+))]
 mod test;
-
-#[derive(thiserror::Error, Debug)]
-pub enum ConfigError {
-    #[error(transparent)]
-    Parsing(#[from] ConfigParsingError),
-    #[error(transparent)]
-    Validation(#[from] ConfigValidationError),
-}
 
 #[derive(thiserror::Error, Debug)]
 pub enum ConfigParsingError {
     #[error("file error: {0}")]
     File(#[from] std::io::Error),
+
     #[error("Parsing error: {0}")]
-    GeneralParsingError(String),
+    ParsingError(String),
+}
+
+// figment error is big, thus the conversion
+impl From<figment::Error> for ConfigParsingError {
+    fn from(e: figment::Error) -> Self {
+        Self::ParsingError(format!("figment: {e}"))
+    }
+}
+
+#[derive(Debug)]
+pub struct IncompatibleProviderRef {
+    pub provider: String,
+    pub provider_ref: ProviderReference,
+    pub compatible_types: Vec<String>,
+}
+
+#[derive(Debug, Display)]
+pub enum ProviderReference {
+    #[strum(to_string = "revocation method `{0}`")]
+    RevocationMethod(RevocationMethodId),
+    #[strum(to_string = "task `{0}`")]
+    Task(TaskId),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -38,10 +63,44 @@ pub enum ConfigValidationError {
     },
     #[error("entity has invalid type, expected: `{0}`, actual: `{1}`")]
     InvalidType(String, String),
+    #[error("provider `{}` is not compatible with {}. Compatible provider types: {:?}", .0.provider, .0.provider_ref, .0.compatible_types)]
+    IncompatibleReferencedProvider(Box<IncompatibleProviderRef>),
     #[error("Datatype validation error: `{0}`")]
     DatatypeValidation(#[from] DatatypeValidationError),
     #[error("configuration entry `{key}` specifies URL scheme `{scheme}` that is already in use")]
     DuplicateUrlScheme { key: String, scheme: String },
-    #[error("Missing CA certificate for the client id scheme x509_san_dns")]
-    MissingX509CaCertificate,
+    #[error("Multiple fallback data types configured for value type: `{value_type}`")]
+    MultipleFallbackProviders { value_type: ValueType },
+    #[error("Missing base url")]
+    MissingBaseUrl,
+}
+
+impl ErrorCodeMixin for ConfigValidationError {
+    fn error_code(&self) -> ErrorCode {
+        match self {
+            Self::TypeNotFound(_) | Self::EntryNotFound(_) => ErrorCode::BR_0089,
+            Self::EntryDisabled(_)
+            | Self::FieldsDeserialization { .. }
+            | Self::InvalidType(_, _)
+            | Self::DatatypeValidation(_)
+            | Self::DuplicateUrlScheme { .. }
+            | Self::MultipleFallbackProviders { .. }
+            | Self::MissingBaseUrl => ErrorCode::BR_0051,
+            Self::IncompatibleReferencedProvider { .. } => ErrorCode::BR_0328,
+        }
+    }
+}
+
+impl ConfigValidationError {
+    pub fn incompatible_provider_ref<T: ToString>(
+        provider: String,
+        provider_ref: ProviderReference,
+        compatible_types: &[T],
+    ) -> Self {
+        Self::IncompatibleReferencedProvider(Box::new(IncompatibleProviderRef {
+            provider,
+            provider_ref,
+            compatible_types: compatible_types.iter().map(|t| t.to_string()).collect(),
+        }))
+    }
 }

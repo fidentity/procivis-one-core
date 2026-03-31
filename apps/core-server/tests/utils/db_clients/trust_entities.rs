@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use one_core::model::did::Did;
+use one_core::model::organisation::Organisation;
 use one_core::model::trust_anchor::{TrustAnchor, TrustAnchorRelations};
 use one_core::model::trust_entity::{
-    TrustEntity, TrustEntityRelations, TrustEntityRole, TrustEntityState,
+    TrustEntity, TrustEntityRelations, TrustEntityRole, TrustEntityState, TrustEntityType,
 };
 use one_core::repository::trust_entity_repository::TrustEntityRepository;
-use shared_types::TrustEntityId;
+use one_core::service::trust_entity::dto::TrustEntityContent;
+use shared_types::{TrustEntityId, TrustEntityKey};
 use sql_data_provider::test_utilities::get_dummy_date;
 use uuid::Uuid;
 
@@ -19,18 +20,30 @@ impl TrustEntityDB {
         Self { repository }
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         name: &str,
         role: TrustEntityRole,
         state: TrustEntityState,
         trust_anchor: TrustAnchor,
-        did: Did,
+        r#type: TrustEntityType,
+        entity_key: TrustEntityKey,
+        content: Option<TrustEntityContent>,
+        organisation: Option<Organisation>,
     ) -> TrustEntity {
+        let deactivated_at = match state {
+            TrustEntityState::Active => None,
+            TrustEntityState::Removed
+            | TrustEntityState::Withdrawn
+            | TrustEntityState::RemovedAndWithdrawn => Some(get_dummy_date()),
+        };
+
         let trust_entity = TrustEntity {
             id: Uuid::new_v4().into(),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
+            deactivated_at,
             name: name.into(),
             logo: Some("Logo".to_owned()),
             website: Some("Website".to_owned()),
@@ -39,7 +52,10 @@ impl TrustEntityDB {
             role,
             state,
             trust_anchor: Some(trust_anchor),
-            did: Some(did),
+            entity_key,
+            r#type,
+            content,
+            organisation,
         };
 
         self.repository.create(trust_entity.clone()).await.unwrap();

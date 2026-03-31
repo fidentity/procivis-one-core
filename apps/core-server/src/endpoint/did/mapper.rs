@@ -2,25 +2,16 @@ use one_core::model::did::DidFilterValue;
 use one_core::model::list_filter::{
     ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
 };
-use one_core::service::did::dto::CreateDidRequestDTO;
+use one_core::service::error::ServiceError;
 use one_dto_mapper::convert_inner;
 
-use super::dto::{CreateDidRequestRestDTO, DidFilterQueryParamsRest, ExactDidFilterColumnRestEnum};
+use super::dto::{DidFilterQueryParamsRest, ExactDidFilterColumnRestEnum};
+use crate::dto::mapper::fallback_organisation_id_from_session;
 
-impl From<CreateDidRequestRestDTO> for CreateDidRequestDTO {
-    fn from(value: CreateDidRequestRestDTO) -> Self {
-        Self {
-            name: value.name,
-            organisation_id: value.organisation_id,
-            did_method: value.method,
-            keys: value.keys.into(),
-            params: value.params,
-        }
-    }
-}
+impl TryFrom<DidFilterQueryParamsRest> for ListFilterCondition<DidFilterValue> {
+    type Error = ServiceError;
 
-impl From<DidFilterQueryParamsRest> for ListFilterCondition<DidFilterValue> {
-    fn from(value: DidFilterQueryParamsRest) -> Self {
+    fn try_from(value: DidFilterQueryParamsRest) -> Result<Self, Self::Error> {
         let exact = value.exact.unwrap_or_default();
         let get_string_match_type = |column| {
             if exact.contains(&column) {
@@ -30,7 +21,10 @@ impl From<DidFilterQueryParamsRest> for ListFilterCondition<DidFilterValue> {
             }
         };
 
-        let organisation_id = DidFilterValue::OrganisationId(value.organisation_id).condition();
+        let organisation_id = DidFilterValue::OrganisationId(
+            fallback_organisation_id_from_session(value.organisation_id)?,
+        )
+        .condition();
 
         let r#type = value
             .r#type
@@ -72,7 +66,7 @@ impl From<DidFilterQueryParamsRest> for ListFilterCondition<DidFilterValue> {
         let did_methods = value.did_methods.map(DidFilterValue::DidMethods);
         let key_ids = value.key_ids.map(DidFilterValue::KeyIds);
 
-        organisation_id
+        Ok(organisation_id
             & r#type
             & (name | did_value)
             & deactivated
@@ -80,6 +74,6 @@ impl From<DidFilterQueryParamsRest> for ListFilterCondition<DidFilterValue> {
             & key_roles
             & key_storages
             & did_methods
-            & key_ids
+            & key_ids)
     }
 }

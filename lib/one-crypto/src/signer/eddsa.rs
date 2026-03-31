@@ -1,12 +1,13 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
-use ed25519_compact::{PublicKey, x25519};
+use ed25519_compact::{PublicKey, SecretKey, Seed, x25519};
 use secrecy::{ExposeSecret, SecretSlice};
+use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 
 use crate::encryption::EncryptionError;
-use crate::jwe::{RemoteJwk, decode_b64};
+use crate::jwe::decode_b64;
 use crate::{Signer, SignerError};
 
-pub struct EDDSASigner {}
+pub struct EDDSASigner;
 
 pub struct KeyPair {
     pub public: Vec<u8>,
@@ -20,8 +21,14 @@ impl EDDSASigner {
         Ok(key.to_vec())
     }
 
+    pub fn check_x25519_public_key(public_key: &[u8]) -> Result<Vec<u8>, SignerError> {
+        let key = x25519::PublicKey::from_slice(public_key)
+            .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
+        Ok(key.to_vec())
+    }
+
     pub fn public_key_from_der(public_key_der: &[u8]) -> Result<Vec<u8>, SignerError> {
-        let pk = ed25519_compact::PublicKey::from_der(public_key_der)
+        let pk = PublicKey::from_der(public_key_der)
             .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
         Ok(pk.to_vec())
     }
@@ -35,8 +42,19 @@ impl EDDSASigner {
         }
     }
 
+    pub fn parse_key_pair(secret_key: &SecretSlice<u8>) -> Result<KeyPair, SignerError> {
+        let seed = Seed::from_slice(secret_key.expose_secret())
+            .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
+        let key_pair = ed25519_compact::KeyPair::from_seed(seed);
+
+        Ok(KeyPair {
+            public: key_pair.pk.to_vec(),
+            private: key_pair.sk.to_vec().into(),
+        })
+    }
+
     pub fn parse_private_key(secret_key: &SecretSlice<u8>) -> Result<KeyPair, SignerError> {
-        let secret_key = ed25519_compact::SecretKey::from_slice(secret_key.expose_secret())
+        let secret_key = SecretKey::from_slice(secret_key.expose_secret())
             .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
         let public_key = secret_key.public_key();
 
@@ -47,9 +65,9 @@ impl EDDSASigner {
     }
 
     pub fn public_key_into_x25519(public_key_eddsa: &[u8]) -> Result<Vec<u8>, SignerError> {
-        let key = ed25519_compact::PublicKey::from_slice(public_key_eddsa)
+        let key = PublicKey::from_slice(public_key_eddsa)
             .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
-        let key = ed25519_compact::x25519::PublicKey::from_ed25519(&key)
+        let key = x25519::PublicKey::from_ed25519(&key)
             .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
         Ok(key.to_vec())
     }
@@ -57,57 +75,62 @@ impl EDDSASigner {
     pub fn private_key_into_x25519(
         private_key_eddsa: &SecretSlice<u8>,
     ) -> Result<SecretSlice<u8>, SignerError> {
-        let key = ed25519_compact::SecretKey::from_slice(private_key_eddsa.expose_secret())
+        let key = SecretKey::from_slice(private_key_eddsa.expose_secret())
             .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
-        let key = ed25519_compact::x25519::SecretKey::from_ed25519(&key)
+        let key = x25519::SecretKey::from_ed25519(&key)
             .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
         Ok(key.to_vec().into())
     }
 
     pub fn shared_secret_x25519(
         private_key_ed25519: &SecretSlice<u8>,
-        recipient_jwk: &RemoteJwk,
+        recipient_jwk: &PublicJwk,
     ) -> Result<SecretSlice<u8>, EncryptionError> {
-        let secret_key =
-            ed25519_compact::SecretKey::from_slice(private_key_ed25519.expose_secret())
-                .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
+        let secret_key = SecretKey::from_slice(private_key_ed25519.expose_secret())
+            .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
         let secret_x25519 = x25519::SecretKey::from_ed25519(&secret_key)
             .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
 
         let peer_pub_key = Self::get_public_key_from_jwk(recipient_jwk)?;
 
-        let shared_secret = *peer_pub_key.dh(&secret_x25519).map_err(|e| {
-            EncryptionError::Crypto(format!("Failed to derive shared secret: {}", e))
-        })?;
+        let shared_secret = *peer_pub_key
+            .dh(&secret_x25519)
+            .map_err(|e| EncryptionError::Crypto(format!("Failed to derive shared secret: {e}")))?;
         Ok(SecretSlice::from(shared_secret.to_vec()))
     }
 
-    pub fn ed25519_to_x25519_jwk(public_key_ed25519: &[u8]) -> Result<RemoteJwk, EncryptionError> {
-        let public_key = ed25519_compact::PublicKey::from_slice(public_key_ed25519)
+    pub fn ed25519_to_x25519_jwk(public_key_ed25519: &[u8]) -> Result<PublicJwk, EncryptionError> {
+        let public_key = PublicKey::from_slice(public_key_ed25519)
             .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
         let public_x25519 = x25519::PublicKey::from_ed25519(&public_key)
             .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
 
-        Ok(RemoteJwk {
-            kty: "OKP".to_string(),
+        Ok(PublicJwk::Okp(PublicJwkEc {
+            alg: None,
+            r#use: None,
+            kid: None,
             crv: "X25519".to_string(),
             x: Base64UrlSafeNoPadding::encode_to_string(public_x25519.to_vec()).map_err(|e| {
-                EncryptionError::Crypto(format!("Failed to serialize public key bytes: {}", e))
+                EncryptionError::Crypto(format!("Failed to serialize public key bytes: {e}"))
             })?,
             y: None,
-        })
+        }))
     }
 
     fn get_public_key_from_jwk(
-        remote_jwk: &RemoteJwk,
+        remote_jwk: &PublicJwk,
     ) -> Result<x25519::PublicKey, EncryptionError> {
+        let PublicJwk::Okp(remote_jwk) = remote_jwk else {
+            return Err(EncryptionError::Crypto(format!(
+                "Expected OKP jwk, got {remote_jwk:?}"
+            )));
+        };
         match remote_jwk.crv.as_str() {
             "Ed25519" => {
                 let ed25519_pub_key = Self::ed25519_pub_key_from_jwk(remote_jwk)?;
                 x25519::PublicKey::from_ed25519(&ed25519_pub_key).map_err(|e| {
                     EncryptionError::Crypto(format!(
-                        "failed to convert ed25519 public key to x25519: {}",
-                        e
+                        "failed to convert ed25519 public key to x25519: {e}"
                     ))
                 })
             }
@@ -117,21 +140,19 @@ impl EDDSASigner {
     }
 
     fn x25519_pub_key_from_jwk(
-        remote_jwk: &RemoteJwk,
+        remote_jwk: &PublicJwkEc,
     ) -> Result<x25519::PublicKey, EncryptionError> {
         let x = decode_b64(remote_jwk.x.as_str(), "x coordinate")?;
         let pub_key = x25519::PublicKey::from_slice(&x).map_err(|e| {
-            EncryptionError::Crypto(format!("Failed to decode peer public key: {}", e))
+            EncryptionError::Crypto(format!("Failed to decode peer public key: {e}"))
         })?;
         Ok(pub_key)
     }
 
-    fn ed25519_pub_key_from_jwk(
-        remote_jwk: &RemoteJwk,
-    ) -> Result<ed25519_compact::PublicKey, EncryptionError> {
+    fn ed25519_pub_key_from_jwk(remote_jwk: &PublicJwkEc) -> Result<PublicKey, EncryptionError> {
         let x = decode_b64(remote_jwk.x.as_str(), "x coordinate")?;
-        let pub_key = ed25519_compact::PublicKey::from_slice(&x).map_err(|e| {
-            EncryptionError::Crypto(format!("Failed to decode peer public key: {}", e))
+        let pub_key = PublicKey::from_slice(&x).map_err(|e| {
+            EncryptionError::Crypto(format!("Failed to decode peer public key: {e}"))
         })?;
         Ok(pub_key)
     }
@@ -155,8 +176,8 @@ impl Signer for EDDSASigner {
     }
 
     fn verify(&self, input: &[u8], signature: &[u8], public_key: &[u8]) -> Result<(), SignerError> {
-        let ed25519_pk = ed25519_compact::PublicKey::from_slice(public_key)
-            .map_err(|_| SignerError::CouldNotExtractKeyPair)?;
+        let ed25519_pk =
+            PublicKey::from_slice(public_key).map_err(|_| SignerError::CouldNotExtractKeyPair)?;
 
         let ed25519_signature = ed25519_compact::Signature::from_slice(signature)
             .map_err(|e| SignerError::CouldNotVerify(e.to_string()))?;

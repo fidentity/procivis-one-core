@@ -1,42 +1,45 @@
 use one_core::service::did::dto::{
-    CreateDidRequestKeysDTO, DidListItemResponseDTO, DidPatchRequestDTO, DidResponseDTO,
-    DidResponseKeysDTO,
+    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidListItemResponseDTO, DidPatchRequestDTO,
+    DidResponseDTO, DidResponseKeysDTO,
 };
-use one_dto_mapper::{From, Into, TryFrom, convert_inner, try_convert_inner};
+use one_core::service::error::ServiceError;
+use one_dto_mapper::{From, Into, TryFrom, TryInto, convert_inner, try_convert_inner};
+use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{DidId, DidValue, KeyId, OrganisationId};
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
-use uuid::Uuid;
 
 use crate::dto::common::{Boolean, ListQueryParamsRest};
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::key::dto::KeyListItemResponseRestDTO;
 use crate::mapper::MapperError;
 use crate::serialize::front_time;
 
-pub type GetDidQuery = ListQueryParamsRest<DidFilterQueryParamsRest, SortableDidColumnRestDTO>;
+pub(crate) type GetDidQuery =
+    ListQueryParamsRest<DidFilterQueryParamsRest, SortableDidColumnRestDTO>;
 
 /// Whether a DID was locally created or is the DID of a remote wallet.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[from("one_core::model::did::DidType")]
 #[into("one_core::model::did::DidType")]
-pub enum DidType {
+pub(crate) enum DidType {
     Remote,
     Local,
 }
 
 /// DID details.
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, From)]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
 #[serde(rename_all = "camelCase")]
 #[from(DidListItemResponseDTO)]
-pub struct DidListItemResponseRestDTO {
+pub(crate) struct DidListItemResponseRestDTO {
     pub id: DidId,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub did: DidValue,
@@ -47,27 +50,25 @@ pub struct DidListItemResponseRestDTO {
     pub deactivated: bool,
 }
 
-use serde_with::skip_serializing_none;
-
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema, TryFrom)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, TryFrom)]
 #[try_from(T = DidResponseDTO, Error = MapperError)]
 #[serde(rename_all = "camelCase")]
-pub struct DidResponseRestDTO {
+pub(crate) struct DidResponseRestDTO {
     #[try_from(infallible)]
     pub id: DidId,
     #[try_from(infallible)]
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub created_date: OffsetDateTime,
     #[try_from(infallible)]
     #[serde(serialize_with = "front_time")]
-    #[schema(value_type = String, example = "2023-06-09T14:19:57.000Z")]
+    #[schema(example = "2023-06-09T14:19:57.000Z")]
     pub last_modified: OffsetDateTime,
     #[try_from(infallible)]
     pub name: String,
     #[try_from(infallible, with_fn = "convert_inner")]
-    pub organisation_id: Option<Uuid>,
+    pub organisation_id: Option<OrganisationId>,
     #[try_from(infallible)]
     pub did: DidValue,
     #[try_from(infallible)]
@@ -82,10 +83,10 @@ pub struct DidResponseRestDTO {
 }
 
 /// The key, or keys, defining the verification relationships of the DID.
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TryFrom)]
+#[derive(Clone, Debug, Serialize, ToSchema, TryFrom)]
 #[try_from(T = DidResponseKeysDTO, Error = MapperError)]
 #[serde(rename_all = "camelCase")]
-pub struct DidResponseKeysRestDTO {
+pub(crate) struct DidResponseKeysRestDTO {
     #[try_from(with_fn = try_convert_inner)]
     pub authentication: Vec<KeyListItemResponseRestDTO>,
     #[try_from(with_fn = try_convert_inner)]
@@ -98,31 +99,39 @@ pub struct DidResponseKeysRestDTO {
     pub capability_delegation: Vec<KeyListItemResponseRestDTO>,
 }
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateDidRequestRestDTO {
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, TryInto)]
+#[try_into(T = CreateDidRequestDTO, Error = ServiceError)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateDidRequestRestDTO {
     /// The DID name must be unique within the organization.
+    #[try_into(infallible)]
     pub name: String,
-    /// Specify the organization.
-    pub organisation_id: OrganisationId,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
+    pub organisation_id: Option<OrganisationId>,
     /// Choose a DID method to create the DID. Check the `did` object of the
     /// configuration for supported options and reference the configuration
     /// instance.
     #[schema(example = "WEB")]
+    #[try_into(infallible, rename = "did_method")]
     pub method: String,
+    #[try_into(infallible)]
     pub keys: CreateDidRequestKeysRestDTO,
     /// The parameters passed into the DID method.
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Object)]
+    #[try_into(infallible)]
     pub params: Option<serde_json::Value>,
 }
 
 /// Each DID has five verification relationships defining the verification
 /// method used for different purposes. Related guide: [Keys object](/dids#keys-object)
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, Into)]
+#[derive(Clone, Debug, Deserialize, ToSchema, Into)]
 #[into(CreateDidRequestKeysDTO)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateDidRequestKeysRestDTO {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CreateDidRequestKeysRestDTO {
     #[into(with_fn = convert_inner)]
     pub authentication: Vec<KeyId>,
     #[into(with_fn = convert_inner)]
@@ -138,7 +147,7 @@ pub struct CreateDidRequestKeysRestDTO {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
 #[into("one_core::model::did::SortableDidColumn")]
-pub enum SortableDidColumnRestDTO {
+pub(crate) enum SortableDidColumnRestDTO {
     Name,
     CreatedDate,
     Method,
@@ -147,17 +156,17 @@ pub enum SortableDidColumnRestDTO {
     Deactivated,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum ExactDidFilterColumnRestEnum {
+pub(crate) enum ExactDidFilterColumnRestEnum {
     Name,
     Did,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[into("one_core::model::did::KeyRole")]
-pub enum KeyRoleRestEnum {
+pub(crate) enum KeyRoleRestEnum {
     Authentication,
     AssertionMethod,
     KeyAgreement,
@@ -167,8 +176,8 @@ pub enum KeyRoleRestEnum {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
-#[serde(rename_all = "camelCase")]
-pub struct DidFilterQueryParamsRest {
+#[serde(rename_all = "camelCase")] //  // No deny_unknown_fields because of flattening inside GetDidQuery
+pub(crate) struct DidFilterQueryParamsRest {
     /// Return only DIDs with a name starting with this string. Not case-sensitive.
     #[param(nullable = false)]
     pub name: Option<String>,
@@ -182,7 +191,11 @@ pub struct DidFilterQueryParamsRest {
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactDidFilterColumnRestEnum>>,
-    pub organisation_id: OrganisationId,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[param(nullable = false)]
+    pub organisation_id: Option<OrganisationId>,
     /// Filter by active or deactivated DIDs.
     #[param(inline, nullable = false)]
     pub deactivated: Option<Boolean>,
@@ -205,9 +218,10 @@ pub struct DidFilterQueryParamsRest {
     pub did_methods: Option<Vec<String>>,
 }
 
+#[options_not_nullable]
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[into(DidPatchRequestDTO)]
-pub struct DidPatchRequestRestDTO {
+pub(crate) struct DidPatchRequestRestDTO {
     pub deactivated: Option<bool>,
 }

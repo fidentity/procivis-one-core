@@ -9,7 +9,7 @@ use one_core::model::list_query::ListQuery;
 use sea_orm::prelude::Expr;
 use sea_orm::query::*;
 use sea_orm::sea_query::{Func, IntoCondition, SimpleExpr};
-use sea_orm::{ColumnTrait, EntityTrait, RelationDef};
+use sea_orm::{ColumnTrait, EntityTrait, RelationDef, RelationType};
 
 use crate::mapper::order_from_sort_direction;
 
@@ -20,7 +20,11 @@ pub trait IntoSortingColumn {
 
 pub trait IntoFilterCondition: Clone + ListFilterValue {
     /// converts single query field into a sea-orm condition
-    fn get_condition(self) -> Condition;
+    ///
+    /// # Arguments
+    ///
+    /// * `entire_filter` - Complete filter containing the list filter value
+    fn get_condition(self, entire_filter: &ListFilterCondition<Self>) -> Condition;
 }
 
 pub struct JoinRelation {
@@ -70,10 +74,16 @@ where
                 alias,
             } in unique_relations
             {
-                match alias {
-                    None => result = result.join(join_type, relation_def),
-                    Some(join_as) => result = result.join_as(join_type, relation_def, join_as),
+                // when joining a one-to-many or many-to-many relation,
+                // SQL DISTINCT clause might be needed to avoid duplicate results
+                if relation_def.rel_type == RelationType::HasMany {
+                    result = result.distinct();
                 }
+
+                result = match alias {
+                    None => result.join(join_type, relation_def),
+                    Some(join_as) => result.join_as(join_type, relation_def, join_as),
+                };
             }
         }
 
@@ -124,10 +134,10 @@ where
     fn with_list_query(self, query: &ListQuery<SortableColumn, FilterValue, Include>) -> Select<T> {
         let mut result = self;
 
-        if let Some(filter) = &query.filtering {
-            if !filter.is_empty() {
-                result = result.filter(get_filter_condition(filter));
-            }
+        if let Some(filter) = &query.filtering
+            && !filter.is_empty()
+        {
+            result = result.filter(get_filter_condition(filter, filter));
         }
 
         if let Some(sorting) = &query.sorting {
@@ -150,13 +160,14 @@ where
 // helpers
 fn get_filter_condition<FilterValue: IntoFilterCondition>(
     filter_condition: &ListFilterCondition<FilterValue>,
+    entire_filter: &ListFilterCondition<FilterValue>,
 ) -> Condition {
     match filter_condition {
         ListFilterCondition::And(conditions) => {
             let mut result = Condition::all();
             for condition in conditions {
                 if !condition.is_empty() {
-                    result = result.add(get_filter_condition(condition));
+                    result = result.add(get_filter_condition(condition, entire_filter));
                 }
             }
             result
@@ -165,12 +176,12 @@ fn get_filter_condition<FilterValue: IntoFilterCondition>(
             let mut result = Condition::any();
             for condition in conditions {
                 if !condition.is_empty() {
-                    result = result.add(get_filter_condition(condition));
+                    result = result.add(get_filter_condition(condition, entire_filter));
                 }
             }
             result
         }
-        ListFilterCondition::Value(value) => value.to_owned().get_condition(),
+        ListFilterCondition::Value(value) => value.to_owned().get_condition(entire_filter),
     }
 }
 
@@ -206,6 +217,15 @@ pub(crate) fn get_comparison_condition<T: Into<Value>>(
     .into_condition()
 }
 
+pub(crate) fn get_nullability_condition(column: impl ColumnTrait, is_null: bool) -> Condition {
+    if is_null {
+        column.is_null()
+    } else {
+        column.is_not_null()
+    }
+    .into_condition()
+}
+
 /// helper function to construct an `eq` `sea_query::Condition` with a specific value
 pub(crate) fn get_equals_condition(column: impl ColumnTrait, value: impl Into<Value>) -> Condition {
     column.eq(value).into_condition()
@@ -214,6 +234,7 @@ pub(crate) fn get_equals_condition(column: impl ColumnTrait, value: impl Into<Va
 pub struct SubStr;
 
 impl sea_orm::Iden for SubStr {
+    #[allow(clippy::unwrap_used)]
     fn unquoted(&self, s: &mut dyn Write) {
         write!(s, "substr").unwrap();
     }
@@ -222,6 +243,7 @@ impl sea_orm::Iden for SubStr {
 pub struct Hex;
 
 impl sea_orm::Iden for Hex {
+    #[allow(clippy::unwrap_used)]
     fn unquoted(&self, s: &mut dyn Write) {
         write!(s, "hex").unwrap();
     }

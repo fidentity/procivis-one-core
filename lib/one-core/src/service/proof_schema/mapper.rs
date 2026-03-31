@@ -6,25 +6,25 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{
-    CreateProofSchemaRequestDTO, GetProofSchemaResponseDTO, ImportProofSchemaClaimSchemaDTO,
-    ImportProofSchemaInputSchemaDTO, ProofClaimSchemaResponseDTO, ProofInputSchemaResponseDTO,
-    ProofSchemaFilterValue,
+    CreateProofSchemaRequestDTO, GetProofSchemaQueryDTO, GetProofSchemaResponseDTO,
+    ImportProofSchemaClaimSchemaDTO, ImportProofSchemaInputSchemaDTO, ProofClaimSchemaResponseDTO,
+    ProofInputSchemaResponseDTO, ProofSchemaFilterValue,
 };
-use crate::common_mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
+use super::error::ProofSchemaServiceError;
 use crate::config::core_config::{DatatypeConfig, DatatypeType};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
 use crate::model::claim_schema::ClaimSchema;
-use crate::model::credential_schema::{CredentialSchema, CredentialSchemaClaim};
+use crate::model::credential_schema::CredentialSchema;
 use crate::model::list_filter::{ListFilterValue, StringMatch};
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
 use crate::model::proof_schema::{ProofInputClaimSchema, ProofInputSchema, ProofSchema};
-use crate::service::error::{BusinessLogicError, ServiceError};
-use crate::service::proof_schema::dto::GetProofSchemaQueryDTO;
 
 pub(super) fn convert_proof_schema_to_response(
     value: ProofSchema,
     datatype_config: &DatatypeConfig,
-) -> Result<GetProofSchemaResponseDTO, ServiceError> {
+) -> Result<GetProofSchemaResponseDTO, ProofSchemaServiceError> {
     Ok(GetProofSchemaResponseDTO {
         id: value.id,
         created_date: value.created_date,
@@ -33,14 +33,14 @@ pub(super) fn convert_proof_schema_to_response(
         imported_source_url: value.imported_source_url,
         organisation_id: value
             .organisation
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofSchemaServiceError::MappingError(
                 "organisation is None".to_string(),
             ))?
             .id,
         expire_duration: value.expire_duration,
         proof_input_schemas: value
             .input_schemas
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofSchemaServiceError::MappingError(
                 "proof_input_schemas is None".to_string(),
             ))?
             .into_iter()
@@ -52,17 +52,15 @@ pub(super) fn convert_proof_schema_to_response(
 pub(super) fn proof_input_from_import_request(
     input_schema: ImportProofSchemaInputSchemaDTO,
     credential_schema: CredentialSchema,
-) -> Result<ProofInputSchema, ServiceError> {
-    let credential_schema_claims = credential_schema
-        .claim_schemas
-        .as_ref()
-        .ok_or_else(|| ServiceError::MappingError("claim_schemas is None".to_string()))?;
+) -> Result<ProofInputSchema, ProofSchemaServiceError> {
+    let credential_schema_claims = credential_schema.claim_schemas.as_ref().ok_or_else(|| {
+        ProofSchemaServiceError::MappingError("claim_schemas is None".to_string())
+    })?;
 
     let proof_input_claim_schemas =
         extract_proof_input_claim_schemas(input_schema.claim_schemas, credential_schema_claims)?;
 
     Ok(ProofInputSchema {
-        validity_constraint: input_schema.validity_constraint,
         claim_schemas: Some(proof_input_claim_schemas),
         credential_schema: Some(credential_schema),
     })
@@ -70,8 +68,8 @@ pub(super) fn proof_input_from_import_request(
 
 fn extract_proof_input_claim_schemas(
     proof_schema_claims: Vec<ImportProofSchemaClaimSchemaDTO>,
-    credential_schema_claims: &[CredentialSchemaClaim],
-) -> Result<Vec<ProofInputClaimSchema>, ServiceError> {
+    credential_schema_claims: &[ClaimSchema],
+) -> Result<Vec<ProofInputClaimSchema>, ProofSchemaServiceError> {
     let proof_input_claim_schemas = extract_proof_input_claim_schemas_nested(
         proof_schema_claims,
         credential_schema_claims,
@@ -92,9 +90,9 @@ fn extract_proof_input_claim_schemas(
 
 fn extract_proof_input_claim_schemas_nested(
     proof_schema_claims: Vec<ImportProofSchemaClaimSchemaDTO>,
-    credential_schema_claims: &[CredentialSchemaClaim],
+    credential_schema_claims: &[ClaimSchema],
     parent_path_prefix: Option<String>,
-) -> Result<Vec<ProofInputClaimSchema>, ServiceError> {
+) -> Result<Vec<ProofInputClaimSchema>, ProofSchemaServiceError> {
     let mut result: Vec<ProofInputClaimSchema> = vec![];
 
     for proof_schema_claim in proof_schema_claims {
@@ -110,13 +108,15 @@ fn extract_proof_input_claim_schemas_nested(
         if proof_schema_claim.requested {
             let claim_schema = credential_schema_claims
                 .iter()
-                .find(|credential_schema_claim| credential_schema_claim.schema.key == path)
+                .find(|credential_schema_claim| credential_schema_claim.key == path)
                 .ok_or_else(|| {
-                    ServiceError::MappingError(format!("claim_schema for path '{path}' missing"))
+                    ProofSchemaServiceError::MappingError(format!(
+                        "claim_schema for path '{path}' missing"
+                    ))
                 })?;
 
             result.push(ProofInputClaimSchema {
-                schema: claim_schema.schema.to_owned(),
+                schema: claim_schema.to_owned(),
                 required: proof_schema_claim.required,
                 order: 0, // ordering is done once all claim schemas have been collected in `extract_proof_input_claim_schemas`
             });
@@ -135,19 +135,24 @@ fn extract_proof_input_claim_schemas_nested(
 fn convert_input_schema_to_response(
     value: ProofInputSchema,
     datatype_config: &DatatypeConfig,
-) -> Result<ProofInputSchemaResponseDTO, ServiceError> {
-    let claim_schemas = value.claim_schemas.ok_or(ServiceError::MappingError(
-        "claim_schemas is None".to_string(),
-    ))?;
-    let credential_schema = value.credential_schema.ok_or(ServiceError::MappingError(
-        "credential_schema is None".to_string(),
-    ))?;
+) -> Result<ProofInputSchemaResponseDTO, ProofSchemaServiceError> {
+    let claim_schemas = value
+        .claim_schemas
+        .ok_or(ProofSchemaServiceError::MappingError(
+            "claim_schemas is None".to_string(),
+        ))?;
+    let credential_schema =
+        value
+            .credential_schema
+            .ok_or(ProofSchemaServiceError::MappingError(
+                "credential_schema is None".to_string(),
+            ))?;
 
     let credential_schema_claims =
         credential_schema
             .claim_schemas
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofSchemaServiceError::MappingError(
                 "claim_schemas is None".to_string(),
             ))?;
 
@@ -161,15 +166,14 @@ fn convert_input_schema_to_response(
             datatype_config,
         )?,
         credential_schema: credential_schema.into(),
-        validity_constraint: value.validity_constraint,
     })
 }
 
 fn append_object_claim_schemas(
     mut proof_claim_schemas: Vec<ProofClaimSchemaResponseDTO>,
-    credential_claim_schemas: &[CredentialSchemaClaim],
+    credential_claim_schemas: &[ClaimSchema],
     datatype_config: &DatatypeConfig,
-) -> Result<Vec<ProofClaimSchemaResponseDTO>, ServiceError> {
+) -> Result<Vec<ProofClaimSchemaResponseDTO>, ProofSchemaServiceError> {
     let mut nested_claim_schemas: Vec<_> = proof_claim_schemas
         .iter()
         // todo: can arrays be root objects
@@ -180,18 +184,17 @@ fn append_object_claim_schemas(
                 .iter()
                 .filter(|claim| {
                     claim
-                        .schema
                         .key
                         .starts_with(&format!("{}{NESTED_CLAIM_MARKER}", os.key))
                 })
                 .map(|child_claim| ProofClaimSchemaResponseDTO {
-                    id: child_claim.schema.id,
+                    id: child_claim.id,
                     requested: false,
                     required: os.required && child_claim.required,
-                    key: child_claim.schema.key.to_owned(),
-                    data_type: child_claim.schema.data_type.to_owned(),
+                    key: child_claim.key.to_owned(),
+                    data_type: child_claim.data_type.to_owned(),
                     claims: vec![],
-                    array: child_claim.schema.array,
+                    array: child_claim.array,
                 })
                 .collect::<Vec<_>>()
         })
@@ -202,21 +205,21 @@ fn append_object_claim_schemas(
     // Blanket add all object claims so that the parent object claims of nested requested claims
     // are definitely included when going into `nest_claim_schemas`.
     credential_claim_schemas.iter().try_for_each(|value| {
-        if is_object(&value.schema.data_type, datatype_config)?
-            && !proof_claim_schemas.iter().any(|c| c.id == value.schema.id)
+        if is_object(&value.data_type, datatype_config)?
+            && !proof_claim_schemas.iter().any(|c| c.id == value.id)
         {
             proof_claim_schemas.push(ProofClaimSchemaResponseDTO {
-                id: value.schema.id,
+                id: value.id,
                 requested: false,
                 required: false,
-                key: value.schema.key.to_owned(),
-                data_type: value.schema.data_type.to_owned(),
+                key: value.key.to_owned(),
+                data_type: value.data_type.to_owned(),
                 claims: vec![],
-                array: value.schema.array,
+                array: value.array,
             });
         }
 
-        Ok::<(), ServiceError>(())
+        Ok::<(), ProofSchemaServiceError>(())
     })?;
 
     Ok(proof_claim_schemas)
@@ -225,7 +228,7 @@ fn append_object_claim_schemas(
 fn nest_claim_schemas(
     claim_schemas: Vec<ProofClaimSchemaResponseDTO>,
     datatype_config: &DatatypeConfig,
-) -> Result<Vec<ProofClaimSchemaResponseDTO>, ServiceError> {
+) -> Result<Vec<ProofClaimSchemaResponseDTO>, ProofSchemaServiceError> {
     let mut result: Vec<ProofClaimSchemaResponseDTO> = vec![];
 
     // Iterate over all and copy all unnested claim schemas to new vec
@@ -248,10 +251,8 @@ fn nest_claim_schemas(
                         .key
                         .starts_with(&format!("{}{NESTED_CLAIM_MARKER}", result_schema.key))
                 })
-                .ok_or(ServiceError::BusinessLogic(
-                    BusinessLogicError::MissingParentClaimSchema {
-                        claim_schema_id: claim_schema.id,
-                    },
+                .ok_or(ProofSchemaServiceError::MissingParentClaimSchema(
+                    claim_schema.id,
                 ))?;
             claim_schema.key = remove_first_nesting_layer(&claim_schema.key);
 
@@ -266,7 +267,7 @@ fn nest_claim_schemas(
             claim_schema.claims = nest_claim_schemas(claim_schema.claims, datatype_config)?;
             Ok(claim_schema)
         })
-        .collect::<Result<Vec<ProofClaimSchemaResponseDTO>, ServiceError>>()?;
+        .collect::<Result<Vec<ProofClaimSchemaResponseDTO>, ProofSchemaServiceError>>()?;
 
     // Remove empty object claims
     nested.retain(|element| {
@@ -278,8 +279,15 @@ fn nest_claim_schemas(
     Ok(nested)
 }
 
-fn is_object(data_type: &str, datatype_config: &DatatypeConfig) -> Result<bool, ServiceError> {
-    Ok(datatype_config.get_fields(data_type)?.r#type == DatatypeType::Object)
+fn is_object(
+    data_type: &str,
+    datatype_config: &DatatypeConfig,
+) -> Result<bool, ProofSchemaServiceError> {
+    Ok(datatype_config
+        .get_fields(data_type)
+        .error_while("getting datatype config")?
+        .r#type
+        == DatatypeType::Object)
 }
 
 impl From<ProofInputClaimSchema> for ProofClaimSchemaResponseDTO {
@@ -296,25 +304,10 @@ impl From<ProofInputClaimSchema> for ProofClaimSchemaResponseDTO {
     }
 }
 
-impl From<CredentialSchemaClaim> for ProofClaimSchemaResponseDTO {
-    fn from(value: CredentialSchemaClaim) -> Self {
-        Self {
-            id: value.schema.id,
-            // TODO: unknown requested and required values
-            requested: true,
-            required: value.required,
-            key: value.schema.key,
-            data_type: value.schema.data_type,
-            claims: vec![],
-            array: value.schema.array,
-        }
-    }
-}
-
 pub fn create_unique_name_check_request(
     name: &str,
     organisation_id: OrganisationId,
-) -> Result<GetProofSchemaQueryDTO, ServiceError> {
+) -> Result<GetProofSchemaQueryDTO, ProofSchemaServiceError> {
     Ok(GetProofSchemaQueryDTO {
         pagination: Some(ListPagination {
             page: 0,
@@ -335,7 +328,7 @@ pub fn proof_schema_from_create_request(
     credential_schemas: Vec<CredentialSchema>,
     organisation: Organisation,
     base_url: Option<&str>,
-) -> Result<ProofSchema, BusinessLogicError> {
+) -> Result<ProofSchema, ProofSchemaServiceError> {
     let mut proof_schema_claims: HashMap<CredentialSchemaId, Vec<ProofInputClaimSchema>> =
         HashMap::new();
     for proof_input_schema in &request.proof_input_schemas {
@@ -367,15 +360,14 @@ pub fn proof_schema_from_create_request(
                 .iter()
                 .find(|c| c.id == credential_schema_id)
                 .cloned()
-                .ok_or(BusinessLogicError::MissingCredentialSchema)?;
+                .ok_or(ProofSchemaServiceError::MissingCredentialSchema)?;
 
             let proof_input_schema = ProofInputSchema {
-                validity_constraint: proof_input_schema.validity_constraint,
                 claim_schemas: proof_schema_claims.get(&credential_schema_id).cloned(),
                 credential_schema: Some(credential_schema),
             };
 
-            Ok::<_, BusinessLogicError>(proof_input_schema)
+            Ok::<_, ProofSchemaServiceError>(proof_input_schema)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let id = Uuid::new_v4().into();

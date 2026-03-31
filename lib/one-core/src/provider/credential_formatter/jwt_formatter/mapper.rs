@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use anyhow::Context;
 use shared_types::DidValue;
 
-use super::model::{VP, VcClaim, VerifiableCredential};
+use super::model::VcClaim;
+use crate::error::ContextWithErrorCode;
+use crate::proto::jwt::Jwt;
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::Jwt;
 use crate::provider::credential_formatter::model::{
-    CredentialSchema, CredentialSchemaData, CredentialSubject, DetailCredential, Presentation,
+    CredentialSchema, CredentialSchemaData, CredentialSubject, DetailCredential, IdentifierDetails,
 };
+use crate::provider::did_method::error::DidMethodError;
 
 impl From<CredentialSchemaData> for Option<CredentialSchema> {
     fn from(credential_schema: CredentialSchemaData) -> Self {
@@ -25,9 +26,12 @@ impl From<CredentialSchemaData> for Option<CredentialSchema> {
 }
 
 impl TryFrom<Jwt<VcClaim>> for DetailCredential {
-    type Error = anyhow::Error;
+    type Error = FormatterError;
 
     fn try_from(jwt: Jwt<VcClaim>) -> Result<Self, Self::Error> {
+        let metadata_claims = jwt
+            .get_metadata_claims()
+            .error_while("getting metadata claims")?;
         let credential_subject = jwt
             .payload
             .custom
@@ -35,7 +39,11 @@ impl TryFrom<Jwt<VcClaim>> for DetailCredential {
             .credential_subject
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("JWT missing credential subject"))?;
+            .ok_or_else(|| {
+                FormatterError::CouldNotExtractCredentials(
+                    "JWT missing credential subject".to_string(),
+                )
+            })?;
 
         // credential subject id should be present in "sub" claim or "credentialSubject.id"
         let subject = jwt
@@ -43,19 +51,33 @@ impl TryFrom<Jwt<VcClaim>> for DetailCredential {
             .subject
             .as_deref()
             .or(credential_subject.id.as_ref().map(|url| url.as_str()))
-            .and_then(|did| DidValue::from_did_url(did).ok());
+            .and_then(|did| DidValue::from_did_url(did).ok())
+            .map(IdentifierDetails::Did);
 
+        let did = jwt
+            .payload
+            .issuer
+            .ok_or(FormatterError::CouldNotExtractCredentials(
+                "JWT missing credential issuer".to_string(),
+            ))?
+            .parse()
+            .map_err(DidMethodError::DidValueError)
+            .error_while("parsing issuer")?;
+
+        let mut claims = HashMap::from_iter(credential_subject.claims);
+        claims.extend(metadata_claims);
         Ok(Self {
             id: jwt.payload.jwt_id,
+            issuance_date: jwt.payload.issued_at,
             valid_from: jwt.payload.issued_at,
             valid_until: jwt.payload.expires_at,
             update_at: None,
             invalid_before: jwt.payload.invalid_before,
-            issuer_did: jwt.payload.issuer.map(|did| did.parse()).transpose()?,
+            issuer: IdentifierDetails::Did(did),
             subject,
             claims: CredentialSubject {
                 id: credential_subject.id,
-                claims: HashMap::from_iter(credential_subject.claims),
+                claims,
             },
             status: jwt.payload.custom.vc.credential_status,
             credential_schema: jwt
@@ -64,45 +86,6 @@ impl TryFrom<Jwt<VcClaim>> for DetailCredential {
                 .vc
                 .credential_schema
                 .and_then(|s| s.into_iter().next()),
-        })
-    }
-}
-
-impl TryFrom<Jwt<VP>> for Presentation {
-    type Error = FormatterError;
-
-    fn try_from(jwt: Jwt<VP>) -> Result<Self, Self::Error> {
-        let credentials = jwt
-            .payload
-            .custom
-            .vp
-            .verifiable_credential
-            .into_iter()
-            .map(|vc| match vc {
-                VerifiableCredential::Enveloped(enveloped) => {
-                    let (_type, token) = enveloped.id.split_once(',').ok_or(
-                        FormatterError::CouldNotExtractPresentation(
-                            "Enveloped VP id missing delimiter".to_string(),
-                        ),
-                    )?;
-                    Ok(token.to_string())
-                }
-                VerifiableCredential::Token(token) => Ok(token),
-            })
-            .collect::<Result<Vec<_>, FormatterError>>()?;
-
-        Ok(Presentation {
-            id: jwt.payload.jwt_id,
-            issued_at: jwt.payload.issued_at,
-            expires_at: jwt.payload.expires_at,
-            issuer_did: jwt
-                .payload
-                .issuer
-                .map(|did| did.parse().context("did parsing error"))
-                .transpose()
-                .map_err(|e| Self::Error::Failed(e.to_string()))?,
-            nonce: jwt.payload.custom.nonce,
-            credentials,
         })
     }
 }

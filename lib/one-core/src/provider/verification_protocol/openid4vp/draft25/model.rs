@@ -1,12 +1,15 @@
+use dcql::DcqlQuery;
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
+use serde_with::{DurationSeconds, serde_as, skip_serializing_none};
+use standardized_types::openid4vp::ResponseMode;
+use time::Duration;
 use url::Url;
 
+use crate::provider::verification_protocol::model::CommonParams;
 use crate::provider::verification_protocol::openid4vp::mapper::deserialize_with_serde_json;
 use crate::provider::verification_protocol::openid4vp::model::{
-    OpenID4VCPresentationHolderParams, OpenID4VCPresentationVerifierParams,
-    OpenID4VCRedirectUriParams, OpenID4VPClientMetadata, OpenID4VPPresentationDefinition,
-    default_presentation_url_scheme,
+    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
+    OpenID4VPClientMetadata, OpenID4VPPresentationDefinition, default_presentation_url_scheme,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -19,13 +22,30 @@ pub(crate) struct OpenID4Vp25Params {
 
     #[serde(default = "default_presentation_url_scheme")]
     pub url_scheme: String,
-    #[serde(default)]
-    pub x509_ca_certificate: Option<String>,
+
     pub holder: OpenID4VCPresentationHolderParams,
-    pub verifier: OpenID4VCPresentationVerifierParams,
+    pub verifier: OpenID4VC25PresentationVerifierParams,
     pub redirect_uri: OpenID4VCRedirectUriParams,
+
+    #[serde(flatten)]
+    pub common: CommonParams,
 }
 
+#[serde_as]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OpenID4VC25PresentationVerifierParams {
+    pub supported_client_id_schemes: Vec<ClientIdScheme>,
+    #[serde(default = "default_use_dcql")]
+    pub use_dcql: bool,
+    #[serde(default)]
+    #[serde_as(as = "Option<DurationSeconds<i64>>")]
+    pub interaction_expires_in: Option<Duration>,
+}
+
+fn default_use_dcql() -> bool {
+    true
+}
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct OpenID4VP25AuthorizationRequestQueryParams {
@@ -33,9 +53,10 @@ pub struct OpenID4VP25AuthorizationRequestQueryParams {
     pub state: Option<String>,
     pub nonce: Option<String>,
     pub response_type: Option<String>,
-    pub response_mode: Option<String>,
+    pub response_mode: Option<ResponseMode>,
     pub response_uri: Option<String>,
     pub client_metadata: Option<String>,
+    pub dcql_query: Option<String>,
     pub presentation_definition: Option<String>,
     pub presentation_definition_uri: Option<String>,
 
@@ -59,7 +80,7 @@ pub(crate) struct OpenID4VP25AuthorizationRequest {
     #[serde(default)]
     pub response_type: Option<String>,
     #[serde(default)]
-    pub response_mode: Option<String>,
+    pub response_mode: Option<ResponseMode>,
     #[serde(default)]
     pub response_uri: Option<Url>,
 
@@ -71,6 +92,9 @@ pub(crate) struct OpenID4VP25AuthorizationRequest {
 
     #[serde(default)]
     pub presentation_definition_uri: Option<Url>,
+
+    #[serde(default)]
+    pub dcql_query: Option<DcqlQuery>,
 
     #[serde(default)]
     pub redirect_uri: Option<String>,

@@ -3,57 +3,76 @@
 // https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-05.html
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use one_crypto::CryptoProvider;
 use serde::Deserialize;
 use serde_json::Value;
+use serde_with::{DurationSeconds, serde_as};
 use shared_types::DidValue;
-use time::Duration;
+use time::{Duration, OffsetDateTime};
+use uuid::Uuid;
 
+use super::error::FormatterError;
+use super::json_claims::{parse_claims, prepare_identifier};
+use super::model::{
+    AuthenticationFn, CredentialData, CredentialPresentation, CredentialSubject, DetailCredential,
+    Features, FormatterCapabilities, IdentifierDetails, SelectiveDisclosure, TokenVerifier,
+    VerificationFn,
+};
+use super::sdjwt::disclosures::parse_token;
+use super::sdjwt::mapper::vc_from_credential;
+use super::sdjwt::model::*;
+use super::sdjwt::{format_credential, model, prepare_sd_presentation};
+use super::vcdm::{VcdmCredential, vcdm_metadata_claims};
+use super::{CredentialFormatter, MetadataClaimSchema};
 use crate::config::core_config::{
     DidType, IdentifierType, IssuanceProtocolType, KeyAlgorithmType, KeyStorageType,
     RevocationType, VerificationProtocolType,
 };
-use crate::model::credential_schema::CredentialSchema;
-use crate::model::did::Did;
-use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::Jwt;
-use crate::provider::credential_formatter::model::{
-    AuthenticationFn, CredentialPresentation, CredentialSubject, DetailCredential,
-    ExtractPresentationCtx, Features, FormatPresentationCtx, FormatterCapabilities,
-    HolderBindingCtx, Presentation, SelectiveDisclosure, VerificationFn,
-};
-use crate::provider::credential_formatter::{CredentialFormatter, StatusListType};
+use crate::error::ContextWithErrorCode;
+use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use crate::model::credential_schema::{CredentialSchema, LayoutType};
+use crate::model::identifier::Identifier;
+use crate::proto::http_client::HttpClient;
+use crate::proto::jwt::Jwt;
+use crate::proto::jwt::model::jwt_metadata_claims;
+use crate::provider::credential_formatter::mapper::default_2_years;
+use crate::provider::data_type::provider::DataTypeProvider;
+use crate::provider::did_method::error::DidMethodError;
+use crate::provider::did_method::provider::DidMethodProvider;
+use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::revocation::bitstring_status_list::model::StatusPurpose;
 
 #[cfg(test)]
 mod test;
 
-use super::jwt::model::JWTPayload;
-use super::model::CredentialData;
-use super::vcdm::VcdmCredential;
-use crate::provider::credential_formatter::sdjwt::disclosures::parse_token;
-use crate::provider::credential_formatter::sdjwt::mapper::vc_from_credential;
-use crate::provider::credential_formatter::sdjwt::model::*;
-use crate::provider::credential_formatter::sdjwt::{
-    format_credential, model, prepare_sd_presentation,
-};
-use crate::provider::did_method::provider::DidMethodProvider;
-
 pub struct SDJWTFormatter {
     crypto: Arc<dyn CryptoProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
+    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    data_type_provider: Arc<dyn DataTypeProvider>,
+    client: Arc<dyn HttpClient>,
     params: Params,
 }
 
+#[serde_as]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Params {
     pub leeway: u64,
     pub embed_layout_properties: bool,
+    #[serde(default = "default_sd_array_elements")]
+    pub sd_array_elements: bool,
+    #[serde_as(as = "DurationSeconds<i64>")]
+    #[serde(default = "default_2_years")]
+    pub expiration_time: Duration,
+}
+
+fn default_sd_array_elements() -> bool {
+    true
 }
 
 #[async_trait]
@@ -66,16 +85,24 @@ impl CredentialFormatter for SDJWTFormatter {
         const HASH_ALG: &str = "sha-256";
         let mut vcdm = credential_data.vcdm;
 
+        let now = OffsetDateTime::now_utc();
+        if vcdm.valid_from.is_none() {
+            vcdm.valid_from = Some(now);
+        }
+        if vcdm.valid_until.is_none() {
+            vcdm.valid_until = Some(now + self.params.expiration_time);
+        }
+
         if !self.params.embed_layout_properties {
             vcdm.remove_layout_properties();
         }
 
         let inputs = SdJwtFormattingInputs {
-            holder_did: credential_data.holder_did,
+            holder_identifier: credential_data.holder_identifier,
             holder_key_id: credential_data.holder_key_id,
             leeway: self.params.leeway,
             token_type: "SD_JWT".to_string(),
-            swiyu_proof_of_possession: false,
+            issuer_certificate: None,
         };
 
         let cred = vcdm.clone();
@@ -89,7 +116,9 @@ impl CredentialFormatter for SDJWTFormatter {
             auth_fn,
             &*self.crypto.get_hasher(HASH_ALG)?,
             &*self.did_method_provider,
+            &*self.key_algorithm_provider,
             payload_from_digests,
+            self.params.sd_array_elements,
         )
         .await
     }
@@ -97,14 +126,14 @@ impl CredentialFormatter for SDJWTFormatter {
     async fn format_status_list(
         &self,
         _revocation_list_url: String,
-        _issuer_did: &Did,
+        _issuer_identifier: &Identifier,
         _encoded_list: String,
         _algorithm: KeyAlgorithmType,
         _auth_fn: AuthenticationFn,
         _status_purpose: StatusPurpose,
-        _status_list_type: StatusListType,
+        _status_list_type: RevocationType,
     ) -> Result<String, FormatterError> {
-        Err(FormatterError::Failed(
+        Err(FormatterError::CouldNotFormat(
             "Cannot format StatusList with SD-JWT formatter".to_string(),
         ))
     }
@@ -114,33 +143,24 @@ impl CredentialFormatter for SDJWTFormatter {
         token: &str,
         _credential_schema: Option<&'a CredentialSchema>,
         verification: VerificationFn,
-        holder_binding_ctx: Option<HolderBindingCtx>,
     ) -> Result<DetailCredential, FormatterError> {
-        let (credential, _) = extract_credentials_internal(
-            token,
-            Some(&(verification)),
-            &*self.crypto,
-            holder_binding_ctx,
-            Duration::seconds(self.get_leeway() as i64),
-        )
-        .await?;
-
-        Ok(credential)
+        extract_credentials_internal(token, Some(&(verification)), &*self.crypto, &*self.client)
+            .await
     }
 
-    async fn format_credential_presentation(
+    async fn prepare_selective_disclosure(
         &self,
         credential: CredentialPresentation,
-        holder_binding_ctx: Option<HolderBindingCtx>,
-        holder_binding_fn: Option<AuthenticationFn>,
     ) -> Result<String, FormatterError> {
         let model::DecomposedToken { jwt, .. } = parse_token(&credential.token)?;
-        let jwt: Jwt<VcClaim> = Jwt::build_from_token(jwt, None, None).await?;
+        let jwt: Jwt<VcClaim> = Jwt::build_from_token(jwt, None, None)
+            .await
+            .error_while("creating SD-JWT token")?;
         let hasher = self
             .crypto
             .get_hasher(&jwt.payload.custom.hash_alg.unwrap_or("sha-256".to_string()))?;
 
-        prepare_sd_presentation(credential, &*hasher, holder_binding_ctx, holder_binding_fn).await
+        prepare_sd_presentation(credential, &*hasher, &self.user_claims_path()).await
     }
 
     async fn extract_credentials_unverified<'a>(
@@ -148,56 +168,7 @@ impl CredentialFormatter for SDJWTFormatter {
         token: &str,
         _credential_schema: Option<&'a CredentialSchema>,
     ) -> Result<DetailCredential, FormatterError> {
-        let (credential, _) = extract_credentials_internal(
-            token,
-            None,
-            &*self.crypto,
-            None,
-            Duration::seconds(self.get_leeway() as i64),
-        )
-        .await?;
-
-        Ok(credential)
-    }
-
-    async fn format_presentation(
-        &self,
-        credentials: &[String],
-        _holder_did: &DidValue,
-        _algorithm: KeyAlgorithmType,
-        _auth_fn: AuthenticationFn,
-        _context: FormatPresentationCtx,
-    ) -> Result<String, FormatterError> {
-        if credentials.len() != 1 {
-            return Err(FormatterError::Failed(
-                "SD-JWT formatter only supports single credential presentations".to_string(),
-            ));
-        }
-
-        let credential = credentials.first().ok_or(FormatterError::Failed(
-            "Empty credential list passed to format_presentation".to_string(),
-        ))?;
-
-        Ok(credential.to_string())
-    }
-
-    async fn extract_presentation(
-        &self,
-        token: &str,
-        verification: VerificationFn,
-        context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        self.extract_presentation_internal(token, Some(&verification), context)
-            .await
-    }
-
-    async fn extract_presentation_unverified(
-        &self,
-        token: &str,
-        context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        self.extract_presentation_internal(token, None, context)
-            .await
+        extract_credentials_internal(token, None, &*self.crypto, &*self.client).await
     }
 
     fn get_leeway(&self) -> u64 {
@@ -209,9 +180,9 @@ impl CredentialFormatter for SDJWTFormatter {
             signing_key_algorithms: vec![
                 KeyAlgorithmType::Eddsa,
                 KeyAlgorithmType::Ecdsa,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
-            allowed_schema_ids: vec![],
+            ecosystem_schema_ids: vec![],
             datatypes: vec![
                 "STRING".to_string(),
                 "BOOLEAN".to_string(),
@@ -228,47 +199,198 @@ impl CredentialFormatter for SDJWTFormatter {
             features: vec![
                 Features::SelectiveDisclosure,
                 Features::SupportsCredentialDesign,
+                Features::SupportsCombinedPresentation,
+                Features::SupportsTxCode,
             ],
             selective_disclosure: vec![SelectiveDisclosure::AnyLevel],
-            issuance_did_methods: vec![
-                DidType::Key,
-                DidType::Web,
-                DidType::Jwk,
-                DidType::X509,
-                DidType::WebVh,
+            issuance_did_methods: vec![DidType::Key, DidType::Web, DidType::Jwk, DidType::WebVh],
+            issuance_exchange_protocols: vec![
+                IssuanceProtocolType::OpenId4VciDraft13,
+                IssuanceProtocolType::OpenId4VciFinal1_0,
             ],
-            issuance_exchange_protocols: vec![IssuanceProtocolType::OpenId4VciDraft13],
             proof_exchange_protocols: vec![
                 VerificationProtocolType::OpenId4VpDraft20,
                 VerificationProtocolType::OpenId4VpDraft25,
+                VerificationProtocolType::OpenId4VpFinal1_0,
                 VerificationProtocolType::OpenId4VpProximityDraft00,
             ],
-            revocation_methods: vec![
-                RevocationType::None,
-                RevocationType::BitstringStatusList,
-                RevocationType::Lvvc,
-            ],
+            revocation_methods: vec![RevocationType::BitstringStatusList],
             verification_key_algorithms: vec![
                 KeyAlgorithmType::Eddsa,
                 KeyAlgorithmType::Ecdsa,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
             verification_key_storages: vec![
                 KeyStorageType::Internal,
                 KeyStorageType::AzureVault,
                 KeyStorageType::SecureElement,
             ],
-            forbidden_claim_names: vec!["0".to_string()],
+            forbidden_claim_names: vec!["0".to_string(), "id".to_string()],
             issuance_identifier_types: vec![IdentifierType::Did],
-            verification_identifier_types: vec![IdentifierType::Did],
-            holder_identifier_types: vec![IdentifierType::Did],
+            verification_identifier_types: vec![IdentifierType::Did, IdentifierType::Certificate],
+            holder_identifier_types: vec![IdentifierType::Did, IdentifierType::Key],
             holder_key_algorithms: vec![
                 KeyAlgorithmType::Ecdsa,
                 KeyAlgorithmType::Eddsa,
-                KeyAlgorithmType::Dilithium,
+                KeyAlgorithmType::MlDsa,
             ],
             holder_did_methods: vec![DidType::Web, DidType::Key, DidType::Jwk, DidType::WebVh],
         }
+    }
+
+    fn get_metadata_claims(&self) -> Vec<MetadataClaimSchema> {
+        [jwt_metadata_claims(), vcdm_metadata_claims(Some("vc"))].concat()
+    }
+
+    fn user_claims_path(&self) -> Vec<String> {
+        vec!["vc".to_string(), "credentialSubject".to_string()]
+    }
+
+    async fn parse_credential(
+        &self,
+        credential: &str,
+        verification: Box<dyn TokenVerifier>,
+    ) -> Result<Credential, FormatterError> {
+        let now = OffsetDateTime::now_utc();
+
+        let (parsed_credential, issuer, _): (Jwt<VcClaim>, _, _) =
+            Jwt::build_from_token_with_disclosures(
+                credential,
+                &*self.crypto,
+                Some(&verification),
+                None,
+                &*self.client,
+            )
+            .await?;
+
+        let revocation_method = if let Some(status) = parsed_credential
+            .payload
+            .custom
+            .vc
+            .credential_status
+            .first()
+        {
+            match status.r#type.as_str() {
+                "BitstringStatusListEntry" => Some(RevocationType::BitstringStatusList),
+                _ => {
+                    return Err(FormatterError::CouldNotExtractCredentials(format!(
+                        "Unknown revocation method: {}",
+                        status.r#type
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+
+        let credential_id = Uuid::new_v4().into();
+        let vc_types = parsed_credential.payload.custom.vc.r#type.clone();
+        let schema_name = vc_types
+            .iter()
+            .find(|t| t != &"VerifiableCredential")
+            .cloned()
+            .unwrap_or_else(|| "VerifiableCredential".to_string());
+
+        // Get metadata claims first (includes vc type and standard JWT claims)
+        let metadata_claims = parsed_credential
+            .get_metadata_claims()
+            .error_while("getting metadata claims")?;
+
+        // Parse claims from credential subject
+        let credential_subject = parsed_credential
+            .payload
+            .custom
+            .vc
+            .credential_subject
+            .first()
+            .ok_or_else(|| {
+                FormatterError::CouldNotExtractCredentials("Missing credential subject".to_string())
+            })?;
+
+        let (mut claims, mut claim_schemas) = parse_claims(
+            HashMap::from_iter(credential_subject.claims.clone()),
+            self.data_type_provider.as_ref(),
+            credential_id,
+        )?;
+
+        // Add parsed metadata claims
+        let (metadata_claims, metadata_claim_schemas) = parse_claims(
+            metadata_claims,
+            self.data_type_provider.as_ref(),
+            credential_id,
+        )?;
+        claims.extend(metadata_claims);
+        claim_schemas.extend(metadata_claim_schemas);
+
+        let schema_id = parsed_credential
+            .payload
+            .custom
+            .vc
+            .credential_schema
+            .as_ref()
+            .and_then(|schema| schema.first())
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| schema_name.clone());
+
+        let schema = CredentialSchema {
+            id: Uuid::new_v4().into(),
+            deleted_at: None,
+            created_date: now,
+            last_modified: now,
+            name: schema_name,
+            format: "".into(), // Will be overridden based on config priority
+            revocation_method: revocation_method.map(|v| v.to_string().into()),
+            key_storage_security: None,
+            layout_type: LayoutType::Card,
+            layout_properties: None,
+            schema_id,
+            imported_source_url: "".to_string(),
+            allow_suspension: false,
+            requires_wallet_instance_attestation: false,
+            claim_schemas: Some(claim_schemas),
+            organisation: None,
+            transaction_code: None,
+        };
+
+        let issuer_identifier = prepare_identifier(&issuer, self.key_algorithm_provider.as_ref())?;
+        let holder_identifier = parsed_credential
+            .payload
+            .subject
+            .map(|did| DidValue::from_str(&did))
+            .transpose()
+            .map_err(DidMethodError::DidValueError)
+            .error_while("parsing subject DID")?
+            .map(IdentifierDetails::Did)
+            .map(|details| prepare_identifier(&details, self.key_algorithm_provider.as_ref()))
+            .transpose()?;
+
+        Ok(Credential {
+            id: credential_id,
+            created_date: now,
+            issuance_date: parsed_credential.payload.issued_at,
+            last_modified: now,
+            deleted_at: None,
+            protocol: "".to_string(),
+            redirect_uri: None,
+            role: CredentialRole::Holder,
+            state: CredentialStateEnum::Accepted,
+            suspend_end_date: None,
+            profile: None,
+            credential_blob_id: None,
+            wallet_unit_attestation_blob_id: None,
+            wallet_instance_attestation_blob_id: None,
+            claims: Some(claims),
+            issuer_certificate: issuer_identifier
+                .certificates
+                .as_ref()
+                .and_then(|certs| certs.first().cloned()),
+            issuer_identifier: Some(issuer_identifier),
+            holder_identifier,
+            schema: Some(schema),
+            interaction: None,
+            key: None,
+            webhook_url: None,
+        })
     }
 }
 
@@ -277,32 +399,33 @@ impl SDJWTFormatter {
         params: Params,
         crypto: Arc<dyn CryptoProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
+        key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+        data_type_provider: Arc<dyn DataTypeProvider>,
+        client: Arc<dyn HttpClient>,
     ) -> Self {
         Self {
             params,
             crypto,
             did_method_provider,
+            key_algorithm_provider,
+            data_type_provider,
+            client,
         }
     }
 }
 
-pub(super) async fn extract_credentials_internal(
+pub(crate) async fn extract_credentials_internal(
     token: &str,
     verification: Option<&VerificationFn>,
     crypto: &dyn CryptoProvider,
-    holder_binding_ctx: Option<HolderBindingCtx>,
-    leeway: Duration,
-) -> Result<(DetailCredential, Option<JWTPayload<KeyBindingPayload>>), FormatterError> {
-    let (jwt, key_binding_payload): (Jwt<VcClaim>, Option<JWTPayload<KeyBindingPayload>>) =
-        Jwt::build_from_token_with_disclosures(
-            token,
-            crypto,
-            verification,
-            holder_binding_ctx,
-            leeway,
-            false,
-        )
-        .await?;
+    http_client: &dyn HttpClient,
+) -> Result<DetailCredential, FormatterError> {
+    let (jwt, issuer_details, _): (Jwt<VcClaim>, _, _) =
+        Jwt::build_from_token_with_disclosures(token, crypto, verification, None, http_client)
+            .await?;
+    let metadata_claims = jwt
+        .get_metadata_claims()
+        .error_while("getting metadata claims")?;
     let credential_subject = jwt
         .payload
         .custom
@@ -310,104 +433,71 @@ pub(super) async fn extract_credentials_internal(
         .credential_subject
         .into_iter()
         .next()
-        .ok_or_else(|| FormatterError::Failed("Missing credential subject".to_string()))?;
+        .ok_or_else(|| {
+            FormatterError::CouldNotExtractCredentials("Missing credential subject".to_string())
+        })?;
 
-    let claims = CredentialSubject {
+    let mut claims = CredentialSubject {
         id: credential_subject.id,
         claims: HashMap::from_iter(credential_subject.claims),
     };
+    claims.claims.extend(metadata_claims);
 
-    let issuer_did = match (jwt.payload.issuer, jwt.payload.custom.vc.issuer) {
+    let issuer = match (jwt.payload.issuer, jwt.payload.custom.vc.issuer) {
         (None, None) => {
-            return Err(FormatterError::Failed(
+            return Err(FormatterError::CouldNotExtractCredentials(
                 "Missing issuer in SD-JWT".to_string(),
             ));
         }
-        (None, Some(iss)) => iss.to_did_value()?,
-        (Some(iss), None) => iss
-            .parse()
-            .map_err(|err| FormatterError::Failed(format!("Invalid issuer did: {err}")))?,
+        (None, Some(iss)) => IdentifierDetails::Did(iss.to_did_value()?),
+        (Some(_), None) => issuer_details,
         (Some(i1), Some(i2)) => {
             if i1 != i2.as_url().as_str() {
-                return Err(FormatterError::Failed(
+                return Err(FormatterError::CouldNotExtractCredentials(
                     "Invalid issuer in SD-JWT".to_string(),
                 ));
             }
-
-            i2.to_did_value()?
+            IdentifierDetails::Did(i2.to_did_value()?)
         }
     };
 
-    Ok((
-        DetailCredential {
-            id: jwt.payload.jwt_id,
-            valid_from: jwt.payload.issued_at,
-            valid_until: jwt.payload.expires_at,
-            update_at: None,
-            invalid_before: jwt.payload.invalid_before,
-            issuer_did: Some(issuer_did),
-            subject: jwt
-                .payload
-                .subject
-                .map(|did| did.parse().context("did parsing error"))
-                .transpose()
-                .map_err(|e| FormatterError::Failed(e.to_string()))?,
-            claims,
-            status: jwt.payload.custom.vc.credential_status,
-            credential_schema: jwt
-                .payload
-                .custom
-                .vc
-                .credential_schema
-                .and_then(|schema| schema.into_iter().next()),
-        },
-        key_binding_payload,
-    ))
-}
-
-impl SDJWTFormatter {
-    async fn extract_presentation_internal(
-        &self,
-        token: &str,
-        verification: Option<&VerificationFn>,
-        _context: ExtractPresentationCtx,
-    ) -> Result<Presentation, FormatterError> {
-        // W3C VP SD-JWT tokens and SD-JWT tokens.
-        let as_jwt_vp: Result<Jwt<Sdvp>, FormatterError> =
-            Jwt::build_from_token(token, verification, None)
-                .await
-                .map_err(|e| FormatterError::Failed(format!("Failed to build Jwt<Sdvp>: {e}")));
-
-        if let Ok(jwt_vp) = as_jwt_vp {
-            return jwt_vp.try_into().map_err(|e| {
-                FormatterError::Failed(format!("Failed to convert Jwt<Sdvp> to Presentation: {e}"))
-            });
+    let subject = match (
+        jwt.payload.subject.as_ref(),
+        jwt.payload.proof_of_possession_key.as_ref(),
+    ) {
+        (Some(sub), None) if sub.starts_with("did:") => {
+            let did = DidValue::from_str(sub)
+                .map_err(DidMethodError::DidValueError)
+                .error_while("parsing subject DID")?;
+            Some(IdentifierDetails::Did(did))
         }
+        (_, Some(holder_key)) => Some(IdentifierDetails::Key(holder_key.jwk.jwk().clone())),
+        (None, None) => None,
+        (Some(sub), None) => {
+            return Err(FormatterError::CouldNotExtractCredentials(format!(
+                "Could not determine public key for subject: `{sub}`"
+            )));
+        }
+    };
 
-        let (credential, proof_of_key_possesion) = extract_credentials_internal(
-            token,
-            verification,
-            &*self.crypto,
-            None,
-            Duration::seconds(self.get_leeway() as i64),
-        )
-        .await?;
-
-        let proof_of_key_possesion = proof_of_key_possesion.ok_or(FormatterError::Failed(
-            "Missing proof of key possesion".to_string(),
-        ))?;
-
-        let presentation = Presentation {
-            id: proof_of_key_possesion.jwt_id,
-            issued_at: proof_of_key_possesion.issued_at,
-            expires_at: proof_of_key_possesion.expires_at,
-            issuer_did: credential.subject,
-            nonce: Some(proof_of_key_possesion.custom.nonce),
-            credentials: vec![token.to_string()],
-        };
-
-        Ok(presentation)
-    }
+    Ok(DetailCredential {
+        id: jwt.payload.jwt_id,
+        issuance_date: jwt.payload.issued_at,
+        valid_from: jwt.payload.issued_at,
+        valid_until: jwt.payload.expires_at,
+        update_at: None,
+        invalid_before: jwt.payload.invalid_before,
+        issuer,
+        subject,
+        claims,
+        status: jwt.payload.custom.vc.credential_status,
+        credential_schema: jwt
+            .payload
+            .custom
+            .vc
+            .credential_schema
+            .and_then(|schema| schema.into_iter().next()),
+    })
 }
 
 fn credential_to_claims(credential: &VcdmCredential) -> Result<Value, FormatterError> {
@@ -419,11 +509,15 @@ fn credential_to_claims(credential: &VcdmCredential) -> Result<Value, FormatterE
                 .id
                 .as_ref()
                 .map(|id| ("id".to_string(), serde_json::json!(id)));
-            let claims = cs.claims.clone().into_iter();
+            let claims = cs
+                .claims
+                .clone()
+                .into_iter()
+                .map(|(key, val)| (key, val.into()));
             let object = serde_json::Map::from_iter(claims.chain(id));
             serde_json::Value::Object(object)
         })
         .ok_or_else(|| {
-            FormatterError::Failed("Credential is missing credential subject".to_string())
+            FormatterError::CouldNotFormat("Credential is missing credential subject".to_string())
         })
 }

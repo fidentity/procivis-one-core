@@ -1,5 +1,6 @@
 use one_core::model::remote_entity_cache::{CacheType, RemoteEntityCacheEntry};
-use time::OffsetDateTime;
+use similar_asserts::assert_eq;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::utils::context::TestContext;
@@ -103,11 +104,15 @@ fn test_entry(cache_type: CacheType, persistent: bool) -> RemoteEntityCacheEntry
         id,
         created_date: now,
         last_modified: now,
+        expiration_date: if persistent {
+            None
+        } else {
+            Some(now + Duration::days(1))
+        },
         value: format!("some value for {id}").into_bytes(),
         key: format!("some key for {id}"),
-        hit_counter: 0,
+        last_used: now,
         r#type: cache_type,
         media_type: None,
-        persistent,
     }
 }

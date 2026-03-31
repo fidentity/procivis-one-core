@@ -1,6 +1,7 @@
 use core_server::endpoint::ssi::dto::{
     PatchTrustEntityActionRestDTO, PatchTrustEntityRequestRestDTO,
 };
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 use wiremock::http::Method;
 use wiremock::matchers::{method, path};
@@ -47,6 +48,7 @@ async fn test_update_remote_trust_entity_success() {
                 terms_url: None,
                 privacy_url: None,
                 role: None,
+                content: None,
             },
         )
         .await;
@@ -84,6 +86,7 @@ async fn test_update_remote_trust_entity_invalid_action() {
                 terms_url: None,
                 privacy_url: None,
                 role: None,
+                content: None,
             },
         )
         .await;

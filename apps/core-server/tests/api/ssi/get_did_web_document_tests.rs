@@ -1,5 +1,6 @@
 use one_core::model::did::{KeyRole, RelatedKey};
 use serde_json::Value;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::fixtures::{self, TestingDidParams};
@@ -28,14 +29,17 @@ async fn test_get_did_web_document_ecdsa_success() {
                 RelatedKey {
                     role: KeyRole::Authentication,
                     key: key.clone(),
+                    reference: format!("key-{}", key.id),
                 },
                 RelatedKey {
                     role: KeyRole::KeyAgreement,
                     key: key.clone(),
+                    reference: format!("key-{}", key.id),
                 },
                 RelatedKey {
                     role: KeyRole::AssertionMethod,
                     key: key.clone(),
+                    reference: format!("key-{}", key.id),
                 },
             ]),
             ..Default::default()
@@ -120,14 +124,17 @@ async fn test_get_did_web_document_eddsa_success() {
                 RelatedKey {
                     role: KeyRole::Authentication,
                     key: key.clone(),
+                    reference: "1".to_string(),
                 },
                 RelatedKey {
                     role: KeyRole::KeyAgreement,
                     key: key.clone(),
+                    reference: "1".to_string(),
                 },
                 RelatedKey {
                     role: KeyRole::AssertionMethod,
                     key,
+                    reference: "1".to_string(),
                 },
             ]),
             ..Default::default()

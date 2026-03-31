@@ -3,10 +3,11 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
 use one_crypto::{CryptoProvider, SignerError};
+use standardized_types::jwk::PrivateJwk;
 
 use super::dto::{
     AzureHsmGenerateKeyRequest, AzureHsmGenerateKeyResponseKey, AzureHsmGetTokenRequest,
-    AzureHsmSignRequest,
+    AzureHsmImportKeyRequest, AzureHsmSignRequest,
 };
 use crate::provider::key_storage::error::KeyStorageError;
 
@@ -28,6 +29,15 @@ pub(super) fn create_generate_key_request() -> AzureHsmGenerateKeyRequest {
         curve_name: "P-256".to_string(),
         key_operations: vec!["sign".to_string(), "verify".to_string()],
     }
+}
+
+pub(super) fn create_import_key_request(
+    jwk: PrivateJwk,
+) -> Result<AzureHsmImportKeyRequest, KeyStorageError> {
+    Ok(AzureHsmImportKeyRequest {
+        key: jwk.try_into()?,
+        is_hsm: true,
+    })
 }
 
 pub(super) fn create_sign_request(

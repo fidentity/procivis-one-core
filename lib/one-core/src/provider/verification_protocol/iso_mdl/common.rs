@@ -16,9 +16,10 @@ use sha2::{Digest, Sha256};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use super::device_engagement::DeviceEngagement;
-use crate::common_mapper::secret_slice;
-use crate::provider::credential_formatter::mdoc_formatter::mdoc::{
-    EmbeddedCbor, SessionTranscript,
+use crate::mapper::secret_slice;
+use crate::provider::credential_formatter::mdoc_formatter::util::EmbeddedCbor;
+use crate::provider::presentation_formatter::mso_mdoc::session_transcript::{
+    Handover, SessionTranscript,
 };
 use crate::provider::verification_protocol::error::VerificationProtocolError;
 
@@ -58,8 +59,8 @@ impl TryFrom<Vec<u8>> for Chunk {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         match value.as_slice() {
-            [0, ..] => Ok(Self::Last(value[1..].to_vec())),
-            [1, ..] => Ok(Self::Next(value[1..].to_vec())),
+            [0, tail @ ..] => Ok(Self::Last(tail.to_vec())),
+            [1, tail @ ..] => Ok(Self::Next(tail.to_vec())),
             _ => Err(anyhow!("invalid data format")),
         }
     }
@@ -376,27 +377,27 @@ fn x25519_from_cose_key(key: CoseKey) -> anyhow::Result<x25519_dalek::PublicKey>
 pub(crate) fn create_session_transcript_bytes(
     device_engagement_bytes: EmbeddedCbor<DeviceEngagement>,
     e_reader_key_bytes: EmbeddedCbor<EReaderKey>,
+    handover: Option<Handover>,
 ) -> Result<EmbeddedCbor<SessionTranscript>, VerificationProtocolError> {
     let session_transcript = SessionTranscript {
         device_engagement_bytes: Some(device_engagement_bytes),
         e_reader_key_bytes: Some(e_reader_key_bytes),
-        handover: None,
+        handover,
     };
 
-    EmbeddedCbor::new(session_transcript)
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))
+    Ok(EmbeddedCbor::new(session_transcript)?)
 }
 
 pub(crate) fn to_cbor<T: Serialize>(value: &T) -> Result<Vec<u8>, VerificationProtocolError> {
     let mut buff = vec![];
-    ciborium::into_writer(value, &mut buff)
-        .context("serialization error")
-        .map_err(VerificationProtocolError::Other)?;
+    ciborium::into_writer(value, &mut buff)?;
     Ok(buff)
 }
 
 #[cfg(test)]
 mod test {
+    use similar_asserts::assert_eq;
+
     use super::*;
 
     #[test]

@@ -4,41 +4,52 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures::FutureExt;
 use resolver::{StatusListCacheEntry, StatusListResolver};
 use serde::{Deserialize, Serialize};
-use shared_types::{CredentialId, DidId, DidValue};
+use shared_types::{CredentialId, RevocationListEntryId, RevocationListId, RevocationMethodId};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
-use crate::config::core_config::KeyAlgorithmType;
-use crate::model::credential::{Credential, CredentialStateEnum};
-use crate::model::did::{Did, KeyRole};
+use self::model::StatusPurpose;
+use self::resolver::StatusListCachingLoader;
+use crate::config::core_config::{KeyAlgorithmType, RevocationType};
+use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::model::certificate::Certificate;
+use crate::model::common::LockType;
+use crate::model::credential::Credential;
+use crate::model::did::KeyRole;
+use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::revocation_list::{
-    RevocationListPurpose, StatusListCredentialFormat, StatusListType,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationListPurpose, StatusListCredentialFormat, UpdateRevocationListEntryId,
+    UpdateRevocationListEntryRequest,
 };
+use crate::model::wallet_unit_attested_key::{
+    WalletUnitAttestedKey, WalletUnitAttestedKeyRevocationInfo,
+};
+use crate::proto::certificate_validator::CertificateValidator;
+use crate::proto::http_client::HttpClient;
+use crate::proto::key_verification::KeyVerification;
+use crate::proto::transaction_manager::TransactionManager;
 use crate::provider::credential_formatter::CredentialFormatter;
-use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::model::CredentialStatus;
+use crate::provider::credential_formatter::model::{CredentialStatus, IdentifierDetails};
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::credential_formatter::vcdm::VcdmCredential;
 use crate::provider::did_method::provider::DidMethodProvider;
-use crate::provider::http_client::HttpClient;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::RevocationMethod;
-use crate::provider::revocation::bitstring_status_list::model::{
-    RevocationUpdateData, StatusPurpose,
-};
-use crate::provider::revocation::bitstring_status_list::resolver::StatusListCachingLoader;
 use crate::provider::revocation::error::RevocationError;
 use crate::provider::revocation::model::{
-    CredentialAdditionalData, CredentialDataByRole, CredentialRevocationInfo,
-    CredentialRevocationState, JsonLdContext, Operation, RevocationListId,
-    RevocationMethodCapabilities, RevocationUpdate,
+    CredentialDataByRole, CredentialRevocationInfo, Operation, RevocationMethodCapabilities,
+    RevocationState,
 };
 use crate::provider::revocation::utils::status_purpose_to_revocation_state;
-use crate::util::key_verification::KeyVerification;
-use crate::util::params::convert_params;
+use crate::repository::error::DataLayerError;
+use crate::repository::revocation_list_repository::RevocationListRepository;
+use crate::util::key_selection::KeyFilter;
 
-mod jwt_formatter;
 pub mod model;
 pub mod resolver;
 pub mod util;
@@ -63,35 +74,47 @@ impl Default for Params {
 }
 
 pub struct BitstringStatusList {
-    pub core_base_url: Option<String>,
-    pub key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    pub did_method_provider: Arc<dyn DidMethodProvider>,
-    pub key_provider: Arc<dyn KeyProvider>,
-    pub caching_loader: StatusListCachingLoader,
-    pub formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    config_id: RevocationMethodId,
+    core_base_url: Option<String>,
+    key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    did_method_provider: Arc<dyn DidMethodProvider>,
+    key_provider: Arc<dyn KeyProvider>,
+    caching_loader: StatusListCachingLoader,
+    formatter_provider: Arc<dyn CredentialFormatterProvider>,
+    certificate_validator: Arc<dyn CertificateValidator>,
+    revocation_list_repository: Arc<dyn RevocationListRepository>,
+    transaction_manager: Arc<dyn TransactionManager>,
     resolver: Arc<StatusListResolver>,
     params: Params,
 }
 
 impl BitstringStatusList {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        config_id: RevocationMethodId,
         core_base_url: Option<String>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         key_provider: Arc<dyn KeyProvider>,
         caching_loader: StatusListCachingLoader,
         formatter_provider: Arc<dyn CredentialFormatterProvider>,
+        certificate_validator: Arc<dyn CertificateValidator>,
+        revocation_list_repository: Arc<dyn RevocationListRepository>,
+        transaction_manager: Arc<dyn TransactionManager>,
         client: Arc<dyn HttpClient>,
         params: Option<Params>,
     ) -> Self {
         Self {
+            config_id,
             core_base_url,
             key_algorithm_provider,
             did_method_provider,
             key_provider,
             caching_loader,
             formatter_provider,
+            certificate_validator,
+            revocation_list_repository,
+            transaction_manager,
             resolver: Arc::new(StatusListResolver::new(client)),
             params: params.unwrap_or(Params {
                 format: StatusListCredentialFormat::Jwt,
@@ -109,23 +132,14 @@ impl RevocationMethod for BitstringStatusList {
     async fn add_issued_credential(
         &self,
         credential: &Credential,
-        additional_data: Option<CredentialAdditionalData>,
-    ) -> Result<(Option<RevocationUpdate>, Vec<CredentialRevocationInfo>), RevocationError> {
-        let data = additional_data.ok_or(RevocationError::MappingError(
-            "additional_data is None".to_string(),
-        ))?;
-
-        let issuer_did = credential
-            .issuer_identifier
-            .as_ref()
-            .ok_or(RevocationError::MappingError(
-                "issuer identifier is None".to_string(),
-            ))?
-            .did
-            .as_ref()
-            .ok_or(RevocationError::MappingError(
-                "issuer did is None".to_string(),
-            ))?;
+    ) -> Result<Vec<CredentialRevocationInfo>, RevocationError> {
+        let issuer_identifier =
+            credential
+                .issuer_identifier
+                .as_ref()
+                .ok_or(RevocationError::MappingError(
+                    "issuer identifier is None".to_string(),
+                ))?;
 
         let credential_schema = credential
             .schema
@@ -134,85 +148,110 @@ impl RevocationMethod for BitstringStatusList {
                 "credential schema is None".to_string(),
             ))?;
 
-        let index_on_status_list = self.get_credential_index_on_revocation_list(
-            &data.credentials_by_issuer_did,
-            &credential.id,
-            &issuer_did.id,
-        )?;
-
-        let mut revocation_info = vec![CredentialRevocationInfo {
-            credential_status: self.create_credential_status(
-                &data.revocation_list_id,
-                index_on_status_list,
-                "revocation",
-            )?,
-        }];
+        let mut revocation_infos = vec![
+            self.create_credential_entry(
+                credential.id,
+                issuer_identifier,
+                RevocationListPurpose::Revocation,
+            )
+            .await?,
+        ];
 
         if credential_schema.allow_suspension {
-            revocation_info.push(CredentialRevocationInfo {
-                credential_status: self.create_credential_status(
-                    data.suspension_list_id
-                        .as_ref()
-                        .ok_or(RevocationError::MappingError(
-                            "suspension id is None".to_string(),
-                        ))?,
-                    index_on_status_list,
-                    "suspension",
-                )?,
-            });
+            revocation_infos.push(
+                self.create_credential_entry(
+                    credential.id,
+                    issuer_identifier,
+                    RevocationListPurpose::Suspension,
+                )
+                .await?,
+            );
         }
 
-        Ok((None, revocation_info))
+        Ok(revocation_infos)
     }
 
     async fn mark_credential_as(
         &self,
         credential: &Credential,
-        new_state: CredentialRevocationState,
-        additional_data: Option<CredentialAdditionalData>,
-    ) -> Result<RevocationUpdate, RevocationError> {
-        let additional_data = additional_data.ok_or(RevocationError::MappingError(
-            "additional_data is None".to_string(),
-        ))?;
+        new_state: RevocationState,
+    ) -> Result<(), RevocationError> {
+        let issuer_identifier =
+            credential
+                .issuer_identifier
+                .as_ref()
+                .cloned()
+                .ok_or(RevocationError::MappingError(
+                    "issuer identifier is None".to_string(),
+                ))?;
 
-        match new_state {
-            CredentialRevocationState::Revoked => {
-                self.mark_credential_as_impl(
-                    RevocationListPurpose::Revocation,
-                    credential,
-                    true,
-                    additional_data,
-                )
-                .await
-            }
-            CredentialRevocationState::Valid => {
-                self.mark_credential_as_impl(
-                    RevocationListPurpose::Suspension,
-                    credential,
-                    false,
-                    additional_data,
-                )
-                .await
-            }
-            CredentialRevocationState::Suspended { .. } => {
-                self.mark_credential_as_impl(
-                    RevocationListPurpose::Suspension,
-                    credential,
-                    true,
-                    additional_data,
-                )
-                .await
-            }
-        }
+        let purpose = if new_state == RevocationState::Revoked {
+            RevocationListPurpose::Revocation
+        } else {
+            RevocationListPurpose::Suspension
+        };
+
+        let current_list = self
+            .revocation_list_repository
+            .get_revocation_by_issuer_identifier_id(
+                issuer_identifier.id,
+                credential.issuer_certificate.as_ref().map(|c| c.id),
+                purpose,
+                &self.config_id,
+                &Default::default(),
+            )
+            .await
+            .error_while("getting revocation list")?
+            .ok_or(RevocationError::MissingCredentialIndexOnRevocationList(
+                credential.id,
+                issuer_identifier.id,
+            ))?;
+
+        self.revocation_list_repository
+            .update_entry(
+                UpdateRevocationListEntryId::Credential(credential.id),
+                UpdateRevocationListEntryRequest {
+                    status: Some(new_state.into()),
+                },
+            )
+            .await
+            .error_while("updating revocation list entry")?;
+
+        let current_entries = self
+            .revocation_list_repository
+            .get_entries(current_list.id)
+            .await
+            .error_while("getting revocation list entries")?;
+
+        let encoded_list = generate_bitstring_from_entries(current_entries, purpose).await?;
+
+        let list_credential = format_status_list_credential(
+            &current_list.id,
+            &issuer_identifier,
+            encoded_list,
+            purpose,
+            &*self.key_provider,
+            &self.key_algorithm_provider,
+            &self.core_base_url,
+            &*self.get_formatter_for_issuance(&issuer_identifier)?,
+        )
+        .await?;
+
+        self.revocation_list_repository
+            .update_formatted_list(&current_list.id, list_credential.into_bytes())
+            .await
+            .error_while("updating revocation list")?;
+
+        Ok(())
     }
 
     async fn check_credential_revocation_status(
         &self,
         credential_status: &CredentialStatus,
-        _issuer_did: &DidValue,
+        _issuer_details: &IdentifierDetails,
         _additional_credential_data: Option<CredentialDataByRole>,
         force_refresh: bool,
-    ) -> Result<CredentialRevocationState, RevocationError> {
+    ) -> Result<RevocationState, RevocationError> {
         if credential_status.r#type != CREDENTIAL_STATUS_TYPE {
             return Err(RevocationError::ValidationError(format!(
                 "Invalid credential status type: {}",
@@ -242,7 +281,8 @@ impl RevocationMethod for BitstringStatusList {
         let (content, media_type) = &self
             .caching_loader
             .get(list_url, self.resolver.clone(), force_refresh)
-            .await?;
+            .await
+            .error_while("getting bitstring status list")?;
 
         let response: StatusListCacheEntry = serde_json::from_slice(content)?;
         let response_content = String::from_utf8(response.content)?;
@@ -268,27 +308,88 @@ impl RevocationMethod for BitstringStatusList {
             key_algorithm_provider: self.key_algorithm_provider.clone(),
             did_method_provider: self.did_method_provider.clone(),
             key_role: KeyRole::AssertionMethod,
+            certificate_validator: self.certificate_validator.clone(),
         });
 
         let status_credential = self
             .get_formatter_for_parsing(content_type, is_bbs)?
-            .extract_credentials(&response_content, None, key_verification, None)
-            .await?;
+            .extract_credentials(&response_content, None, key_verification)
+            .await
+            .error_while("parsing status list")?;
 
         let encoded_list = status_credential
             .claims
             .claims
             .get("encodedList")
-            .and_then(|value| value.as_str())
+            .and_then(|value| value.value.as_str())
             .ok_or(RevocationError::ValidationError(
                 "Missing encodedList in status credential".to_string(),
             ))?;
 
-        if util::extract_bitstring_index(encoded_list.to_owned(), list_index)? {
+        if util::extract_bitstring_index(encoded_list.to_owned(), list_index)
+            .error_while("extracting bitstring index")?
+        {
             status_purpose_to_revocation_state(credential_status.status_purpose.as_ref())
         } else {
-            Ok(CredentialRevocationState::Valid)
+            Ok(RevocationState::Valid)
         }
+    }
+
+    async fn add_issued_attestation(
+        &self,
+        _attestation: &WalletUnitAttestedKey,
+    ) -> Result<CredentialRevocationInfo, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn get_attestation_revocation_info(
+        &self,
+        _key_info: &WalletUnitAttestedKeyRevocationInfo,
+    ) -> Result<CredentialRevocationInfo, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn update_attestation_entries(
+        &self,
+        _keys: Vec<WalletUnitAttestedKeyRevocationInfo>,
+        _new_state: RevocationState,
+    ) -> Result<(), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Attestations not supported".to_string(),
+        ))
+    }
+
+    async fn add_signature<'a>(
+        &self,
+        _signature_type: String,
+        _issuer: &'a Identifier,
+        _certificate: Option<&'a Certificate>,
+    ) -> Result<(RevocationListEntryId, CredentialRevocationInfo), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Signatures not supported".to_string(),
+        ))
+    }
+
+    async fn revoke_signature(
+        &self,
+        _signature_id: RevocationListEntryId,
+    ) -> Result<(), RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Signatures not supported".to_string(),
+        ))
+    }
+
+    async fn get_updated_list(
+        &self,
+        _list_id: RevocationListId,
+    ) -> Result<Vec<u8>, RevocationError> {
+        Err(RevocationError::OperationNotSupported(
+            "Updated list not supported".to_string(),
+        ))
     }
 
     fn get_capabilities(&self) -> RevocationMethodCapabilities {
@@ -296,21 +397,29 @@ impl RevocationMethod for BitstringStatusList {
             operations: vec![Operation::Revoke, Operation::Suspend],
         }
     }
-
-    fn get_params(&self) -> Result<serde_json::Value, RevocationError> {
-        convert_params(self.params.clone()).map_err(RevocationError::from)
-    }
-
-    fn get_json_ld_context(&self) -> Result<JsonLdContext, RevocationError> {
-        Ok(JsonLdContext::default())
-    }
 }
 
 impl BitstringStatusList {
     fn get_formatter_for_issuance(
         &self,
-        is_bbs: bool,
+        issuer_identifier: &Identifier,
     ) -> Result<Arc<dyn CredentialFormatter>, RevocationError> {
+        let issuer_did = issuer_identifier
+            .did
+            .as_ref()
+            .ok_or(RevocationError::MappingError(
+                "issuer did is None".to_string(),
+            ))?;
+
+        let is_bbs = !issuer_did
+            .keys
+            .as_ref()
+            .ok_or(RevocationError::MappingError(
+                "issuer_did keys are None".to_string(),
+            ))?
+            .iter()
+            .any(|key| key.key.key_type == KeyAlgorithmType::BbsPlus.to_string());
+
         let format = match self.params.format {
             StatusListCredentialFormat::Jwt => self.params.format.to_string(),
             StatusListCredentialFormat::JsonLdClassic => {
@@ -320,10 +429,14 @@ impl BitstringStatusList {
                     self.params.format.to_string()
                 }
             }
-        };
+            format => {
+                return Err(RevocationError::FormatterNotFound(format.to_string()));
+            }
+        }
+        .into();
 
         self.formatter_provider
-            .get_formatter(format.as_str())
+            .get_credential_formatter(&format)
             .ok_or_else(|| RevocationError::FormatterNotFound(self.params.format.to_string()))
     }
 
@@ -346,251 +459,313 @@ impl BitstringStatusList {
                     "Invalid status list Content-Type: {content_type}"
                 )));
             }
-        };
+        }
+        .to_string()
+        .into();
 
         self.formatter_provider
-            .get_formatter(format)
+            .get_credential_formatter(&format)
             .ok_or_else(|| RevocationError::FormatterNotFound(format.to_string()))
-    }
-
-    fn get_credential_index_on_revocation_list(
-        &self,
-        credentials_by_issuer_did: &[Credential],
-        credential_id: &CredentialId,
-        issuer_did_id: &DidId,
-    ) -> Result<usize, RevocationError> {
-        let index = credentials_by_issuer_did
-            .iter()
-            .position(|credential| credential.id == *credential_id)
-            .ok_or(RevocationError::MissingCredentialIndexOnRevocationList(
-                *credential_id,
-                *issuer_did_id,
-            ))?;
-
-        Ok(index)
     }
 
     fn create_credential_status(
         &self,
         revocation_list_id: &RevocationListId,
         index_on_status_list: usize,
-        purpose: &str,
+        purpose: StatusPurpose,
     ) -> Result<CredentialStatus, RevocationError> {
-        create_credential_status(
-            &self.core_base_url,
-            revocation_list_id,
-            index_on_status_list,
-            purpose,
-        )
-    }
-
-    async fn mark_credential_as_impl(
-        &self,
-        purpose: RevocationListPurpose,
-        credential: &Credential,
-        new_revocation_value: bool,
-        data: CredentialAdditionalData,
-    ) -> Result<RevocationUpdate, RevocationError> {
-        let list_id = match purpose {
-            RevocationListPurpose::Revocation => data.revocation_list_id,
-            RevocationListPurpose::Suspension => {
-                data.suspension_list_id
-                    .ok_or(RevocationError::MappingError(
-                        "suspension_list_id is None".to_string(),
-                    ))?
-            }
-        };
-
-        let issuer_did = credential
-            .issuer_identifier
-            .as_ref()
-            .ok_or(RevocationError::MappingError(
-                "issuer identifier is None".to_string(),
-            ))?
-            .did
-            .as_ref()
-            .ok_or(RevocationError::MappingError(
-                "issuer did is None".to_string(),
-            ))?
-            .clone();
-
-        let did_document = self.did_method_provider.resolve(&issuer_did.did).await?;
-
-        let assertion_methods =
-            did_document
-                .assertion_method
-                .ok_or(RevocationError::MappingError(
-                    "Missing assertion_method keys".to_owned(),
-                ))?;
-
-        let issuer_jwk_key_id = assertion_methods
-            .first()
-            .ok_or(RevocationError::MappingError(
-                "Issuer has empty keys".to_owned(),
-            ))
-            .cloned()?;
-
-        let encoded_list = generate_bitstring_from_credentials(
-            &data.credentials_by_issuer_did,
-            purpose_to_credential_state_enum(purpose.to_owned()),
-            Some(BitstringCredentialInfo {
-                credential_id: credential.id,
-                value: new_revocation_value,
-            }),
-        )
-        .await?;
-
-        let is_bbs = !issuer_did
-            .keys
-            .as_ref()
-            .ok_or(RevocationError::MappingError(
-                "issuer_did keys are None".to_string(),
-            ))?
-            .iter()
-            .any(|key| key.key.key_type == KeyAlgorithmType::BbsPlus.to_string());
-
-        let list_credential = format_status_list_credential(
-            &list_id,
-            StatusListType::BitstringStatusList,
-            &issuer_did,
-            encoded_list,
-            purpose,
-            &self.key_provider,
-            &self.key_algorithm_provider,
-            &self.core_base_url,
-            &*self.get_formatter_for_issuance(is_bbs)?,
-            issuer_jwk_key_id,
-        )
-        .await?;
-
-        Ok(RevocationUpdate {
-            status_type: self.get_status_type(),
-            data: serde_json::to_vec(&RevocationUpdateData {
-                id: list_id,
-                value: list_credential.as_bytes().to_vec(),
-            })?,
+        let revocation_list_url = get_revocation_list_url(revocation_list_id, &self.core_base_url)?;
+        Ok(CredentialStatus {
+            id: Some(
+                uuid::Uuid::new_v4()
+                    .urn()
+                    .to_string()
+                    .parse()
+                    .map_err(|e| {
+                        RevocationError::ValidationError(format!("Failed to parse URL: `{e}`"))
+                    })?,
+            ),
+            r#type: CREDENTIAL_STATUS_TYPE.to_string(),
+            status_purpose: Some(purpose.to_string()),
+            additional_fields: HashMap::from([
+                (
+                    "statusListCredential".to_string(),
+                    revocation_list_url.into(),
+                ),
+                (
+                    "statusListIndex".to_string(),
+                    index_on_status_list.to_string().into(),
+                ),
+            ]),
         })
     }
-}
 
-pub fn create_credential_status(
-    core_base_url: &Option<String>,
-    revocation_list_id: &RevocationListId,
-    index_on_status_list: usize,
-    purpose: &str,
-) -> Result<CredentialStatus, RevocationError> {
-    let revocation_list_url = get_revocation_list_url(revocation_list_id, core_base_url)?;
-    Ok(CredentialStatus {
-        id: Some(
-            uuid::Uuid::new_v4()
-                .urn()
-                .to_string()
-                .parse()
-                .map_err(|e| {
-                    RevocationError::ValidationError(format!("Failed to parse URL: `{e}`"))
-                })?,
-        ),
-        r#type: CREDENTIAL_STATUS_TYPE.to_string(),
-        status_purpose: Some(purpose.to_string()),
-        additional_fields: HashMap::from([
-            (
-                "statusListCredential".to_string(),
-                revocation_list_url.into(),
-            ),
-            (
-                "statusListIndex".to_string(),
-                index_on_status_list.to_string().into(),
-            ),
-        ]),
-    })
-}
+    async fn create_credential_entry(
+        &self,
+        credential_id: CredentialId,
+        issuer_identifier: &Identifier,
+        purpose: RevocationListPurpose,
+    ) -> Result<CredentialRevocationInfo, RevocationError> {
+        let mut list_id = None;
+        let mut index: Option<usize> = None;
+        let tx_ok = self
+            .transaction_manager
+            .transaction(
+                async {
+                    let current_list = self
+                        .revocation_list_repository
+                        .get_revocation_by_issuer_identifier_id(
+                            issuer_identifier.id,
+                            None,
+                            purpose,
+                            &self.config_id,
+                            &Default::default(),
+                        )
+                        .await?;
 
-pub struct BitstringCredentialInfo {
-    pub credential_id: CredentialId,
-    pub value: bool,
-}
+                    list_id = Some(if let Some(current_list) = current_list {
+                        current_list.id
+                    } else {
+                        let list_id = self
+                            .start_new_list_for_credential(
+                                credential_id,
+                                issuer_identifier,
+                                purpose,
+                            )
+                            .await?;
+                        index = Some(0);
+                        list_id
+                    });
 
-pub fn purpose_to_credential_state_enum(purpose: RevocationListPurpose) -> CredentialStateEnum {
-    match purpose {
-        RevocationListPurpose::Revocation => CredentialStateEnum::Revoked,
-        RevocationListPurpose::Suspension => CredentialStateEnum::Suspended,
+                    Ok(())
+                }
+                .boxed(),
+            )
+            .await
+            .is_ok_and(|res| res.is_ok());
+
+        if !tx_ok {
+            list_id = None;
+            index = None;
+        }
+
+        let list_id = if let Some(list_id) = list_id {
+            list_id
+        } else {
+            // this means the transaction failed, and a new list was created in parallel
+            // fetch the newly created list instead
+            self.revocation_list_repository
+                .get_revocation_by_issuer_identifier_id(
+                    issuer_identifier.id,
+                    None,
+                    purpose,
+                    &self.config_id,
+                    &Default::default(),
+                )
+                .await
+                .error_while("getting revocation list")?
+                .ok_or(RevocationError::MappingError(
+                    "No revocation list found".to_string(),
+                ))?
+                .id
+        };
+
+        let index = if let Some(index) = index {
+            index
+        } else {
+            self.add_credential_to_list(list_id, credential_id).await?
+        };
+
+        Ok(CredentialRevocationInfo {
+            credential_status: self.create_credential_status(&list_id, index, purpose.into())?,
+            serial: None,
+        })
+    }
+
+    async fn add_credential_to_list(
+        &self,
+        list_id: RevocationListId,
+        credential_id: CredentialId,
+    ) -> Result<usize, RevocationError> {
+        let mut retry_counter = 0;
+        loop {
+            let result = self
+                .transaction_manager
+                .tx(async {
+                    let index = self
+                        .revocation_list_repository
+                        .next_free_index(&list_id, Some(LockType::Update))
+                        .await?;
+
+                    match self
+                        .revocation_list_repository
+                        .create_entry(
+                            list_id,
+                            RevocationListEntityId::Credential(credential_id),
+                            Some(index),
+                        )
+                        .await
+                    {
+                        Ok(_) => Ok(Some(index)),
+                        Err(DataLayerError::AlreadyExists) => {
+                            tracing::info!("Retrying adding credential entry to list({list_id}), occupied index({index}), retry({retry_counter})");
+                            Ok(None)
+                        },
+                        Err(e) => Err(e),
+                    }
+                }
+                .boxed())
+                .await
+                .error_while("creating revocation list entry")?
+                .error_while("creating revocation list entry")?;
+
+            if let Some(index) = result {
+                return Ok(index);
+            }
+
+            if retry_counter > 100 {
+                tracing::error!("Too many retries on revocation list: {list_id}");
+                return Err(
+                    DataLayerError::TransactionError("Too many retries".to_string())
+                        .error_while("adding revocation list entry")
+                        .into(),
+                );
+            }
+
+            retry_counter += 1;
+        }
+    }
+
+    async fn start_new_list_for_credential(
+        &self,
+        credential_id: CredentialId,
+        issuer_identifier: &Identifier,
+        purpose: RevocationListPurpose,
+    ) -> Result<RevocationListId, RevocationError> {
+        let revocation_list_id = Uuid::new_v4().into();
+        let list_credential = format_status_list_credential(
+            &revocation_list_id,
+            issuer_identifier,
+            util::generate_bitstring(vec![]).error_while("generating bitstring")?,
+            purpose,
+            &*self.key_provider,
+            &self.key_algorithm_provider,
+            &self.core_base_url,
+            &*self.get_formatter_for_issuance(issuer_identifier)?,
+        )
+        .await?;
+
+        self.revocation_list_repository
+            .create_revocation_list(RevocationList {
+                id: revocation_list_id,
+                created_date: OffsetDateTime::now_utc(),
+                last_modified: OffsetDateTime::now_utc(),
+                formatted_list: list_credential.into_bytes(),
+                format: self.params.format,
+                r#type: self.config_id.to_owned(),
+                purpose,
+                issuer_identifier: Some(issuer_identifier.to_owned()),
+                issuer_certificate: None,
+            })
+            .await
+            .error_while("creating revocation list")?;
+
+        self.revocation_list_repository
+            .create_entry(
+                revocation_list_id,
+                RevocationListEntityId::Credential(credential_id),
+                Some(0),
+            )
+            .await
+            .error_while("creating revocation list entry")?;
+
+        Ok(revocation_list_id)
     }
 }
 
-pub fn purpose_to_bitstring_status_purpose(purpose: RevocationListPurpose) -> StatusPurpose {
-    match purpose {
-        RevocationListPurpose::Revocation => StatusPurpose::Revocation,
-        RevocationListPurpose::Suspension => StatusPurpose::Suspension,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub async fn format_status_list_credential(
+#[expect(clippy::too_many_arguments)]
+pub(crate) async fn format_status_list_credential(
     revocation_list_id: &RevocationListId,
-    status_list_type: StatusListType,
-    issuer_did: &Did,
+    issuer_identifier: &Identifier,
     encoded_list: String,
     purpose: RevocationListPurpose,
-    key_provider: &Arc<dyn KeyProvider>,
+    key_provider: &dyn KeyProvider,
     key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
     core_base_url: &Option<String>,
     formatter: &dyn CredentialFormatter,
-    key_id: String,
 ) -> Result<String, RevocationError> {
     let revocation_list_url = get_revocation_list_url(revocation_list_id, core_base_url)?;
 
+    if issuer_identifier.r#type != IdentifierType::Did {
+        return Err(RevocationError::InvalidIdentifierType(
+            issuer_identifier.r#type,
+        ));
+    }
+
+    let issuer_did = issuer_identifier
+        .did
+        .as_ref()
+        .ok_or(RevocationError::MappingError(
+            "issuer did is None".to_string(),
+        ))?
+        .clone();
+
     let key = issuer_did
-        .find_first_key_by_role(KeyRole::AssertionMethod)
+        .find_first_matching_key(&KeyFilter::role_filter(KeyRole::AssertionMethod))
         .map_err(|_| RevocationError::KeyWithRoleNotFound(KeyRole::AssertionMethod))?
         .ok_or(RevocationError::KeyWithRoleNotFound(
             KeyRole::AssertionMethod,
         ))?;
 
-    let auth_fn =
-        key_provider.get_signature_provider(key, Some(key_id), key_algorithm_provider.clone())?;
+    let key_id = issuer_did.verification_method_id(key);
+    let key = &key.key;
+
+    let auth_fn = key_provider
+        .get_signature_provider(key, Some(key_id), key_algorithm_provider.clone())
+        .error_while("getting signature provider")?;
+
+    let algorithm_type = key
+        .key_algorithm_type()
+        .ok_or(RevocationError::InvalidKeyAlgorithm(
+            key.key_type.to_owned(),
+        ))?;
 
     let status_list = formatter
         .format_status_list(
             revocation_list_url,
-            issuer_did,
+            issuer_identifier,
             encoded_list,
-            key.key_algorithm_type()
-                .ok_or(FormatterError::CouldNotFormat(format!(
-                    "Unsupported algorithm: {}",
-                    key.key_type
-                )))?,
+            algorithm_type,
             auth_fn,
-            purpose_to_bitstring_status_purpose(purpose),
-            status_list_type,
+            purpose.into(),
+            RevocationType::BitstringStatusList,
         )
-        .await?;
+        .await
+        .error_while("formatting status list")?;
 
     Ok(status_list)
 }
 
-pub async fn generate_bitstring_from_credentials(
-    credentials_by_issuer_did: &[Credential],
-    matching_state: CredentialStateEnum,
-    additionally_changed_credential: Option<BitstringCredentialInfo>,
+async fn generate_bitstring_from_entries(
+    entries: Vec<RevocationListEntry>,
+    purpose: RevocationListPurpose,
 ) -> Result<String, RevocationError> {
-    let states = credentials_by_issuer_did
-        .iter()
-        .map(|credential| {
-            if let Some(changed_credential) = additionally_changed_credential.as_ref() {
-                if changed_credential.credential_id == credential.id {
-                    return Ok(changed_credential.value);
-                }
-            }
-            let state = credential.state;
-
-            Ok(state == matching_state)
+    let states = entries
+        .into_iter()
+        .map(|entry| {
+            Ok((
+                entry.index.ok_or(RevocationError::MappingError(
+                    "revocation list entry index missing".to_string(),
+                ))?,
+                get_revocation_entry_state(entry.status, purpose),
+            ))
         })
         .collect::<Result<Vec<_>, RevocationError>>()?;
 
-    util::generate_bitstring(states).map_err(RevocationError::from)
+    Ok(util::generate_bitstring(states).error_while("generating bitstring")?)
 }
 
-pub fn get_revocation_list_url(
+fn get_revocation_list_url(
     revocation_list_id: &RevocationListId,
     core_base_url: &Option<String>,
 ) -> Result<String, RevocationError> {
@@ -601,4 +776,18 @@ pub fn get_revocation_list_url(
         ))?,
         revocation_list_id
     ))
+}
+
+fn get_revocation_entry_state(
+    entry_status: RevocationListEntryStatus,
+    purpose: RevocationListPurpose,
+) -> bool {
+    match purpose {
+        RevocationListPurpose::Revocation => entry_status == RevocationListEntryStatus::Revoked,
+        RevocationListPurpose::Suspension => entry_status == RevocationListEntryStatus::Suspended,
+        RevocationListPurpose::RevocationAndSuspension => matches!(
+            entry_status,
+            RevocationListEntryStatus::Revoked | RevocationListEntryStatus::Suspended
+        ),
+    }
 }

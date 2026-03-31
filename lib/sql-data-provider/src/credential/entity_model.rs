@@ -1,10 +1,11 @@
 use sea_orm::FromQueryResult;
-use shared_types::{CredentialId, CredentialSchemaId, DidId, DidValue, IdentifierId};
+use shared_types::{
+    BlobId, CredentialFormat, CredentialId, CredentialSchemaId, IdentifierId, RevocationMethodId,
+};
 use time::OffsetDateTime;
 
 use crate::entity::credential;
-use crate::entity::credential_schema::{CredentialSchemaType, LayoutProperties, WalletStorageType};
-use crate::entity::did::DidType;
+use crate::entity::credential_schema::{KeyStorageSecurity, LayoutProperties, TransactionCodeType};
 use crate::entity::identifier::{IdentifierState, IdentifierType};
 
 #[derive(FromQueryResult)]
@@ -12,37 +13,35 @@ pub(super) struct CredentialListEntityModel {
     pub id: CredentialId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub issuance_date: OffsetDateTime,
+    pub issuance_date: Option<OffsetDateTime>,
     pub deleted_at: Option<OffsetDateTime>,
-    pub exchange: String,
-    pub credential: Option<Vec<u8>>,
+    pub protocol: String,
     pub redirect_uri: Option<String>,
     pub role: credential::CredentialRole,
     pub state: credential::CredentialState,
     pub suspend_end_date: Option<OffsetDateTime>,
+    pub profile: Option<String>,
+    pub credential_blob_id: Option<BlobId>,
+    pub wallet_unit_attestation_blob_id: Option<BlobId>,
+    pub wallet_instance_attestation_blob_id: Option<BlobId>,
+    pub webhook_url: Option<String>,
+
     pub credential_schema_deleted_at: Option<OffsetDateTime>,
     pub credential_schema_created_date: OffsetDateTime,
-    pub credential_schema_format: String,
+    pub credential_schema_format: CredentialFormat,
     pub credential_schema_id: CredentialSchemaId,
     pub credential_schema_last_modified: OffsetDateTime,
     pub credential_schema_name: String,
-    pub credential_schema_revocation_method: String,
-    pub credential_schema_wallet_storage_type: Option<WalletStorageType>,
+    pub credential_schema_revocation_method: Option<RevocationMethodId>,
+    pub credential_schema_key_storage_security: Option<KeyStorageSecurity>,
     pub credential_schema_schema_id: String,
     pub credential_schema_imported_source_url: String,
-    pub credential_schema_schema_layout_properties: Option<LayoutProperties>,
-    pub credential_schema_schema_type: CredentialSchemaType,
     pub credential_schema_allow_suspension: bool,
-    pub credential_schema_external_schema: bool,
-
-    pub issuer_did_created_date: Option<OffsetDateTime>,
-    pub issuer_did_deactivated: Option<bool>,
-    pub issuer_did_did: Option<DidValue>,
-    pub issuer_did_id: Option<DidId>,
-    pub issuer_did_last_modified: Option<OffsetDateTime>,
-    pub issuer_did_method: Option<String>,
-    pub issuer_did_name: Option<String>,
-    pub issuer_did_type_field: Option<DidType>,
+    pub credential_schema_requires_wallet_instance_attestation: bool,
+    pub credential_schema_schema_layout_properties: Option<LayoutProperties>,
+    pub credential_schema_transaction_code_type: Option<TransactionCodeType>,
+    pub credential_schema_transaction_code_length: Option<u32>,
+    pub credential_schema_transaction_code_description: Option<String>,
 
     pub issuer_identifier_id: Option<IdentifierId>,
     pub issuer_identifier_created_date: Option<OffsetDateTime>,

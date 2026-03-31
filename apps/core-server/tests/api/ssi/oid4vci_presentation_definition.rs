@@ -1,10 +1,11 @@
 use one_core::model::did::{DidType, KeyRole, RelatedKey};
 use one_core::model::identifier::{Identifier, IdentifierType};
-use one_core::model::interaction::Interaction;
+use one_core::model::interaction::{Interaction, InteractionType};
 use one_core::model::key::Key;
 use one_core::model::proof::ProofStateEnum;
 use one_core::model::proof_schema::ProofSchema;
 use serde_json::json;
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::fixtures::{TestingDidParams, TestingIdentifierParams};
@@ -68,7 +69,7 @@ async fn new_test_data() -> TestContextWithOID4VCIData {
             &schema_id,
             "NewCredentialSchema",
             &organisation,
-            "NONE",
+            None,
             &new_claim_schemas,
             "JWT",
             &schema_id.to_string(),
@@ -96,6 +97,7 @@ async fn new_test_data() -> TestContextWithOID4VCIData {
                 keys: Some(vec![RelatedKey {
                     role: KeyRole::AssertionMethod,
                     key: verifier_key.to_owned(),
+                    reference: "1".to_string(),
                 }]),
                 ..Default::default()
             },
@@ -119,9 +121,10 @@ async fn new_test_data() -> TestContextWithOID4VCIData {
         .interactions
         .create(
             None,
-            &context.server_mock.uri(),
             interaction_data.to_string().as_bytes(),
             &organisation,
+            InteractionType::Issuance,
+            None,
         )
         .await;
 
@@ -154,12 +157,13 @@ async fn test_get_presentation_definition_success() {
         .create(
             None,
             &verifier_identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Pending,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             verifier_key,
+            None,
+            None,
         )
         .await;
 
@@ -235,12 +239,13 @@ async fn test_get_presentation_definition_failed_wrong_exchange_type() {
         .create(
             None,
             &verifier_identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Requested,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             verifier_key,
+            None,
+            None,
         )
         .await;
 
@@ -273,12 +278,13 @@ async fn test_get_presentation_definition_failed_wrong_state() {
         .create(
             None,
             &verifier_identifier,
-            None,
             Some(&proof_schema),
             ProofStateEnum::Accepted,
             "OPENID4VP_DRAFT20",
             Some(&interaction),
             verifier_key,
+            None,
+            None,
         )
         .await;
 

@@ -4,6 +4,7 @@ use headers::HeaderMap;
 use jsonld::JsonLdApi;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use statistics::StatisticsApi;
 
 use self::certificates::CertificatesApi;
 use self::config::ConfigApi;
@@ -23,8 +24,13 @@ use self::ssi::SSIApi;
 use self::tasks::TasksApi;
 use self::trust_anchors::TrustAnchorsApi;
 use self::trust_entity::TrustEntitiesApi;
+use self::wallet_units::WalletUnitsApi;
 use super::field_match::FieldHelpers;
 use crate::utils::api_clients::cache::CacheApi;
+use crate::utils::api_clients::holder_wallet_unit::HolderWalletUnitsApi;
+use crate::utils::api_clients::signatures::SignaturesApi;
+use crate::utils::api_clients::trust_list_publication::TrustListPublicationApi;
+use crate::utils::api_clients::wallet_provider::WalletProviderApi;
 
 mod cache;
 pub mod certificates;
@@ -42,10 +48,17 @@ pub mod organisations;
 pub mod other;
 pub mod proof_schemas;
 pub mod proofs;
+pub mod signatures;
 pub mod ssi;
 pub mod tasks;
 pub mod trust_anchors;
 pub mod trust_entity;
+pub mod wallet_units;
+
+pub mod holder_wallet_unit;
+mod statistics;
+pub mod trust_list_publication;
+pub mod wallet_provider;
 
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -73,9 +86,18 @@ impl HttpClient {
     }
 
     pub async fn post(&self, url: &str, body: impl Into<Option<Value>>) -> Response {
+        self.post_custom_bearer_auth(url, &self.token, body).await
+    }
+
+    pub async fn post_custom_bearer_auth(
+        &self,
+        url: &str,
+        token: &str,
+        body: impl Into<Option<Value>>,
+    ) -> Response {
         let url = format!("{}{url}", self.base_url);
 
-        let mut builder = http_client().post(url).bearer_auth(&self.token);
+        let mut builder = http_client().post(url).bearer_auth(token);
 
         if let Some(body) = body.into() {
             builder = builder.json(&body);
@@ -114,20 +136,6 @@ impl HttpClient {
         Response { resp }
     }
 
-    pub async fn put(&self, url: &str, body: impl Into<Option<Value>>) -> Response {
-        let url = format!("{}{url}", self.base_url);
-
-        let resp = http_client()
-            .put(url)
-            .bearer_auth(&self.token)
-            .json(&body.into())
-            .send()
-            .await
-            .unwrap();
-
-        Response { resp }
-    }
-
     pub async fn delete(&self, url: &str) -> Response {
         let url = format!("{}{url}", self.base_url);
 
@@ -142,8 +150,15 @@ impl HttpClient {
     }
 }
 
+#[derive(Debug)]
 pub struct Response {
     resp: reqwest::Response,
+}
+
+impl From<reqwest::Response> for Response {
+    fn from(resp: reqwest::Response) -> Self {
+        Self { resp }
+    }
 }
 
 impl Response {
@@ -166,6 +181,10 @@ impl Response {
 
     pub async fn json_value(self) -> Value {
         self.json().await
+    }
+
+    pub async fn bytes(self) -> Vec<u8> {
+        self.resp.bytes().await.unwrap().to_vec()
     }
 
     pub async fn error_code(self) -> String {
@@ -194,11 +213,22 @@ pub struct Client {
     pub other: OtherApi,
     pub identifiers: IdentifiersApi,
     pub certificates: CertificatesApi,
+    pub wallet_provider: WalletProviderApi,
+    pub wallet_units: WalletUnitsApi,
+    pub holder_wallet_units: HolderWalletUnitsApi,
+    pub signatures: SignaturesApi,
+    pub statistics: StatisticsApi,
+    pub base_url: String,
+    pub client: HttpClient,
+    pub trust_list_publication: TrustListPublicationApi,
 }
 
 impl Client {
     pub fn new(base_url: String, token: String) -> Self {
-        let client = HttpClient { base_url, token };
+        let client = HttpClient {
+            base_url: base_url.clone(),
+            token,
+        };
 
         Self {
             organisations: OrganisationsApi::new(client.clone()),
@@ -220,7 +250,15 @@ impl Client {
             jsonld: JsonLdApi::new(client.clone()),
             other: OtherApi::new(client.clone()),
             identifiers: IdentifiersApi::new(client.clone()),
-            certificates: CertificatesApi::new(client),
+            certificates: CertificatesApi::new(client.clone()),
+            wallet_provider: WalletProviderApi::new(client.clone()),
+            wallet_units: WalletUnitsApi::new(client.clone()),
+            holder_wallet_units: HolderWalletUnitsApi::new(client.clone()),
+            signatures: SignaturesApi::new(client.clone()),
+            statistics: StatisticsApi::new(client.clone()),
+            trust_list_publication: TrustListPublicationApi::new(client.clone()),
+            base_url,
+            client,
         }
     }
 }

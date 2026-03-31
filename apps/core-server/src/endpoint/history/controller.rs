@@ -1,22 +1,30 @@
 use axum::extract::{Path, State};
+use axum::{Extension, Json};
 use axum_extra::extract::WithRejection;
-use one_core::service::error::ServiceError;
-use shared_types::HistoryId;
+use one_core::error::ContextWithErrorCode;
+use one_core::proto::session_provider::SessionProvider;
+use one_core::service::error::{ServiceError, ValidationError};
+use proc_macros::endpoint;
+use shared_types::{HistoryId, Permission};
 
 use super::dto::{GetHistoryQuery, HistoryResponseDetailRestDTO};
-use crate::dto::common::GetHistoryListResponseRestDTO;
+use crate::dto::common::{Boolean, EntityResponseRestDTO, GetHistoryListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::response::OkOrErrorResponse;
+use crate::dto::mapper::fallback_organisation_id_from_session;
+use crate::dto::response::{CreatedOrErrorResponse, OkOrErrorResponse};
+use crate::endpoint::history::dto::CreateHistoryRequestRestDTO;
 use crate::extractor::Qs;
+use crate::middleware::Authorized;
+use crate::permissions::permission_check;
 use crate::router::AppState;
+use crate::session::CoreServerSessionProvider;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::HistoryList, Permission::SystemHistoryList],
     get,
     path = "/api/history/v1",
     responses(OkOrErrorResponse<GetHistoryListResponseRestDTO>),
-    params(
-        GetHistoryQuery
-    ),
+    params(GetHistoryQuery),
     tag = "history_management",
     security(
         ("bearer" = [])
@@ -30,18 +38,89 @@ use crate::router::AppState;
 )]
 pub(crate) async fn get_history_list(
     state: State<AppState>,
-    WithRejection(Qs(query), _): WithRejection<Qs<GetHistoryQuery>, ErrorResponseRestDTO>,
+    Extension(authorization): Extension<Authorized>,
+    WithRejection(Qs(mut query), _): WithRejection<Qs<GetHistoryQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetHistoryListResponseRestDTO> {
-    let result = state
-        .core
-        .history_service
-        .get_history_list(query.into())
-        .await;
+    let result = async {
+        let show_system_history: bool = query
+            .filter
+            .show_system_history
+            .unwrap_or(Boolean::False)
+            .into();
+
+        if show_system_history {
+            if !has_permission(&authorization, Permission::SystemHistoryList) {
+                tracing::error!("Querying system history list without permission");
+                return Err(ValidationError::Forbidden.into());
+            }
+        } else if let Some(organisation_ids) = &query.filter.organisation_ids {
+            if let Some(session) = CoreServerSessionProvider.session() {
+                match (&session.organisation_id, organisation_ids.as_slice()) {
+                    (Some(a), [b]) if a == b => {
+                        // organisation id matches, proceed
+                    }
+                    _ => {
+                        tracing::error!("Querying history list with wrong organisation filter");
+                        return Err(ValidationError::Forbidden.into());
+                    }
+                }
+            }
+        } else {
+            query.filter.organisation_ids =
+                Some(vec![fallback_organisation_id_from_session(None)?]);
+        }
+
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .history_service
+                .get_history_list(query.try_into().map_err(|e: std::convert::Infallible| {
+                    ServiceError::MappingError(e.to_string())
+                })?)
+                .await
+                .error_while("getting history list")?,
+        )
+    }
+    .await;
 
     OkOrErrorResponse::from_result(result, state, "getting history list")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::HistoryCreate],
+    post,
+    path = "/api/history/v1",
+    request_body = CreateHistoryRequestRestDTO,
+    responses(CreatedOrErrorResponse<EntityResponseRestDTO>),
+    tag = "history_management",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Create history event",
+    description = indoc::formatdoc! {"
+        Creates a new history entry managed outside core
+
+        Related guide: [History](/history)
+    "},
+)]
+pub(crate) async fn create_history(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<CreateHistoryRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> CreatedOrErrorResponse<EntityResponseRestDTO> {
+    let result = state
+        .core
+        .history_service
+        .create_history(request.into())
+        .await;
+
+    CreatedOrErrorResponse::from_result(result, state, "creating history")
+}
+
+#[endpoint(
+    permissions = [Permission::HistoryDetail, Permission::SystemHistoryDetail],
     get,
     path = "/api/history/v1/{id}",
     params(
@@ -57,23 +136,39 @@ pub(crate) async fn get_history_list(
 )]
 pub(crate) async fn get_history_entry(
     state: State<AppState>,
+    Extension(authorization): Extension<Authorized>,
     WithRejection(Path(id), _): WithRejection<Path<HistoryId>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<HistoryResponseDetailRestDTO> {
-    let result = state.core.history_service.get_history_entry(id).await;
-    match result {
-        Ok(value) => match HistoryResponseDetailRestDTO::try_from(value) {
-            Ok(value) => OkOrErrorResponse::ok(value),
-            Err(error) => {
-                tracing::error!("Error while mapping response: {:?}", error);
-                OkOrErrorResponse::from_service_error(
-                    ServiceError::MappingError(error.to_string()),
-                    state.config.hide_error_response_cause,
-                )
+    let result = async {
+        let entry = state
+            .core
+            .history_service
+            .get_history_entry(id)
+            .await
+            .error_while("getting history entry")?;
+
+        if let Some(session) = CoreServerSessionProvider.session()
+            && !has_permission(&authorization, Permission::SystemHistoryDetail)
+        {
+            match (session.organisation_id, entry.organisation_id) {
+                (Some(a), Some(b)) if a == b => {
+                    // organisation id matches, proceed
+                }
+                _ => {
+                    tracing::error!("Querying history entry without permission");
+                    return Err(ValidationError::Forbidden.into());
+                }
             }
-        },
-        Err(error) => {
-            tracing::error!("Error while getting history entry: {:?}", error);
-            OkOrErrorResponse::from_service_error(error, state.config.hide_error_response_cause)
         }
+
+        HistoryResponseDetailRestDTO::try_from(entry)
+            .map_err(|e| ServiceError::MappingError(e.to_string()))
     }
+    .await;
+
+    OkOrErrorResponse::from_result(result, state, "getting history entry")
+}
+
+fn has_permission(authorization: &Authorized, permission: Permission) -> bool {
+    permission_check(authorization, &[permission]).is_ok()
 }

@@ -7,7 +7,7 @@ use crate::model::common::GetListResponse;
 use crate::model::identifier::{IdentifierState, IdentifierType};
 use crate::service::certificate::dto::{CertificateResponseDTO, CreateCertificateRequestDTO};
 use crate::service::did::dto::{CreateDidRequestKeysDTO, DidResponseDTO};
-use crate::service::key::dto::KeyResponseDTO;
+use crate::service::key::dto::{KeyGenerateCSRRequestSubjectDTO, KeyResponseDTO};
 
 #[derive(Clone, Debug)]
 pub struct GetIdentifierResponseDTO {
@@ -22,10 +22,11 @@ pub struct GetIdentifierResponseDTO {
     pub did: Option<DidResponseDTO>,
     pub key: Option<KeyResponseDTO>,
     pub certificates: Option<Vec<CertificateResponseDTO>>,
+    pub certificate_authorities: Option<Vec<CertificateResponseDTO>>,
 }
 
 #[skip_serializing_none]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GetIdentifierListItemResponseDTO {
     pub id: IdentifierId,
@@ -44,8 +45,11 @@ pub type GetIdentifierListResponseDTO = GetListResponse<GetIdentifierListItemRes
 pub struct CreateIdentifierRequestDTO {
     pub name: String,
     pub did: Option<CreateIdentifierDidRequestDTO>,
+    pub key: Option<CreateIdentifierKeyRequestDTO>,
     pub key_id: Option<KeyId>,
+    /// Deprecated. Use the `key` field instead.
     pub certificates: Option<Vec<CreateCertificateRequestDTO>>,
+    pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestDTO>>,
     pub organisation_id: OrganisationId,
 }
 
@@ -55,4 +59,44 @@ pub struct CreateIdentifierDidRequestDTO {
     pub method: String,
     pub keys: CreateDidRequestKeysDTO,
     pub params: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateIdentifierKeyRequestDTO {
+    pub key_id: KeyId,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateCertificateAuthorityRequestDTO {
+    pub key_id: KeyId,
+    pub name: Option<String>,
+    pub chain: Option<String>,
+    pub self_signed: Option<CreateSelfSignedCertificateAuthorityRequestDTO>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateSelfSignedCertificateAuthorityRequestDTO {
+    pub content: CreateSelfSignedCertificateAuthorityContentRequestDTO,
+    pub signer: String,
+    pub validity_start: Option<OffsetDateTime>,
+    pub validity_end: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateSelfSignedCertificateAuthorityContentRequestDTO {
+    pub subject: KeyGenerateCSRRequestSubjectDTO,
+    pub issuer_alternative_name:
+        Option<CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest {
+    pub r#type: CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType {
+    Email,
+    Uri,
 }

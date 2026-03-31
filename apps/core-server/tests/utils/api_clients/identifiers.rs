@@ -1,5 +1,5 @@
 use serde_json::json;
-use shared_types::{IdentifierId, KeyId, OrganisationId};
+use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
 
 use super::{HttpClient, Response};
 
@@ -18,7 +18,7 @@ impl IdentifiersApi {
         key_id: KeyId,
         organisation_id: OrganisationId,
     ) -> Response {
-        let did_name = format!("did-{}", name);
+        let did_name = format!("did-{name}");
         self.client
             .post(
                 "/api/identifier/v1",
@@ -44,9 +44,26 @@ impl IdentifiersApi {
                       },
                       "method": "KEY",
                       "name": did_name,
-                      "organisationId": organisation_id,
                       "params": {}
                     },
+                    "organisationId": organisation_id
+                }),
+            )
+            .await
+    }
+
+    pub async fn create_deprecated_key_identifier(
+        &self,
+        name: &str,
+        key_id: KeyId,
+        organisation_id: OrganisationId,
+    ) -> Response {
+        self.client
+            .post(
+                "/api/identifier/v1",
+                json!( {
+                    "name": name,
+                    "keyId": key_id,
                     "organisationId": organisation_id
                 }),
             )
@@ -64,7 +81,9 @@ impl IdentifiersApi {
                 "/api/identifier/v1",
                 json!( {
                     "name": name,
-                    "keyId": key_id,
+                    "key": {
+                        "keyId": key_id,
+                    },
                     "organisationId": organisation_id
                 }),
             )
@@ -93,13 +112,93 @@ impl IdentifiersApi {
             .await
     }
 
+    pub async fn create_certificate_authority_identifier(
+        &self,
+        name: &str,
+        key_id: KeyId,
+        organisation_id: OrganisationId,
+        chain: &str,
+    ) -> Response {
+        self.client
+            .post(
+                "/api/identifier/v1",
+                json!( {
+                    "name": name,
+                    "organisationId": organisation_id,
+                    "certificateAuthorities": [{
+                        "chain": chain,
+                        "keyId": key_id
+                    }]
+                }),
+            )
+            .await
+    }
+
+    pub async fn create_certificate_authority_identifier_self_signed(
+        &self,
+        name: &str,
+        key_id: KeyId,
+        organisation_id: OrganisationId,
+        common_name: &str,
+        signer: &str,
+        issuer_alternative_name: Option<&str>,
+    ) -> Response {
+        let issuer_alternative_name = issuer_alternative_name.map(|name| {
+            json!({
+                "type": "URI",
+                "name": name
+            })
+        });
+        self.client
+            .post(
+                "/api/identifier/v1",
+                json!( {
+                    "name": name,
+                    "organisationId": organisation_id,
+                    "certificateAuthorities": [{
+                        "keyId": key_id,
+                        "selfSigned": {
+                            "content": {
+                                "subject": {
+                                    "commonName": common_name,
+                                },
+                                "issuerAlternativeName": issuer_alternative_name
+                            },
+                            "signer": signer
+                        },
+                    }]
+                }),
+            )
+            .await
+    }
+
+    pub async fn try_create_certificate_authority_identifier(
+        &self,
+        name: &str,
+        key_id: KeyId,
+        organisation_id: OrganisationId,
+    ) -> Response {
+        self.client
+            .post(
+                "/api/identifier/v1",
+                json!( {
+                    "name": name,
+                    "organisationId": organisation_id,
+                    "certificateAuthorities": [{
+                        "keyId": key_id
+                    }]
+                }),
+            )
+            .await
+    }
+
     pub async fn get(&self, id: &IdentifierId) -> Response {
-        self.client.get(&format!("/api/identifier/v1/{}", id)).await
+        self.client.get(&format!("/api/identifier/v1/{id}")).await
     }
 
     pub async fn delete(&self, id: &IdentifierId) -> Response {
         self.client
-            .delete(&format!("/api/identifier/v1/{}", id))
+            .delete(&format!("/api/identifier/v1/{id}"))
             .await
     }
 
@@ -110,5 +209,33 @@ impl IdentifiersApi {
     ) -> Response {
         self.client.get(
             &format!("/api/identifier/v1?page=0&pageSize=30&keyStorages%5B%5D={key_storage_type}&organisationId={organisation_id}")).await
+    }
+
+    pub async fn resolve_trust_entities(
+        &self,
+        identifiers: &[(IdentifierId, Option<CertificateId>)],
+    ) -> Response {
+        let identifiers: Vec<_> = identifiers
+            .iter()
+            .map(|(identifier, cert)| {
+                let mut value = json!( {
+                    "id": identifier,
+                });
+                if let Some(cert) = cert {
+                    value["certificateId"] = json!(cert);
+                }
+                value
+            })
+            .collect();
+
+        self.client
+            .post(
+                "/api/identifier/v1/resolve-trust-entity",
+                json!( {
+                    "identifiers": identifiers,
+                    }
+                ),
+            )
+            .await
     }
 }

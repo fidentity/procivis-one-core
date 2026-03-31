@@ -1,4 +1,4 @@
-use sea_orm::DatabaseConnection;
+use crate::transaction_context::TransactionManagerImpl;
 
 mod helpers;
 mod mappers;
@@ -6,7 +6,7 @@ mod models;
 pub mod repository;
 
 pub(crate) struct BackupProvider {
-    db: DatabaseConnection,
+    pub db: TransactionManagerImpl,
     exportable_storages: Vec<String>,
 }
 

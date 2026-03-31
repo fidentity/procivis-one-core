@@ -1,42 +1,47 @@
 use std::collections::{HashMap, HashSet};
 
-use shared_types::{OrganisationId, ProofId};
+use dcql::CredentialSet;
+use one_dto_mapper::convert_inner_of_inner;
+use shared_types::{CredentialId, OrganisationId, ProofId};
 use time::OffsetDateTime;
-use url::Url;
 use uuid::Uuid;
 
-use super::dto::{CredentialGroup, CredentialGroupItem, PresentationDefinitionFieldDTO};
+use super::dto::{
+    CredentialGroup, CredentialGroupItem, CredentialSetResponseDTO, PresentationDefinitionFieldDTO,
+};
 use super::{StorageAccess, VerificationProtocolError};
-use crate::common_mapper::NESTED_CLAIM_MARKER;
 use crate::config::core_config::{CoreConfig, DatatypeConfig, DatatypeType};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::NESTED_CLAIM_MARKER;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialStateEnum};
-use crate::model::credential_schema::CredentialSchemaClaim;
 use crate::model::identifier::Identifier;
-use crate::model::interaction::Interaction;
-use crate::model::key::Key;
+use crate::model::interaction::{Interaction, InteractionType};
 use crate::model::organisation::Organisation;
 use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
-use crate::service::credential::dto::CredentialDetailResponseDTO;
+use crate::service::credential::dto::{
+    CredentialAttestationBlobs, CredentialDetailResponseDTO, DetailCredentialClaimResponseDTO,
+};
 use crate::service::credential::mapper::credential_detail_response_from_model;
 
 pub(crate) fn interaction_from_handle_invitation(
-    host: Url,
     data: Option<Vec<u8>>,
     now: OffsetDateTime,
     organisation: Option<Organisation>,
 ) -> Interaction {
     Interaction {
-        id: Uuid::new_v4(),
+        id: Uuid::new_v4().into(),
         created_date: now,
         last_modified: now,
-        host: Some(host),
         data,
         organisation,
+        nonce_id: None,
+        interaction_type: InteractionType::Verification,
+        expires_at: None,
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn proof_from_handle_invitation(
     proof_id: &ProofId,
     protocol: &str,
@@ -44,7 +49,6 @@ pub(crate) fn proof_from_handle_invitation(
     verifier_identifier: Option<Identifier>,
     interaction: Interaction,
     now: OffsetDateTime,
-    verifier_key: Option<Key>,
     transport: &str,
     state: ProofStateEnum,
 ) -> Proof {
@@ -52,33 +56,46 @@ pub(crate) fn proof_from_handle_invitation(
         id: proof_id.to_owned(),
         created_date: now,
         last_modified: now,
-        issuance_date: now,
-        exchange: protocol.to_owned(),
+        protocol: protocol.to_owned(),
         redirect_uri,
         transport: transport.to_owned(),
         state,
         role: ProofRole::Holder,
         requested_date: Some(now),
         completed_date: None,
+        profile: None,
         schema: None,
         claims: None,
         verifier_identifier,
-        holder_identifier: None,
         interaction: Some(interaction),
-        verifier_key,
+        verifier_key: None,
+        verifier_certificate: None,
+        proof_blob_id: None,
+        engagement: None,
+        webhook_url: None,
     }
 }
 
 pub(crate) fn credential_model_to_credential_dto(
     credentials: Vec<Credential>,
     config: &CoreConfig,
-) -> Result<Vec<CredentialDetailResponseDTO>, VerificationProtocolError> {
+) -> Result<
+    Vec<CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO>>,
+    VerificationProtocolError,
+> {
     // Missing organisation here.
-    credentials
+    Ok(credentials
         .into_iter()
-        .map(|credential| credential_detail_response_from_model(credential, config, None))
-        .collect::<Result<Vec<CredentialDetailResponseDTO>, _>>()
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))
+        .map(|credential| {
+            credential_detail_response_from_model(
+                credential,
+                config,
+                None,
+                CredentialAttestationBlobs::default(),
+            )
+        })
+        .collect::<Result<Vec<CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO>>, _>>()
+        .error_while("creating credential detail")?)
 }
 
 pub(crate) async fn get_relevant_credentials_to_credential_schemas(
@@ -98,9 +115,12 @@ pub(crate) async fn get_relevant_credentials_to_credential_schemas(
         )?;
 
         let relevant_credentials_inner = storage_access
-            .get_credentials_by_credential_schema_id(credential_schema_id, organisation_id)
+            .get_presentation_credentials_by_schema_id(
+                credential_schema_id.to_string(),
+                organisation_id,
+            )
             .await
-            .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
+            .map_err(VerificationProtocolError::StorageAccessError)?;
 
         for credential in &relevant_credentials_inner {
             let schema = credential
@@ -145,25 +165,24 @@ pub(crate) async fn get_relevant_credentials_to_credential_schemas(
 
             if group.claims.iter().all(|requested_claim| {
                 !requested_claim.required
-                    || claim_schemas.iter().any(|claim_schema| {
-                        claim_schema.schema.key.starts_with(&requested_claim.key)
-                    })
+                    || claim_schemas
+                        .iter()
+                        .any(|claim_schema| claim_schema.key.starts_with(&requested_claim.key))
             }) {
                 // For each requested claim
                 if group.claims.iter().all(|requested_claim| {
                     claim_schemas.iter().any(|claim_schema| {
                         // Find the claim schema
-                        claim_schema.schema.key == requested_claim.key
+                        claim_schema.key == requested_claim.key
                             // And make sure a parent element is not an array
                             && claim_schemas
                                 .iter()
                                 .filter(|other_schema| {
                                     claim_schema
-                                        .schema
                                         .key
-                                        .starts_with(&format!("{}{NESTED_CLAIM_MARKER}", &other_schema.schema.key))
+                                        .starts_with(&format!("{}{NESTED_CLAIM_MARKER}", &other_schema.key))
                                 })
-                                .any(|other_schema| other_schema.schema.array)
+                                .any(|other_schema| other_schema.array)
                     })
                 }) {
                     return Err(VerificationProtocolError::Failed(
@@ -218,17 +237,17 @@ pub(crate) async fn get_relevant_credentials_to_credential_schemas(
 fn is_requested_claim_present_in_credential(
     requested_claim: &CredentialGroupItem,
     credential_claims_schemas: &[&ClaimSchema],
-    credential_schema_claim_schemas: &[CredentialSchemaClaim],
+    credential_schema_claim_schemas: &[ClaimSchema],
     object_datatypes: &HashSet<&str>,
 ) -> bool {
     // Find the claim schema
     let requested_claim_schema = credential_schema_claim_schemas
         .iter()
-        .find(|claim_schema| claim_schema.schema.key == requested_claim.key);
+        .find(|claim_schema| claim_schema.key == requested_claim.key);
 
     if let Some(requested_claim_schema) = requested_claim_schema {
         // in case a whole object is requested, then we need to search for any claim under this object
-        if object_datatypes.contains(requested_claim_schema.schema.data_type.as_str()) {
+        if object_datatypes.contains(requested_claim_schema.data_type.as_str()) {
             credential_claims_schemas.iter().any(|schema| {
                 schema
                     .key
@@ -252,7 +271,7 @@ pub(crate) fn create_presentation_definition_field(
     field: CredentialGroupItem,
     credentials: &[Credential],
 ) -> Result<PresentationDefinitionFieldDTO, VerificationProtocolError> {
-    let mut key_map: HashMap<String, String> = HashMap::new();
+    let mut key_map: HashMap<CredentialId, String> = HashMap::new();
     let key = field.key;
     for credential in credentials {
         for claim in credential
@@ -270,7 +289,7 @@ pub(crate) fn create_presentation_definition_field(
                 ))?;
 
             if claim_schema.key.starts_with(&key) {
-                key_map.insert(credential.id.to_string(), key.clone());
+                key_map.insert(credential.id, key.clone());
                 break;
             }
         }
@@ -289,10 +308,19 @@ pub(crate) fn gather_object_datatypes_from_config(config: &DatatypeConfig) -> Ha
         .iter()
         .filter_map(|(name, fields)| {
             if fields.r#type == DatatypeType::Object {
-                Some(name)
+                Some(name.as_str())
             } else {
                 None
             }
         })
         .collect()
+}
+
+impl From<CredentialSet> for CredentialSetResponseDTO {
+    fn from(value: CredentialSet) -> Self {
+        Self {
+            required: value.required,
+            options: convert_inner_of_inner(value.options),
+        }
+    }
 }

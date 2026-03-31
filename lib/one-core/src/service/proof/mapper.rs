@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use itertools::Itertools;
 use one_dto_mapper::convert_inner;
+use serde_json::Value;
 use shared_types::{CredentialId, CredentialSchemaId};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -12,76 +13,102 @@ use super::dto::{
     CreateProofRequestDTO, ProofClaimDTO, ProofClaimValueDTO, ProofDetailResponseDTO,
     ProofInputDTO, ProofListItemResponseDTO,
 };
-use crate::common_mapper::{NESTED_CLAIM_MARKER, NESTED_CLAIM_MARKER_STR};
+use super::error::ProofServiceError;
 use crate::config::core_config::{CoreConfig, DatatypeType};
-use crate::model::credential_schema::CredentialSchemaClaim;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::{NESTED_CLAIM_MARKER, NESTED_CLAIM_MARKER_STR};
+use crate::model::certificate::Certificate;
+use crate::model::claim_schema::ClaimSchema;
+use crate::model::credential_schema::CredentialSchema;
 use crate::model::history::History;
 use crate::model::identifier::Identifier;
 use crate::model::interaction::Interaction;
 use crate::model::key::Key;
-use crate::model::proof::{Proof, ProofRole, ProofStateEnum};
+use crate::model::proof::{Proof, ProofClaim, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputClaimSchema, ProofSchema};
 use crate::model::validity_credential::ValidityCredentialType;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
-use crate::service::credential::dto::CredentialDetailResponseDTO;
+use crate::service::credential::dto::{
+    CredentialAttestationBlobs, CredentialDetailResponseDTO, DetailCredentialClaimResponseDTO,
+};
 use crate::service::credential::mapper::credential_detail_response_from_model;
-use crate::service::credential_schema::dto::CredentialSchemaListItemResponseDTO;
-use crate::service::error::ServiceError;
 use crate::service::proof_schema::dto::ProofClaimSchemaResponseDTO;
 
 fn build_claim_from_credential_claims(
-    claims: &[CredentialSchemaClaim],
+    claims: &[ClaimSchema],
     key: &str,
     path: String,
-) -> Result<ProofClaimDTO, ServiceError> {
+    required: bool,
+) -> Result<ProofClaimDTO, ProofServiceError> {
+    let claim_schema = &claims
+        .iter()
+        .find(|claim_schema| claim_schema.key == key)
+        .ok_or(ProofServiceError::MappingError(
+            "nested claim is not found by key".into(),
+        ))?;
     Ok(ProofClaimDTO {
-        schema: claims
-            .iter()
-            .find(|claim_schema| claim_schema.schema.key == key)
-            .cloned()
-            .ok_or(ServiceError::MappingError(
-                "nested claim is not found by key".into(),
-            ))?
-            .into(),
+        schema: ProofClaimSchemaResponseDTO {
+            id: claim_schema.id,
+            requested: true,
+            required,
+            key: claim_schema.key.to_owned(),
+            data_type: claim_schema.data_type.to_owned(),
+            claims: vec![],
+            array: claim_schema.array,
+        },
         path,
         value: Some(ProofClaimValueDTO::Claims(vec![])),
     })
 }
 
-fn get_or_insert_proof_claim<'a>(
+fn get_or_insert_proof_container_claim<'a>(
     proof_claims: &'a mut Vec<ProofClaimDTO>,
     path: &str,
     original_key: &str,
-    credential_claim_schemas: &Vec<CredentialSchemaClaim>,
-) -> Result<&'a mut ProofClaimDTO, ServiceError> {
+    credential_claim_schemas: &[ClaimSchema],
+    required: bool,
+) -> Result<&'a mut ProofClaimDTO, ProofServiceError> {
     match path.rsplit_once(NESTED_CLAIM_MARKER) {
         // It's a nested claim
         Some((prefix, _)) => {
-            let parent_claim = get_or_insert_proof_claim(
+            let parent_claim = get_or_insert_proof_container_claim(
                 proof_claims,
                 prefix,
                 original_key,
                 credential_claim_schemas,
+                required,
             )?;
 
             let Some(ProofClaimValueDTO::Claims(claims)) = &mut parent_claim.value else {
-                return Err(ServiceError::MappingError(
+                return Err(ProofServiceError::MappingError(
                     "Parent claim can not have a text value or be empty".into(),
                 ));
             };
 
             if let Some(i) = claims.iter().position(|claim| claim.path == path) {
-                Ok(&mut claims[i])
+                Ok(claims
+                    .get_mut(i)
+                    .ok_or_else(|| ProofServiceError::MappingError("invalid index".into()))?)
             } else {
                 let key = from_path_to_key(path, original_key);
-
-                claims.push(build_claim_from_credential_claims(
+                let mut claim = build_claim_from_credential_claims(
                     credential_claim_schemas,
                     &key,
                     path.into(),
-                )?);
+                    required,
+                )?;
+
+                // Individual array elements should not have the array flag in nested representation.
+                // This adjustment is consistent with the adjustment on the credential detail endpoint.
+                if parent_claim.schema.array {
+                    claim.schema.array = false;
+                }
+
+                claims.push(claim);
                 let last = claims.len() - 1;
-                Ok(&mut claims[last])
+                Ok(claims
+                    .get_mut(last)
+                    .ok_or_else(|| ProofServiceError::MappingError("invalid index".into()))?)
             }
         }
         // It's a root
@@ -90,22 +117,27 @@ fn get_or_insert_proof_claim<'a>(
                 .iter()
                 .position(|claim| claim.schema.key == path)
             {
-                Ok(&mut proof_claims[i])
+                Ok(proof_claims
+                    .get_mut(i)
+                    .ok_or_else(|| ProofServiceError::MappingError("invalid index".into()))?)
             } else {
                 proof_claims.push(build_claim_from_credential_claims(
                     credential_claim_schemas,
                     path,
                     path.into(),
+                    required,
                 )?);
                 let last = proof_claims.len() - 1;
-                Ok(&mut proof_claims[last])
+                Ok(proof_claims
+                    .get_mut(last)
+                    .ok_or_else(|| ProofServiceError::MappingError("invalid index".into()))?)
             }
         }
     }
 }
 
 impl TryFrom<Proof> for ProofListItemResponseDTO {
-    type Error = ServiceError;
+    type Error = ProofServiceError;
 
     fn try_from(value: Proof) -> Result<Self, Self::Error> {
         let retain_until_date = match (value.completed_date, &value.schema) {
@@ -115,26 +147,22 @@ impl TryFrom<Proof> for ProofListItemResponseDTO {
             _ => None,
         };
 
-        let verifier_did = value
-            .verifier_identifier
-            .as_ref()
-            .and_then(|identifier| identifier.did.to_owned());
-
         Ok(ProofListItemResponseDTO {
             id: value.id,
             created_date: value.created_date,
             last_modified: value.last_modified,
-            issuance_date: value.issuance_date,
             requested_date: value.requested_date,
             retain_until_date,
             transport: value.transport,
             completed_date: value.completed_date,
-            verifier_did: convert_inner(verifier_did),
+            engagement: value.engagement,
             verifier: convert_inner(value.verifier_identifier),
-            exchange: value.exchange,
+            protocol: value.protocol,
             state: value.state,
             role: value.role,
             schema: value.schema.map(|schema| schema.into()),
+            profile: value.profile,
+            webhook_destination_url: value.webhook_url,
         })
     }
 }
@@ -144,21 +172,25 @@ pub(super) async fn get_verifier_proof_detail(
     config: &CoreConfig,
     claims_removed_event: Option<History>,
     validity_credential_repository: &dyn ValidityCredentialRepository,
-) -> Result<ProofDetailResponseDTO, ServiceError> {
+) -> Result<ProofDetailResponseDTO, ProofServiceError> {
     let schema = proof
         .schema
         .as_ref()
-        .ok_or(ServiceError::MappingError("schema is None".to_string()))?;
+        .ok_or(ProofServiceError::MappingError(
+            "schema is None".to_string(),
+        ))?;
 
     let claims = proof
         .claims
         .as_ref()
-        .ok_or(ServiceError::MappingError("claims is None".to_string()))?;
+        .ok_or(ProofServiceError::MappingError(
+            "claims is None".to_string(),
+        ))?;
 
     let organisation = schema
         .organisation
         .as_ref()
-        .ok_or(ServiceError::MappingError(
+        .ok_or(ProofServiceError::MappingError(
             "organisation is None".to_string(),
         ))?;
 
@@ -166,14 +198,14 @@ pub(super) async fn get_verifier_proof_detail(
 
     let mut credential_for_credential_schema: HashMap<
         CredentialSchemaId,
-        CredentialDetailResponseDTO,
+        CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO>,
     > = HashMap::new();
 
     for proof_claim in claims.iter() {
         let credential = match proof_claim.credential.clone() {
             Some(cred) => cred,
             None => {
-                return Err(ServiceError::MappingError(format!(
+                return Err(ProofServiceError::MappingError(format!(
                     "Missing credential for proof claim {}",
                     proof_claim.claim.id
                 )));
@@ -183,7 +215,7 @@ pub(super) async fn get_verifier_proof_detail(
         let credential_schema = match credential.schema.clone() {
             Some(schema) => schema,
             None => {
-                return Err(ServiceError::MappingError(format!(
+                return Err(ProofServiceError::MappingError(format!(
                     "Missing credential schema for credential {}",
                     credential.id
                 )));
@@ -191,16 +223,20 @@ pub(super) async fn get_verifier_proof_detail(
         };
 
         let mdoc_validity_credentials = match &credential.schema {
-            Some(schema) if schema.format == "MDOC" => {
-                validity_credential_repository
-                    .get_latest_by_credential_id(credential.id, ValidityCredentialType::Mdoc)
-                    .await?
-            }
+            Some(schema) if schema.format.to_string() == "MDOC" => validity_credential_repository
+                .get_latest_by_credential_id(credential.id, ValidityCredentialType::Mdoc)
+                .await
+                .error_while("getting validity credential")?,
             _ => None,
         };
 
-        let credential_detail =
-            credential_detail_response_from_model(credential, config, mdoc_validity_credentials)?;
+        let credential_detail = credential_detail_response_from_model(
+            credential,
+            config,
+            mdoc_validity_credentials,
+            CredentialAttestationBlobs::default(),
+        )
+        .error_while("creating credential detail")?;
 
         credential_for_credential_schema.insert(credential_schema.id, credential_detail);
     }
@@ -208,7 +244,7 @@ pub(super) async fn get_verifier_proof_detail(
     let proof_input_schemas = match schema.input_schemas.as_ref() {
         Some(proof_input_schemas) if !proof_input_schemas.is_empty() => proof_input_schemas,
         _ => {
-            return Err(ServiceError::MappingError(
+            return Err(ProofServiceError::MappingError(
                 "input_schemas are missing".to_string(),
             ));
         }
@@ -220,7 +256,7 @@ pub(super) async fn get_verifier_proof_detail(
         let mut input_claim_schemas = input_schema
             .claim_schemas
             .as_ref()
-            .ok_or(ServiceError::MappingError(
+            .ok_or(ProofServiceError::MappingError(
                 "Missing claims schemas in input_schema".to_string(),
             ))?
             .clone();
@@ -229,7 +265,7 @@ pub(super) async fn get_verifier_proof_detail(
             input_schema
                 .credential_schema
                 .as_ref()
-                .ok_or(ServiceError::MappingError(
+                .ok_or(ProofServiceError::MappingError(
                     "Missing credential schema in input_schema".to_string(),
                 ))?;
 
@@ -237,10 +273,12 @@ pub(super) async fn get_verifier_proof_detail(
             credential_schema
                 .claim_schemas
                 .as_ref()
-                .ok_or(ServiceError::MappingError(
+                .ok_or(ProofServiceError::MappingError(
                     "Missing claim schema in credential_schema".to_string(),
                 ))?;
 
+        // construct generated proof input claim schemas that are nested children of explicit input_claim_schemas
+        // in order to have all inputs available later to map to particular shared claims
         let object_nested_claims = input_claim_schemas
             .iter()
             .map(|claim| {
@@ -249,80 +287,52 @@ pub(super) async fn get_verifier_proof_detail(
                     .get_fields(&claim.schema.data_type)
                     .map(|field| (claim, field.r#type))
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()
+            .error_while("getting datatypes")?
             .into_iter()
+            // only object claim schemas can have nested claim schemas
             .filter(|(_, r#type)| r#type == &DatatypeType::Object)
-            .flat_map(|(claim, _)| {
+            .flat_map(|(parent_input_claim, _)| {
                 credential_claim_schemas
                     .iter()
-                    .enumerate()
-                    .filter(|(_, c)| {
-                        c.schema
-                            .key
-                            .starts_with(&format!("{}{NESTED_CLAIM_MARKER}", claim.schema.key))
+                    .filter(|c| {
+                        c.key.starts_with(&format!(
+                            "{}{NESTED_CLAIM_MARKER}",
+                            parent_input_claim.schema.key
+                        ))
                     })
-                    .map(|(i, c)| ProofInputClaimSchema {
-                        schema: c.schema.clone(),
-                        required: c.required,
-                        order: i as u32,
+                    .enumerate()
+                    .map(|(i, c)| {
+                        // nested claims are required if the explicitly requested object parent is required
+                        // and all parents on the path to the requested object are mandatory in the credential schema
+                        let required = parent_input_claim.required
+                            && c.required
+                            && credential_claim_schemas
+                                .iter()
+                                .filter(|claim_in_between| {
+                                    claim_in_between.key.starts_with(&format!(
+                                        "{}{NESTED_CLAIM_MARKER}",
+                                        parent_input_claim.schema.key
+                                    )) && c.key.starts_with(&format!(
+                                        "{}{NESTED_CLAIM_MARKER}",
+                                        claim_in_between.key
+                                    ))
+                                })
+                                .all(|claim_in_between| claim_in_between.required);
+
+                        ProofInputClaimSchema {
+                            schema: c.clone(),
+                            required,
+                            order: i as u32,
+                        }
                     })
             })
             .collect::<Vec<_>>();
 
         input_claim_schemas.extend(object_nested_claims);
 
-        let mut proof_input_claims = vec![];
-
-        claims.iter().try_for_each(|proof_claim| {
-            let claim_schema =
-                proof_claim
-                    .claim
-                    .schema
-                    .as_ref()
-                    .ok_or(ServiceError::MappingError(
-                        "Missing schema in proof_claim".to_string(),
-                    ))?;
-
-            let Some(input_claim_schema) = input_claim_schemas
-                .iter()
-                .find(|input_claim_schema| input_claim_schema.schema.id == claim_schema.id)
-                .cloned()
-            else {
-                return Ok(());
-            };
-
-            match proof_claim.claim.path.rsplit_once(NESTED_CLAIM_MARKER) {
-                Some((prefix, _)) => {
-                    let parent_proof_claim = get_or_insert_proof_claim(
-                        &mut proof_input_claims,
-                        prefix,
-                        &claim_schema.key,
-                        credential_claim_schemas,
-                    )?;
-
-                    let Some(ProofClaimValueDTO::Claims(parent_proof_claims)) =
-                        &mut parent_proof_claim.value
-                    else {
-                        return Err(ServiceError::MappingError(
-                            "Parent claim can not have a text value or be empty".to_string(),
-                        ));
-                    };
-
-                    parent_proof_claims.push(ProofClaimDTO {
-                        schema: input_claim_schema.into(),
-                        path: proof_claim.claim.path.clone(),
-                        value: Some(ProofClaimValueDTO::Value(proof_claim.claim.value.clone())),
-                    });
-                }
-                None => proof_input_claims.push(ProofClaimDTO {
-                    schema: input_claim_schema.into(),
-                    path: proof_claim.claim.path.clone(),
-                    value: Some(ProofClaimValueDTO::Value(proof_claim.claim.value.clone())),
-                }),
-            };
-
-            Ok(())
-        })?;
+        let mut proof_input_claims =
+            nest_proof_claims(claims, credential_claim_schemas, Some(&input_claim_schemas))?;
 
         input_claim_schemas
             .iter()
@@ -337,11 +347,12 @@ pub(super) async fn get_verifier_proof_detail(
             .try_for_each(|input_claim| {
                 match input_claim.schema.key.rsplit_once(NESTED_CLAIM_MARKER) {
                     Some((prefix, _)) => {
-                        let parent_proof_claim = get_or_insert_proof_claim(
+                        let parent_proof_claim = get_or_insert_proof_container_claim(
                             &mut proof_input_claims,
                             prefix,
                             &input_claim.schema.key,
                             credential_claim_schemas,
+                            input_claim.required,
                         )?;
 
                         if parent_proof_claim.value.is_none() {
@@ -351,7 +362,7 @@ pub(super) async fn get_verifier_proof_detail(
                         let Some(ProofClaimValueDTO::Claims(parent_proof_claims)) =
                             &mut parent_proof_claim.value
                         else {
-                            return Err(ServiceError::MappingError(
+                            return Err(ProofServiceError::MappingError(
                                 "Parent claim can not have a text value or be empty".to_string(),
                             ));
                         };
@@ -394,20 +405,17 @@ pub(super) async fn get_verifier_proof_detail(
                 .get(&credential_schema.id)
                 .cloned(),
             credential_schema: credential_schema.clone().into(),
-            validity_constraint: input_schema.validity_constraint,
         })
     }
 
     let redirect_uri = proof.redirect_uri.to_owned();
 
-    let holder_did = convert_inner(
-        proof
-            .holder_identifier
-            .as_ref()
-            .and_then(|identifier| identifier.did.to_owned()),
-    );
-
-    let holder = convert_inner(proof.holder_identifier.to_owned());
+    let verifier_certificate = proof
+        .verifier_certificate
+        .clone()
+        .map(TryInto::try_into)
+        .transpose()
+        .error_while("converting certificate")?;
 
     let list_item_response: ProofListItemResponseDTO = proof.try_into()?;
 
@@ -415,16 +423,14 @@ pub(super) async fn get_verifier_proof_detail(
         id: list_item_response.id,
         created_date: list_item_response.created_date,
         last_modified: list_item_response.last_modified,
-        issuance_date: list_item_response.issuance_date,
         requested_date: list_item_response.requested_date,
         retain_until_date: list_item_response.retain_until_date,
         completed_date: list_item_response.completed_date,
-        verifier_did: list_item_response.verifier_did,
         verifier: list_item_response.verifier,
-        holder_did,
-        holder,
+        verifier_certificate,
+        engagement: list_item_response.engagement,
         transport: list_item_response.transport,
-        exchange: list_item_response.exchange,
+        protocol: list_item_response.protocol,
         state: list_item_response.state,
         role: list_item_response.role,
         organisation_id,
@@ -432,99 +438,140 @@ pub(super) async fn get_verifier_proof_detail(
         redirect_uri,
         proof_inputs,
         claims_removed_at: claims_removed_event.map(|event| event.created_date),
+        profile: list_item_response.profile,
+        webhook_destination_url: list_item_response.webhook_destination_url,
     })
 }
 
-fn renest_proof_claims(claims: Vec<ProofClaimDTO>, prefix: &str) -> Vec<ProofClaimDTO> {
-    let mut result: Vec<ProofClaimDTO> = vec![];
-    let mut nested_grouped_by_root: HashMap<String, Vec<ProofClaimDTO>> = HashMap::new();
-    let mut arrays_grouped_by_root: HashMap<String, Vec<ProofClaimDTO>> = HashMap::new();
+fn nest_proof_claims(
+    flat_claims: &[ProofClaim],
+    credential_claim_schemas: &[ClaimSchema],
+    input_claim_schemas: Option<&[ProofInputClaimSchema]>,
+) -> Result<Vec<ProofClaimDTO>, ProofServiceError> {
+    let mut proof_input_claims = vec![];
 
-    for mut claim in claims {
-        let claim_key = claim.schema.key.clone();
-        if claim.schema.array && !claim_key.contains(NESTED_CLAIM_MARKER) {
-            arrays_grouped_by_root
-                .entry(claim_key.to_owned())
-                .or_default()
-                .push(claim);
-        } else if let Some((root_claim, remaining_path)) = claim_key.split_once(NESTED_CLAIM_MARKER)
-        {
-            remaining_path.clone_into(&mut claim.schema.key);
-            nested_grouped_by_root
-                .entry(root_claim.to_owned())
-                .or_default()
-                .push(claim);
-        } else {
-            result.push(claim);
-        }
-    }
+    flat_claims.iter().try_for_each(|proof_claim| {
+        let claim_schema =
+            proof_claim
+                .claim
+                .schema
+                .as_ref()
+                .ok_or(ProofServiceError::MappingError(
+                    "Missing schema in proof_claim".to_string(),
+                ))?;
 
-    for (root_key, inner_claims) in nested_grouped_by_root {
-        let path = if prefix.is_empty() {
-            root_key.clone()
+        let mut schema = if let Some(input_claim_schemas) = input_claim_schemas {
+            let Some(input_claim_schema) = input_claim_schemas
+                .iter()
+                .find(|input_claim_schema| input_claim_schema.schema.id == claim_schema.id)
+                .cloned()
+            else {
+                return Ok(());
+            };
+            ProofClaimSchemaResponseDTO::from(input_claim_schema)
         } else {
-            format!("{}{}{}", prefix, NESTED_CLAIM_MARKER, root_key)
+            let credential_schema_claim = credential_claim_schemas
+                .iter()
+                .find(|schema| schema.id == claim_schema.id)
+                .ok_or(ProofServiceError::MappingError(format!(
+                    "missing credential claim schema with id {}",
+                    claim_schema.id
+                )))?;
+
+            ProofClaimSchemaResponseDTO {
+                id: credential_schema_claim.id,
+                key: credential_schema_claim.key.to_owned(),
+                data_type: credential_schema_claim.data_type.to_owned(),
+                claims: vec![],
+                array: credential_schema_claim.array,
+                // we don't have that information on holder side, so guessing flags here
+                requested: true,
+                required: credential_schema_claim.required,
+            }
         };
 
-        result.push(ProofClaimDTO {
-            schema: ProofClaimSchemaResponseDTO {
-                id: Uuid::new_v4().into(),
-                requested: true,
-                required: true,
-                key: root_key.to_string(),
-                data_type: DatatypeType::Object.to_string(),
-                claims: vec![],
-                array: false,
-            },
-            path: path.clone(),
-            value: Some(ProofClaimValueDTO::Claims(renest_proof_claims(
-                inner_claims,
-                &path,
-            ))),
-        })
-    }
+        match (
+            proof_claim.claim.path.rsplit_once(NESTED_CLAIM_MARKER),
+            &proof_claim.claim.value,
+        ) {
+            (Some((prefix, _)), Some(_)) => {
+                let parent_proof_claim = get_or_insert_proof_container_claim(
+                    &mut proof_input_claims,
+                    prefix,
+                    &claim_schema.key,
+                    credential_claim_schemas,
+                    schema.required,
+                )?;
 
-    for (root_key, inner_claims) in arrays_grouped_by_root {
-        let path = if prefix.is_empty() {
-            root_key.clone()
-        } else {
-            format!("{}{}{}", prefix, NESTED_CLAIM_MARKER, root_key)
+                let Some(ProofClaimValueDTO::Claims(parent_proof_claims)) =
+                    &mut parent_proof_claim.value
+                else {
+                    return Err(ProofServiceError::MappingError(
+                        "Parent claim can not have a text value or be empty".to_string(),
+                    ));
+                };
+
+                // Individual array elements should not have the array flag in nested representation.
+                // This adjustment is consistent with the adjustment on the credential detail endpoint.
+                if parent_proof_claim.schema.array {
+                    schema.array = false;
+                }
+
+                parent_proof_claims.push(map_to_proof_claim_value_dto(proof_claim, schema)?);
+            }
+            (None, Some(_)) => {
+                proof_input_claims.push(map_to_proof_claim_value_dto(proof_claim, schema)?)
+            }
+            (_, None) => {
+                // No value -> insert container claims recursively up to the root
+                get_or_insert_proof_container_claim(
+                    &mut proof_input_claims,
+                    &proof_claim.claim.path,
+                    &claim_schema.key,
+                    credential_claim_schemas,
+                    schema.required,
+                )?;
+            }
         };
 
-        result.push(ProofClaimDTO {
-            schema: ProofClaimSchemaResponseDTO {
-                id: Uuid::new_v4().into(),
-                requested: true,
-                required: true,
-                key: root_key.to_string(),
-                data_type: DatatypeType::Object.to_string(),
-                claims: vec![],
-                array: true,
-            },
-            path,
-            value: Some(ProofClaimValueDTO::Claims(inner_claims)),
-        })
-    }
+        Ok(())
+    })?;
+    Ok(proof_input_claims)
+}
 
-    result
+fn map_to_proof_claim_value_dto(
+    proof_claim: &ProofClaim,
+    schema: ProofClaimSchemaResponseDTO,
+) -> Result<ProofClaimDTO, ProofServiceError> {
+    Ok(ProofClaimDTO {
+        schema,
+        path: proof_claim.claim.path.clone(),
+        value: Some(ProofClaimValueDTO::Value(
+            proof_claim
+                .claim
+                .value
+                .as_ref()
+                .ok_or(ProofServiceError::MappingError(format!(
+                    "Expected proof claim {} to have value",
+                    proof_claim.claim.id
+                )))?
+                .clone(),
+        )),
+    })
 }
 
 pub(super) async fn get_holder_proof_detail(
-    value: Proof,
+    proof: Proof,
     config: &CoreConfig,
     claims_removed_event: Option<History>,
     validity_credential_repository: &dyn ValidityCredentialRepository,
-) -> Result<ProofDetailResponseDTO, ServiceError> {
+) -> Result<ProofDetailResponseDTO, ProofServiceError> {
     let organisation_id = [
-        value
-            .holder_identifier
-            .as_ref()
-            .and_then(|identifier| identifier.organisation.as_ref()),
-        value
+        proof
             .verifier_identifier
             .as_ref()
             .and_then(|identifier| identifier.organisation.as_ref()),
-        value
+        proof
             .interaction
             .as_ref()
             .and_then(|identifier| identifier.organisation.as_ref()),
@@ -532,127 +579,111 @@ pub(super) async fn get_holder_proof_detail(
     .into_iter()
     .find(|org| org.is_some())
     .flatten()
-    .ok_or(ServiceError::MappingError(
+    .ok_or(ProofServiceError::MappingError(
         "Missing organisation".to_string(),
     ))?
     .id;
 
-    let redirect_uri = value.redirect_uri.to_owned();
+    let redirect_uri = proof.redirect_uri.to_owned();
 
     let mut submitted_credentials: HashMap<
         CredentialId,
         (
-            Vec<ProofClaimDTO>,
-            CredentialDetailResponseDTO,
-            CredentialSchemaListItemResponseDTO,
+            Vec<ProofClaim>,
+            CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO>,
+            CredentialSchema,
         ),
     > = HashMap::new();
 
-    for proof_claim in value.claims.iter().flatten() {
+    for proof_claim in proof.claims.iter().flatten() {
         let credential = proof_claim
             .credential
             .as_ref()
-            .ok_or(ServiceError::MappingError(format!(
+            .ok_or(ProofServiceError::MappingError(format!(
                 "Missing credential for claim: {}",
                 proof_claim.claim.id
             )))?;
 
-        let credential_schema = credential
-            .schema
-            .as_ref()
-            .ok_or(ServiceError::MappingError(format!(
-                "Missing credential schema for credential: {}",
-                credential.id
-            )))?;
-
-        let claim_schema = proof_claim
-            .claim
-            .schema
-            .as_ref()
-            .ok_or(ServiceError::MappingError(format!(
-                "Missing claim schema for claim: {}",
-                proof_claim.claim.id
-            )))?;
-
-        let claim = ProofClaimDTO {
-            schema: ProofClaimSchemaResponseDTO {
-                id: claim_schema.id,
-                requested: true,
-                required: true,
-                key: claim_schema.key.clone(),
-                data_type: claim_schema.data_type.clone(),
-                claims: vec![],
-                array: claim_schema.array,
-            },
-            value: Some(ProofClaimValueDTO::Value(
-                proof_claim.claim.value.to_string(),
-            )),
-            path: proof_claim.claim.path.to_string(),
-        };
+        let credential_schema =
+            credential
+                .schema
+                .as_ref()
+                .ok_or(ProofServiceError::MappingError(format!(
+                    "Missing credential schema for credential: {}",
+                    credential.id
+                )))?;
 
         match submitted_credentials.entry(credential.id) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().0.push(claim);
+                entry.get_mut().0.push(proof_claim.clone());
             }
             Entry::Vacant(entry) => {
                 let mdoc_validity_credentials = match &credential.schema {
-                    Some(schema) if schema.format == "MDOC" => {
+                    Some(schema) if schema.format.to_string() == "MDOC" => {
                         validity_credential_repository
                             .get_latest_by_credential_id(
                                 credential.id,
                                 ValidityCredentialType::Mdoc,
                             )
-                            .await?
+                            .await
+                            .error_while("getting validity credential")?
                     }
                     _ => None,
                 };
                 entry.insert((
-                    vec![claim],
+                    vec![proof_claim.clone()],
                     credential_detail_response_from_model(
                         credential.clone(),
                         config,
                         mdoc_validity_credentials,
-                    )?,
-                    credential_schema.clone().into(),
+                        CredentialAttestationBlobs::default(),
+                    )
+                    .error_while("creating credential detail")?,
+                    credential_schema.clone(),
                 ));
             }
         }
     }
 
-    let proof_inputs = submitted_credentials
-        .into_values()
-        .map(|(claims, credential, credential_schema)| ProofInputDTO {
-            claims: renest_proof_claims(claims, ""),
-            credential: Some(credential),
-            credential_schema,
-            validity_constraint: None,
-        })
-        .collect();
+    let proof_inputs =
+        submitted_credentials
+            .into_values()
+            .map(|(claims, credential, credential_schema)| {
+                let credential_claim_schemas = credential_schema.claim_schemas.as_ref().ok_or(
+                    ProofServiceError::MappingError(format!(
+                        "Missing claim schemas for credentials schema: {}",
+                        credential_schema.id
+                    )),
+                )?;
+                Ok(ProofInputDTO {
+                    claims: nest_proof_claims(&claims, credential_claim_schemas, None)?,
+                    credential: Some(credential),
+                    credential_schema: credential_schema.into(),
+                })
+            })
+            .collect::<Result<Vec<_>, ProofServiceError>>()?;
 
-    let holder_did = convert_inner(
-        value
-            .holder_identifier
-            .as_ref()
-            .and_then(|identifier| identifier.did.to_owned()),
-    );
-    let holder = convert_inner(value.holder_identifier.to_owned());
+    let verifier_certificate = proof
+        .verifier_certificate
+        .clone()
+        .map(TryInto::try_into)
+        .transpose()
+        .error_while("converting certificate")?;
 
-    let list_item_response: ProofListItemResponseDTO = value.try_into()?;
+    let list_item_response: ProofListItemResponseDTO = proof.try_into()?;
 
     Ok(ProofDetailResponseDTO {
         id: list_item_response.id,
         created_date: list_item_response.created_date,
         last_modified: list_item_response.last_modified,
-        issuance_date: list_item_response.issuance_date,
         requested_date: list_item_response.requested_date,
         retain_until_date: list_item_response.retain_until_date,
         completed_date: list_item_response.completed_date,
-        verifier_did: list_item_response.verifier_did,
         verifier: list_item_response.verifier,
-        holder_did,
-        holder,
+        engagement: list_item_response.engagement,
+        verifier_certificate,
         transport: list_item_response.transport,
-        exchange: list_item_response.exchange,
+        protocol: list_item_response.protocol,
         state: list_item_response.state,
         role: list_item_response.role,
         organisation_id,
@@ -660,70 +691,43 @@ pub(super) async fn get_holder_proof_detail(
         redirect_uri,
         proof_inputs,
         claims_removed_at: claims_removed_event.map(|event| event.created_date),
+        profile: list_item_response.profile,
+        webhook_destination_url: list_item_response.webhook_destination_url,
     })
 }
 
-pub fn proof_from_create_request(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn proof_from_create_request(
     request: CreateProofRequestDTO,
     now: OffsetDateTime,
     schema: ProofSchema,
     transport: String,
     verifier_identifier: Identifier,
-    verifier_key: Option<Key>,
+    verifier_key: Key,
+    verifier_certificate: Option<Certificate>,
+    interaction: Option<Interaction>,
 ) -> Proof {
     Proof {
         id: Uuid::new_v4().into(),
         created_date: now,
         last_modified: now,
-        issuance_date: now,
-        exchange: request.exchange,
+        protocol: request.protocol,
         redirect_uri: request.redirect_uri,
         state: ProofStateEnum::Created,
         role: ProofRole::Verifier,
         requested_date: None,
         completed_date: None,
+        profile: request.profile,
         schema: Some(schema),
         transport,
         claims: None,
         verifier_identifier: Some(verifier_identifier),
-        holder_identifier: None,
-        verifier_key,
-        interaction: None,
-    }
-}
-
-pub fn proof_for_scan_to_verify(
-    exchange: &str,
-    schema: ProofSchema,
-    transport: &str,
-    interaction_data: Vec<u8>,
-) -> Proof {
-    let now = OffsetDateTime::now_utc();
-    Proof {
-        id: Uuid::new_v4().into(),
-        created_date: now,
-        last_modified: now,
-        issuance_date: now,
-        exchange: exchange.to_owned(),
-        redirect_uri: None,
-        state: ProofStateEnum::Created,
-        role: ProofRole::Verifier,
-        requested_date: None,
-        completed_date: None,
-        schema: Some(schema.clone()),
-        transport: transport.to_owned(),
-        claims: None,
-        verifier_identifier: None,
-        holder_identifier: None,
-        verifier_key: None,
-        interaction: Some(Interaction {
-            id: Uuid::new_v4(),
-            created_date: now,
-            last_modified: now,
-            host: None,
-            data: Some(interaction_data),
-            organisation: schema.organisation,
-        }),
+        verifier_key: Some(verifier_key),
+        verifier_certificate,
+        interaction,
+        proof_blob_id: None,
+        engagement: request.engagement,
+        webhook_url: request.webhook_destination_url,
     }
 }
 
@@ -740,4 +744,14 @@ fn from_path_to_key(path: &str, original_key: &str) -> String {
             }
         })
         .join(NESTED_CLAIM_MARKER_STR)
+}
+
+pub(super) fn interaction_data_from_proof(proof: &Proof) -> Result<Value, ProofServiceError> {
+    proof
+        .interaction
+        .as_ref()
+        .and_then(|interaction| interaction.data.as_ref())
+        .map(|interaction| serde_json::from_slice(interaction))
+        .ok_or_else(|| ProofServiceError::MappingError("proof interaction is missing".into()))?
+        .map_err(|err| ProofServiceError::MappingError(err.to_string()))
 }

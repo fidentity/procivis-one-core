@@ -1,9 +1,16 @@
 use std::collections::HashMap;
 
+use maplit::hashmap;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use serde_with::{serde_as, skip_serializing_none};
 use url::Url;
+
+use crate::proto::jwt::WithMetadata;
+use crate::provider::credential_formatter::error::FormatterError;
+use crate::provider::credential_formatter::model::{
+    CredentialClaim, CredentialClaimValue, SettableClaims,
+};
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,10 +34,41 @@ pub struct SdJwtVc {
     pub status: Option<SdJwtVcStatus>,
 
     #[serde(flatten)]
-    pub public_claims: Map<String, Value>,
+    pub public_claims: HashMap<String, CredentialClaim>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl WithMetadata for SdJwtVc {
+    fn get_metadata_claims(&self) -> Result<HashMap<String, CredentialClaim>, FormatterError> {
+        Ok(hashmap! {
+            "vct".to_string() => CredentialClaim {
+                selectively_disclosable: false,
+                metadata: true,
+                value: CredentialClaimValue::String(self.vc_type.clone()),
+            }
+        })
+    }
+}
+
+impl SettableClaims for SdJwtVc {
+    fn set_claims(&mut self, claims: CredentialClaim) -> Result<(), FormatterError> {
+        let mut claims = match claims.value {
+            CredentialClaimValue::Object(claims) => claims,
+            _ => Err(FormatterError::JsonMapping(
+                "Expected claims to be object".to_string(),
+            ))?,
+        };
+        // don't override reserved claims
+        claims.remove("vct");
+        claims.remove("vct#integrity");
+        claims.remove("_sd");
+        claims.remove("_sd_alg");
+        claims.remove("status");
+        self.public_claims = claims;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SdJwtVcStatus {
     pub status_list: SdJwtVcStatusList,
     #[serde(flatten)]
@@ -38,7 +76,7 @@ pub struct SdJwtVcStatus {
 }
 
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SdJwtVcStatusList {
     #[serde(rename = "idx", deserialize_with = "deserialize_string_or_number")]

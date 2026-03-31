@@ -8,6 +8,7 @@ use one_dto_mapper::Into;
 use crate::error::NativeKeyStorageError;
 
 #[uniffi::export(with_foreign)]
+#[cfg_attr(test, mockall::automock)]
 #[async_trait::async_trait]
 pub trait NativeKeyStorage: Send + Sync {
     async fn generate_key(
@@ -15,6 +16,21 @@ pub trait NativeKeyStorage: Send + Sync {
         key_alias: String,
     ) -> Result<GeneratedKeyBindingDTO, NativeKeyStorageError>;
     async fn sign(
+        &self,
+        key_reference: Vec<u8>,
+        message: Vec<u8>,
+    ) -> Result<Vec<u8>, NativeKeyStorageError>;
+    async fn generate_attestation_key(
+        &self,
+        key_alias: String,
+        nonce: Option<String>,
+    ) -> Result<GeneratedKeyBindingDTO, NativeKeyStorageError>;
+    async fn generate_attestation(
+        &self,
+        key_reference: Vec<u8>,
+        nonce: Option<String>,
+    ) -> Result<Vec<String>, NativeKeyStorageError>;
+    async fn sign_with_attestation_key(
         &self,
         key_reference: Vec<u8>,
         message: Vec<u8>,
@@ -45,5 +61,39 @@ impl one_core::provider::key_storage::secure_element::NativeKeyStorage for Nativ
             .sign(key_reference.into(), message.to_owned())
             .await
             .map_err(SignerError::from)
+    }
+
+    async fn generate_attestation_key(
+        &self,
+        key_alias: String,
+        nonce: Option<String>,
+    ) -> Result<StorageGeneratedKey, KeyStorageError> {
+        Ok(self
+            .0
+            .generate_attestation_key(key_alias, nonce)
+            .await?
+            .into())
+    }
+
+    async fn generate_attestation(
+        &self,
+        key_reference: &[u8],
+        nonce: Option<String>,
+    ) -> Result<Vec<String>, KeyStorageError> {
+        self.0
+            .generate_attestation(key_reference.into(), nonce)
+            .await
+            .map_err(KeyStorageError::from)
+    }
+
+    async fn sign_with_attestation_key(
+        &self,
+        key_reference: &[u8],
+        message: &[u8],
+    ) -> Result<Vec<u8>, KeyStorageError> {
+        self.0
+            .sign_with_attestation_key(key_reference.into(), message.into())
+            .await
+            .map_err(KeyStorageError::from)
     }
 }

@@ -5,23 +5,22 @@ use shared_types::{DidId, TrustAnchorId, TrustEntityId};
 use super::TrustEntityService;
 use super::dto::{
     CreateRemoteTrustEntityRequestDTO, CreateTrustEntityFromDidPublisherRequestDTO,
-    GetTrustEntityResponseDTO, UpdateTrustEntityFromDidRequestDTO,
+    CreateTrustEntityFromDidPublisherResponseDTO, GetRemoteTrustEntityResponseDTO,
+    UpdateTrustEntityActionFromDidRequestDTO, UpdateTrustEntityFromDidRequestDTO,
 };
-use crate::model::did::{Did, DidRelations, DidType};
+use super::error::TrustEntityServiceError;
+use crate::error::ContextWithErrorCode;
+use crate::model::did::{Did, DidRelations};
+use crate::model::identifier::IdentifierRelations;
 use crate::model::key::KeyRelations;
-use crate::service::error::{
-    BusinessLogicError, EntityNotFoundError, MissingProviderError, ServiceError, ValidationError,
-};
-use crate::service::trust_entity::dto::{
-    CreateTrustEntityFromDidPublisherResponseDTO, UpdateTrustEntityActionFromDidRequestDTO,
-};
-use crate::util::bearer_token::prepare_bearer_token;
+use crate::proto::bearer_token::prepare_bearer_token;
+use crate::service::error::MissingProviderError;
 
 impl TrustEntityService {
     pub async fn create_remote_trust_entity_for_did(
         &self,
         request: CreateRemoteTrustEntityRequestDTO,
-    ) -> Result<TrustEntityId, ServiceError> {
+    ) -> Result<TrustEntityId, TrustEntityServiceError> {
         let RemoteOperationProperties {
             did,
             remote_anchor_id,
@@ -43,19 +42,18 @@ impl TrustEntityService {
         };
 
         let url = format!("{remote_anchor_base_url}/ssi/trust-entity/v1");
-        let response: CreateTrustEntityFromDidPublisherResponseDTO = self
-            .client
-            .post(&url)
-            .bearer_auth(&bearer_token)
-            .json(request)
-            .map_err(|e| ServiceError::MappingError(e.to_string()))?
-            .send()
-            .await
-            .map_err(|e| ServiceError::Other(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| ServiceError::Other(e.to_string()))?
-            .json()
-            .map_err(|e| ServiceError::Other(e.to_string()))?;
+        let response: CreateTrustEntityFromDidPublisherResponseDTO = async {
+            self.client
+                .post(&url)
+                .bearer_auth(&bearer_token)
+                .json(request)?
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+        }
+        .await
+        .error_while("posting trust entity")?;
 
         Ok(response.id)
     }
@@ -64,9 +62,9 @@ impl TrustEntityService {
         &self,
         did_id: DidId,
         request: UpdateTrustEntityFromDidRequestDTO,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), TrustEntityServiceError> {
         if let Some(UpdateTrustEntityActionFromDidRequestDTO::Remove) = request.action {
-            return Err(ValidationError::InvalidUpdateRequest.into());
+            return Err(TrustEntityServiceError::InvalidUpdateRequest);
         }
 
         let RemoteOperationProperties {
@@ -81,16 +79,17 @@ impl TrustEntityService {
             .await?;
 
         let url = format!("{remote_anchor_base_url}/ssi/trust-entity/v1/{}", did.did);
-        self.client
-            .patch(&url)
-            .bearer_auth(&bearer_token)
-            .json(request)
-            .map_err(|e| ServiceError::MappingError(e.to_string()))?
-            .send()
-            .await
-            .map_err(|e| ServiceError::Other(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| ServiceError::Other(e.to_string()))?;
+        async {
+            self.client
+                .patch(&url)
+                .bearer_auth(&bearer_token)
+                .json(request)?
+                .send()
+                .await?
+                .error_for_status()
+        }
+        .await
+        .error_while("patching trust entity")?;
 
         Ok(())
     }
@@ -98,7 +97,7 @@ impl TrustEntityService {
     pub async fn get_remote_trust_entity_for_did(
         &self,
         did_id: DidId,
-    ) -> Result<GetTrustEntityResponseDTO, ServiceError> {
+    ) -> Result<GetRemoteTrustEntityResponseDTO, TrustEntityServiceError> {
         let RemoteOperationProperties {
             did,
             remote_anchor_base_url,
@@ -107,17 +106,17 @@ impl TrustEntityService {
         } = self.prepare_remote_operation_for_did(&did_id, None).await?;
 
         let url = format!("{remote_anchor_base_url}/ssi/trust-entity/v1/{}", did.did);
-        let response: GetTrustEntityResponseDTO = self
-            .client
-            .get(&url)
-            .bearer_auth(&bearer_token)
-            .send()
-            .await
-            .map_err(|e| ServiceError::Other(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| ServiceError::Other(e.to_string()))?
-            .json()
-            .map_err(|e| ServiceError::Other(e.to_string()))?;
+        let response: GetRemoteTrustEntityResponseDTO = async {
+            self.client
+                .get(&url)
+                .bearer_auth(&bearer_token)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+        }
+        .await
+        .error_while("fetching trust entity")?;
 
         Ok(response)
     }
@@ -126,24 +125,27 @@ impl TrustEntityService {
         &self,
         did_id: &DidId,
         local_trust_anchor_id: Option<TrustAnchorId>,
-    ) -> Result<RemoteOperationProperties, ServiceError> {
-        let did = self
-            .did_repository
-            .get_did(
-                did_id,
-                &DidRelations {
-                    keys: Some(KeyRelations::default()),
+    ) -> Result<RemoteOperationProperties, TrustEntityServiceError> {
+        let identifier = self
+            .identifier_repository
+            .get_from_did_id(
+                *did_id,
+                &IdentifierRelations {
+                    did: Some(DidRelations {
+                        keys: Some(KeyRelations::default()),
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             )
-            .await?
-            .ok_or(EntityNotFoundError::Did(did_id.to_owned()))?;
+            .await
+            .error_while("getting identifier")?
+            .ok_or(TrustEntityServiceError::MissingDid(did_id.to_owned()))?;
 
-        if did.did_type != DidType::Local {
-            return Err(BusinessLogicError::IncompatibleDidType {
+        if identifier.is_remote {
+            return Err(TrustEntityServiceError::IncompatibleDidType {
                 reason: "Only local DIDs allowed".to_string(),
-            }
-            .into());
+            });
         }
 
         let trust_anchor = self
@@ -154,18 +156,19 @@ impl TrustEntityService {
             )
             .await?;
         if trust_anchor.is_publisher {
-            return Err(BusinessLogicError::TrustAnchorMustBeClient.into());
+            return Err(TrustEntityServiceError::TrustAnchorMustBeClient);
         }
 
         self.trust_provider
             .get(&trust_anchor.r#type)
-            .ok_or_else(|| MissingProviderError::TrustManager(trust_anchor.r#type.clone()))?;
+            .ok_or_else(|| MissingProviderError::TrustManager(trust_anchor.r#type.clone()))
+            .error_while("getting trust manager")?;
 
         // the published reference should look like: {scheme://domain}/ssi/trust/v1/{trustAnchorId}
         let remote_anchor_base_url = trust_anchor
             .publisher_reference
             .split_once("/ssi/")
-            .ok_or(ServiceError::MappingError(
+            .ok_or(TrustEntityServiceError::MappingError(
                 "Invalid publisher reference".to_string(),
             ))?
             .0
@@ -174,24 +177,27 @@ impl TrustEntityService {
         let remote_anchor_id = trust_anchor
             .publisher_reference
             .rsplit_once('/')
-            .ok_or(ServiceError::MappingError(
+            .ok_or(TrustEntityServiceError::MappingError(
                 "Invalid publisher reference".to_string(),
             ))?
             .1;
 
-        let remote_anchor_id = TrustAnchorId::from_str(remote_anchor_id)
-            .map_err(|e| ServiceError::MappingError(format!("Invalid publisher reference: {e}")))?;
+        let remote_anchor_id = TrustAnchorId::from_str(remote_anchor_id).map_err(|e| {
+            TrustEntityServiceError::MappingError(format!("Invalid publisher reference: {e}"))
+        })?;
 
         let bearer_token = prepare_bearer_token(
-            &did,
+            &identifier,
             &*self.key_provider,
             &self.key_algorithm_provider,
-            &*self.did_method_provider,
         )
-        .await?;
+        .await
+        .error_while("preparing bearer token")?;
 
         Ok(RemoteOperationProperties {
-            did,
+            did: identifier.did.ok_or(TrustEntityServiceError::MappingError(
+                "missing did".to_string(),
+            ))?,
             remote_anchor_id,
             remote_anchor_base_url,
             bearer_token,

@@ -1,55 +1,74 @@
 use std::sync::Arc;
 
-use shared_types::{CredentialId, DidId, IdentifierId, KeyId};
+use shared_types::{CredentialId, DidId, HolderWalletUnitId, IdentifierId, InteractionId, KeyId};
 use time::OffsetDateTime;
 use url::Url;
+use uuid::Uuid;
 
 use super::SSIHolderService;
-use super::dto::HandleInvitationResultDTO;
-use crate::common_mapper::value_to_model_claims;
-use crate::common_validator::throw_if_credential_state_not_eq;
+use super::dto::{
+    ContinueIssuanceResponseDTO, HandleInvitationResultDTO, InitiateIssuanceRequestDTO,
+    InitiateIssuanceResponseDTO, OpenIDAuthorizationCodeFlowInteractionData,
+};
+use super::error::HolderServiceError;
+use super::mapper::select_holder_key;
+use super::validator::{
+    validate_credentials_match_session_organisation, validate_holder_capabilities,
+    validate_initiate_issuance_request,
+};
+use crate::config::core_config::FormatType;
+use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin};
+use crate::mapper::value_to_model_claims;
+use crate::model::blob::{Blob, BlobType, UpdateBlobRequest};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential::{
-    Clearable, Credential, CredentialRelations, CredentialStateEnum, UpdateCredentialRequest,
+    Credential, CredentialRelations, CredentialStateEnum, UpdateCredentialRequest,
 };
-use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, WalletStorageTypeEnum,
-};
-use crate::model::did::{Did, DidRelations, KeyRole};
-use crate::model::history::HistoryAction;
-use crate::model::identifier::{Identifier, IdentifierRelations};
-use crate::model::interaction::{InteractionId, InteractionRelations};
-use crate::model::key::Key;
+use crate::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
+use crate::model::did::DidRelations;
+use crate::model::identifier::IdentifierRelations;
+use crate::model::interaction::{Interaction, InteractionRelations, InteractionType};
 use crate::model::organisation::{Organisation, OrganisationRelations};
-use crate::provider::issuance_protocol::IssuanceProtocol;
-use crate::provider::issuance_protocol::error::IssuanceProtocolError;
-use crate::provider::issuance_protocol::openid4vci_draft13::handle_invitation_operations::HandleInvitationOperationsImpl;
-use crate::provider::issuance_protocol::openid4vci_draft13::model::{
-    InvitationResponseDTO, SubmitIssuerResponse, UpdateResponse,
+use crate::proto::oauth_client::{OAuthAuthorizationRequest, OAuthClientProvider};
+use crate::provider::blob_storage_provider::BlobStorageType;
+use crate::provider::issuance_protocol::dto::{ContinueIssuanceDTO, Features};
+use crate::provider::issuance_protocol::model::{
+    InvitationResponseEnum, SubmitIssuerResponse, UpdateResponse,
 };
-use crate::provider::key_storage::model::KeySecurity;
-use crate::service::error::{
-    BusinessLogicError, EntityNotFoundError, MissingProviderError, ServiceError, ValidationError,
+use crate::provider::issuance_protocol::openid4vci_final1_0::mapper::interaction_data_to_accepted_key_storage_security;
+use crate::provider::issuance_protocol::openid4vci_final1_0::model::CredentialSigningAlgValue;
+use crate::provider::issuance_protocol::{
+    self, HolderBindingInput, IssuanceProtocol, deserialize_interaction_data,
+    serialize_interaction_data,
 };
-use crate::service::ssi_holder::validator::validate_holder_capabilities;
-use crate::service::storage_proxy::StorageProxyImpl;
-use crate::util::history::log_history_event_credential;
-use crate::util::oidc::map_to_openid4vp_format;
+use crate::service::error::MissingProviderError;
+use crate::service::storage_proxy::StorageAccess;
+use crate::validator::key_security::{
+    match_key_security_level, validate_key_storage_supports_security_requirement,
+};
+use crate::validator::{
+    throw_if_credential_state_not_eq, throw_if_org_not_matching_session,
+    throw_if_org_relation_not_matching_session,
+};
+
+const STATE: &str = "state";
+const AUTHORIZATION_CODE: &str = "code";
 
 impl SSIHolderService {
     pub async fn accept_credential(
         &self,
-        interaction_id: &InteractionId,
+        interaction_id: InteractionId,
         did_id: Option<DidId>,
         identifier_id: Option<IdentifierId>,
         key_id: Option<KeyId>,
         tx_code: Option<String>,
-    ) -> Result<(), ServiceError> {
+        holder_wallet_unit_id: Option<HolderWalletUnitId>,
+    ) -> Result<CredentialId, HolderServiceError> {
         let credentials = self
             .credential_repository
             .get_credentials_by_interaction_id(
-                interaction_id,
+                &interaction_id,
                 &CredentialRelations {
                     interaction: Some(InteractionRelations {
                         organisation: Some(OrganisationRelations::default()),
@@ -58,113 +77,269 @@ impl SSIHolderService {
                         organisation: Some(OrganisationRelations::default()),
                         claim_schemas: Some(ClaimSchemaRelations::default()),
                     }),
-                    issuer_identifier: Some(IdentifierRelations {
-                        did: Some(Default::default()),
-                        ..Default::default()
-                    }),
                     ..Default::default()
                 },
             )
-            .await?;
-
-        if credentials.is_empty() {
-            return Err(BusinessLogicError::MissingCredentialsForInteraction {
-                interaction_id: *interaction_id,
-            }
-            .into());
-        }
+            .await
+            .error_while("getting credentials")?;
 
         let identifier = match (did_id, identifier_id) {
-            (Some(did_id), None) => self
-                .identifier_repository
-                .get_from_did_id(
-                    did_id,
-                    &IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(Default::default()),
+            (Some(did_id), None) => Some(
+                self.identifier_repository
+                    .get_from_did_id(
+                        did_id,
+                        &IdentifierRelations {
+                            organisation: Some(OrganisationRelations::default()),
+                            did: Some(DidRelations {
+                                keys: Some(Default::default()),
+                                ..Default::default()
+                            }),
+                            key: Some(Default::default()),
                             ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                )
-                .await?
-                .ok_or(ServiceError::from(ValidationError::DidNotFound))?,
-            (None, Some(identifier_id)) => self
-                .identifier_repository
-                .get(
-                    identifier_id,
-                    &IdentifierRelations {
-                        did: Some(DidRelations {
-                            keys: Some(Default::default()),
+                        },
+                    )
+                    .await
+                    .error_while("getting identifier")?
+                    .ok_or(HolderServiceError::MissingDid(did_id))?,
+            ),
+            (None, Some(identifier_id)) => Some(
+                self.identifier_repository
+                    .get(
+                        identifier_id,
+                        &IdentifierRelations {
+                            organisation: Some(OrganisationRelations::default()),
+                            did: Some(DidRelations {
+                                keys: Some(Default::default()),
+                                ..Default::default()
+                            }),
+                            key: Some(Default::default()),
                             ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                )
-                .await?
-                .ok_or(ServiceError::from(EntityNotFoundError::Identifier(
-                    identifier_id,
-                )))?,
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(BusinessLogicError::OverlappingHolderDidWithIdentifier.into());
+                        },
+                    )
+                    .await
+                    .error_while("getting identifier")?
+                    .ok_or(HolderServiceError::MissingIdentifier(identifier_id))?,
+            ),
+            (None, None) => None,
+            (Some(_), Some(_)) => {
+                return Err(HolderServiceError::InvalidIdentifierInput(
+                    "Both didId and identifierId specified".to_string(),
+                ));
             }
         };
 
-        let did = identifier.did.to_owned().ok_or(ServiceError::MappingError(
-            "missing identifier did".to_string(),
-        ))?;
+        let holder_binding_input = if let Some(identifier) = identifier {
+            throw_if_org_relation_not_matching_session(
+                identifier.organisation.as_ref(),
+                &*self.session_provider,
+            )
+            .error_while("checking session")?;
 
-        let selected_key = match key_id {
-            Some(key_id) => did
-                .find_key(&key_id, KeyRole::Authentication)?
-                .ok_or(ValidationError::KeyNotFound)?,
-            None => did.find_first_key_by_role(KeyRole::Authentication)?.ok_or(
-                ValidationError::InvalidKey(
-                    "No key with role authentication available".to_string(),
-                ),
-            )?,
+            let key = select_holder_key(&identifier, key_id)?;
+            Some(HolderBindingInput { identifier, key })
+        } else {
+            None
         };
 
-        let holder_jwk_key_id = self
-            .did_method_provider
-            .get_verification_method_id_from_did_and_key(&did, selected_key)
-            .await?;
+        let credential_id = if credentials.is_empty() {
+            self.accept_credential_final1(
+                interaction_id,
+                holder_binding_input,
+                tx_code,
+                holder_wallet_unit_id,
+            )
+            .await
+        } else {
+            self.accept_credentials_draft13(credentials, holder_binding_input, tx_code)
+                .await
+        }?;
+        tracing::info!(
+            "Accepted issuance of credential {credential_id} for interaction {interaction_id}"
+        );
+        Ok(credential_id)
+    }
 
-        let key_security = self
-            .key_provider
-            .get_key_storage(&selected_key.storage_type)
-            .ok_or_else(|| MissingProviderError::KeyStorage(selected_key.storage_type.clone()))?
-            .get_capabilities()
-            .security;
+    /// specific handling for the final-1 protocol, credential gets created after issued
+    async fn accept_credential_final1(
+        &self,
+        interaction_id: InteractionId,
+        holder_binding: Option<HolderBindingInput>,
+        tx_code: Option<String>,
+        holder_wallet_unit_id: Option<HolderWalletUnitId>,
+    ) -> Result<CredentialId, HolderServiceError> {
+        let interaction = self
+            .interaction_repository
+            .get_interaction(
+                &interaction_id,
+                &InteractionRelations {
+                    organisation: Some(Default::default()),
+                },
+                None,
+            )
+            .await
+            .error_while("getting interaction")?
+            .ok_or(HolderServiceError::MissingCredentialsForInteraction(
+                interaction_id,
+            ))?;
+
+        if interaction.interaction_type != InteractionType::Issuance {
+            return Err(HolderServiceError::MissingCredentialsForInteraction(
+                interaction_id,
+            ));
+        }
+
+        let data: issuance_protocol::openid4vci_final1_0::model::HolderInteractionData =
+            deserialize_interaction_data(interaction.data.as_ref())
+                .error_while("parsing holder interaction data")?;
+
+        if let Some(holder_binding) = &holder_binding
+            && let Some(accepted_security_levels) =
+                interaction_data_to_accepted_key_storage_security(&data)
+        {
+            match_key_security_level(
+                &holder_binding.key.storage_type,
+                &accepted_security_levels,
+                &*self.key_security_level_provider,
+            )
+            .error_while("matching key security")?;
+        }
+
+        let format_type = match data.format.as_str() {
+            "jwt_vc_json" => FormatType::Jwt,
+            "dc+sd-jwt" => FormatType::SdJwtVc,
+            "vc+sd-jwt" => FormatType::SdJwt,
+            "mso_mdoc" => FormatType::Mdoc,
+            "ldp_vc" => {
+                if data
+                    .credential_signing_alg_values_supported
+                    .is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|v| matches!(v, CredentialSigningAlgValue::String(alg) if alg == "ES256"))
+                    })
+                {
+                    FormatType::JsonLdClassic
+                } else {
+                    FormatType::JsonLdBbsPlus
+                }
+            }
+            _ => {
+                return Err(HolderServiceError::MappingError(format!(
+                    "Unknown format: {}",
+                    data.format
+                )));
+            }
+        };
+
+        let (_, formatter) = self
+            .formatter_provider
+            .get_formatter_by_type(format_type)
+            .ok_or(MissingProviderError::FormatterType(format_type))
+            .error_while("getting formatter")?;
+
+        if let Some(holder_binding) = &holder_binding {
+            validate_holder_capabilities(
+                &self.config,
+                holder_binding,
+                &formatter.get_capabilities(),
+                self.key_algorithm_provider.as_ref(),
+            )?;
+        }
+
+        let protocol = self
+            .issuance_protocol_provider
+            .get_protocol(&data.protocol)
+            .ok_or(MissingProviderError::ExchangeProtocol(data.protocol))
+            .error_while("getting protocol")?;
+
+        let issuer_response = protocol
+            .holder_accept_credential(
+                interaction,
+                holder_binding,
+                &self.storage_proxy(),
+                tx_code,
+                holder_wallet_unit_id,
+            )
+            .await
+            .error_while("accepting credential")?;
+
+        let credential = issuer_response
+            .create_credential
+            .as_ref()
+            .ok_or(HolderServiceError::MappingError(
+                "Credential missing".to_string(),
+            ))?
+            .to_owned();
+
+        let issuer_response = self.resolve_update_issuer_response(issuer_response).await?;
+
+        let db_blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob = Blob::new(
+            issuer_response.credential.as_bytes().to_vec(),
+            BlobType::Credential,
+        );
+        let blob_id = blob.id;
+        db_blob_storage
+            .create(blob.clone())
+            .await
+            .error_while("creating credential blob")?;
+
+        let credential_id = self
+            .credential_repository
+            .create_credential(Credential {
+                state: CredentialStateEnum::Accepted,
+                credential_blob_id: Some(blob_id),
+                ..credential
+            })
+            .await
+            .error_while("creating credential")?;
+
+        Ok(credential_id)
+    }
+
+    async fn accept_credentials_draft13(
+        &self,
+        credentials: Vec<Credential>,
+        holder_binding_input: Option<HolderBindingInput>,
+        tx_code: Option<String>,
+    ) -> Result<CredentialId, HolderServiceError> {
+        validate_credentials_match_session_organisation(&credentials, &*self.session_provider)?;
 
         // Errors are gathered into vec, so we can try to accept all credentials.
         let mut errors = vec![];
 
+        let mut credential_id = None;
         for credential in credentials {
+            credential_id = Some(credential.id);
             if let Err(error) = self
-                .accept_and_save_credential(
+                .accept_and_save_credential_draft13(
                     &credential,
-                    &did,
-                    &identifier,
-                    &key_security,
-                    selected_key,
-                    &holder_jwk_key_id,
+                    holder_binding_input.clone(),
                     tx_code.clone(),
                 )
                 .await
             {
-                tracing::error!("Failed to accept credential: {error}");
+                tracing::warn!("Failed to accept credential: {error}");
 
-                let _result = self
-                    .credential_repository
-                    .update_credential(
-                        credential.id,
-                        UpdateCredentialRequest {
-                            state: Some(CredentialStateEnum::Error),
-                            ..Default::default()
-                        },
-                    )
-                    .await;
+                // do not change credential state if wrong TX-code entry
+                if !matches!(error.error_code(), ErrorCode::BR_0169 | ErrorCode::BR_0170) {
+                    let _result = self
+                        .credential_repository
+                        .update_credential(
+                            credential.id,
+                            UpdateCredentialRequest {
+                                state: Some(CredentialStateEnum::Error),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
+                }
 
                 errors.push(error);
             }
@@ -174,119 +349,127 @@ impl SSIHolderService {
             return Err(error);
         }
 
-        Ok(())
+        credential_id.ok_or(HolderServiceError::MappingError(
+            "No credential issued".to_string(),
+        ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn accept_and_save_credential(
+    async fn accept_and_save_credential_draft13(
         &self,
         credential: &Credential,
-        holder_did: &Did,
-        holder_identifer: &Identifier,
-        key_security: &[KeySecurity],
-        selected_key: &Key,
-        holder_jwk_key_id: &str,
+        holder_binding: Option<HolderBindingInput>,
         tx_code: Option<String>,
-    ) -> Result<(), ServiceError> {
-        throw_if_credential_state_not_eq(credential, CredentialStateEnum::Pending)?;
-
-        let wallet_storage_matches = match credential
-            .schema
-            .as_ref()
-            .and_then(|schema| schema.wallet_storage_type.as_ref())
-        {
-            Some(WalletStorageTypeEnum::Hardware) => key_security.contains(&KeySecurity::Hardware),
-            Some(WalletStorageTypeEnum::Software) => key_security.contains(&KeySecurity::Software),
-            Some(WalletStorageTypeEnum::RemoteSecureElement) => {
-                key_security.contains(&KeySecurity::RemoteSecureElement)
-            }
-            None => true,
-        };
-
-        if !wallet_storage_matches {
-            return Err(BusinessLogicError::UnfulfilledWalletStorageType.into());
-        }
-
-        let storage_access = StorageProxyImpl::new(
-            self.interaction_repository.clone(),
-            self.credential_schema_repository.clone(),
-            self.credential_repository.clone(),
-            self.did_repository.clone(),
-            self.identifier_repository.clone(),
-            self.did_method_provider.clone(),
-        );
+    ) -> Result<(), HolderServiceError> {
+        throw_if_credential_state_not_eq(credential, CredentialStateEnum::Pending)
+            .error_while("checking credential state")?;
 
         let schema = credential
             .schema
             .as_ref()
-            .ok_or(IssuanceProtocolError::Failed("schema is None".to_string()))?;
+            .ok_or(HolderServiceError::MappingError(
+                "schema is None".to_string(),
+            ))?;
+
+        if let Some(holder_binding) = &holder_binding {
+            validate_key_storage_supports_security_requirement(
+                &holder_binding.key.storage_type,
+                &schema.key_storage_security,
+                &*self.key_security_level_provider,
+            )
+            .error_while("validating key security")?;
+        }
 
         let format = &schema.format;
-        let formatter =
-            self.formatter_provider
-                .get_formatter(format)
-                .ok_or(ServiceError::MissingProvider(
-                    MissingProviderError::Formatter(format.to_owned()),
-                ))?;
+        let formatter = self
+            .formatter_provider
+            .get_credential_formatter(format)
+            .ok_or(MissingProviderError::Formatter(format.to_string()))
+            .error_while("getting formatter")?;
 
-        validate_holder_capabilities(
-            &self.config,
-            holder_did,
-            holder_identifer,
-            selected_key,
-            &formatter.get_capabilities(),
-            self.key_algorithm_provider.as_ref(),
-        )?;
+        if let Some(holder_binding) = &holder_binding {
+            validate_holder_capabilities(
+                &self.config,
+                holder_binding,
+                &formatter.get_capabilities(),
+                self.key_algorithm_provider.as_ref(),
+            )?;
+        }
 
-        let format_type = self
-            .config
-            .format
-            .get_fields(&schema.format)
-            .map_err(|e| IssuanceProtocolError::Failed(e.to_string()))?
-            .r#type;
-
-        let format = map_to_openid4vp_format(&format_type)
-            .map(|s| s.to_string())
-            .map_err(|e| IssuanceProtocolError::Failed(e.to_string()))?;
+        let interaction = credential
+            .interaction
+            .as_ref()
+            .ok_or(HolderServiceError::MappingError(
+                "interaction is None".to_string(),
+            ))?
+            .to_owned();
 
         let issuer_response = self
             .issuance_protocol_provider
-            .get_protocol(&credential.exchange)
+            .get_protocol(&credential.protocol)
             .ok_or(MissingProviderError::ExchangeProtocol(
-                credential.exchange.clone(),
-            ))?
+                credential.protocol.clone(),
+            ))
+            .error_while("getting protocol")?
             .holder_accept_credential(
-                credential,
-                holder_did,
-                selected_key,
-                Some(holder_jwk_key_id.to_string()),
-                &format,
-                &storage_access,
-                tx_code.clone(),
+                interaction,
+                holder_binding,
+                &self.storage_proxy(),
+                tx_code,
+                None,
             )
-            .await?;
+            .await
+            .error_while("accepting credential")?;
 
         let issuer_response = self.resolve_update_issuer_response(issuer_response).await?;
         let claims = self
             .extract_claims(&credential.id, &issuer_response.credential, schema)
             .await?;
 
+        let db_blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob_id = match credential.credential_blob_id {
+            None => {
+                let blob = Blob::new(
+                    issuer_response.credential.as_bytes().to_vec(),
+                    BlobType::Credential,
+                );
+                db_blob_storage
+                    .create(blob.clone())
+                    .await
+                    .error_while("creating credential blob")?;
+                blob.id
+            }
+            Some(blob_id) => {
+                db_blob_storage
+                    .update(
+                        &blob_id,
+                        UpdateBlobRequest {
+                            value: Some(issuer_response.credential.as_bytes().to_vec()),
+                        },
+                    )
+                    .await
+                    .error_while("updating credential blob")?;
+                blob_id
+            }
+        };
+
         self.credential_repository
             .update_credential(
                 credential.id,
                 UpdateCredentialRequest {
                     state: Some(CredentialStateEnum::Accepted),
-                    suspend_end_date: Clearable::DontTouch,
-                    credential: Some(issuer_response.credential.bytes().collect()),
-                    holder_identifier_id: Some(holder_identifer.id),
-                    key: Some(selected_key.id),
                     claims: Some(claims),
+                    credential_blob_id: Some(blob_id),
                     ..Default::default()
                 },
             )
-            .await?;
-        log_history_event_credential(&*self.history_repository, credential, HistoryAction::Issued)
-            .await;
+            .await
+            .error_while("updating credential")?;
 
         Ok(())
     }
@@ -296,47 +479,55 @@ impl SSIHolderService {
         credential_id: &CredentialId,
         credential: &str,
         schema: &CredentialSchema,
-    ) -> Result<Vec<Claim>, ServiceError> {
-        let credential_format = &schema.format;
-
+    ) -> Result<Vec<Claim>, HolderServiceError> {
         let formatter = self
             .formatter_provider
-            .get_formatter(credential_format)
-            .ok_or(ServiceError::MissingProvider(
-                MissingProviderError::Formatter(credential_format.to_owned()),
-            ))?;
+            .get_credential_formatter(&schema.format)
+            .ok_or(MissingProviderError::Formatter(schema.format.to_string()))
+            .error_while("getting formatter")?;
 
         let credential = formatter
             .extract_credentials_unverified(credential, Some(schema))
             .await
-            .map_err(ServiceError::FormatterError)?;
+            .error_while("parsing credential")?;
 
         let mut collected_claims: Vec<Claim> = Vec::new();
 
-        let claim_schemas = schema
-            .claim_schemas
-            .as_ref()
-            .ok_or(ServiceError::BusinessLogic(
-                BusinessLogicError::MissingClaimSchemas,
-            ))?;
+        let claim_schemas =
+            schema
+                .claim_schemas
+                .as_ref()
+                .ok_or(HolderServiceError::MappingError(
+                    "missing clam_schemas".to_string(),
+                ))?;
         let now = OffsetDateTime::now_utc();
 
         for (key, value) in credential.claims.claims {
-            let this_claim_schema = claim_schemas
+            let claim_schema = claim_schemas
                 .iter()
-                .find(|claim_schema| claim_schema.schema.key == key)
-                .ok_or(ServiceError::BusinessLogic(
-                    BusinessLogicError::MissingClaimSchemas,
-                ))?;
+                .find(|claim_schema| claim_schema.key == key);
+            let Some(claim_schema) = claim_schema else {
+                // Legacy compatibility shim: extra metadata claims are allowed, if not in the
+                // schema they are also not stored.
+                if value.metadata {
+                    continue;
+                }
+                return Err(HolderServiceError::MappingError(
+                    "missing clam_schemas".to_string(),
+                ));
+            };
 
-            collected_claims.extend(value_to_model_claims(
-                *credential_id,
-                claim_schemas,
-                &value,
-                now,
-                &this_claim_schema.schema,
-                &key,
-            )?);
+            collected_claims.extend(
+                value_to_model_claims(
+                    *credential_id,
+                    claim_schemas,
+                    value,
+                    now,
+                    claim_schema,
+                    &key,
+                )
+                .error_while("converting claims")?,
+            );
         }
 
         Ok(collected_claims)
@@ -345,7 +536,7 @@ impl SSIHolderService {
     pub async fn reject_credential(
         &self,
         interaction_id: &InteractionId,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), HolderServiceError> {
         let credentials = self
             .credential_repository
             .get_credentials_by_interaction_id(
@@ -359,36 +550,78 @@ impl SSIHolderService {
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+            .error_while("getting credentials")?;
 
         if credentials.is_empty() {
-            return Err(BusinessLogicError::MissingCredentialsForInteraction {
-                interaction_id: *interaction_id,
-            }
-            .into());
+            return Err(HolderServiceError::MissingCredentialsForInteraction(
+                *interaction_id,
+            ));
+        }
+        validate_credentials_match_session_organisation(&credentials, &*self.session_provider)?;
+
+        let credential_protocol_pairs = credentials
+            .into_iter()
+            .map(|credential| {
+                throw_if_credential_state_not_eq(&credential, CredentialStateEnum::Accepted)
+                    .error_while("checking credential state")?;
+
+                let protocol = self
+                    .issuance_protocol_provider
+                    .get_protocol(&credential.protocol)
+                    .ok_or(MissingProviderError::ExchangeProtocol(
+                        credential.protocol.clone(),
+                    ))
+                    .error_while("getting protocol")?;
+
+                if !protocol
+                    .get_capabilities()
+                    .features
+                    .contains(&Features::SupportsRejection)
+                {
+                    return Err(HolderServiceError::RejectionNotSupported);
+                }
+
+                Ok((credential, protocol))
+            })
+            .collect::<Result<Vec<_>, HolderServiceError>>()?;
+
+        let storage_proxy = self.storage_proxy();
+        let mut result: Result<(), HolderServiceError> = Ok(());
+        for (credential, protocol) in credential_protocol_pairs {
+            if let Err(err) = self
+                .reject_single_credential(credential, &*protocol, &storage_proxy)
+                .await
+            {
+                result = Err(err);
+            };
         }
 
-        for credential in credentials {
-            throw_if_credential_state_not_eq(&credential, CredentialStateEnum::Pending)?;
+        result
+    }
 
-            self.issuance_protocol_provider
-                .get_protocol(&credential.exchange)
-                .ok_or(MissingProviderError::ExchangeProtocol(
-                    credential.exchange.clone(),
-                ))?
-                .holder_reject_credential(&credential)
-                .await?;
+    async fn reject_single_credential(
+        &self,
+        credential: Credential,
+        protocol: &dyn IssuanceProtocol,
+        storage_access: &StorageAccess,
+    ) -> Result<(), HolderServiceError> {
+        let credential_id = credential.id;
+        protocol
+            .holder_reject_credential(credential, storage_access)
+            .await
+            .error_while("rejecting credential")?;
 
-            self.credential_repository
-                .update_credential(
-                    credential.id,
-                    UpdateCredentialRequest {
-                        state: Some(CredentialStateEnum::Rejected),
-                        ..Default::default()
-                    },
-                )
-                .await?;
-        }
+        self.credential_repository
+            .update_credential(
+                credential_id,
+                UpdateCredentialRequest {
+                    state: Some(CredentialStateEnum::Rejected),
+                    ..Default::default()
+                },
+            )
+            .await
+            .error_while("updating credential")?;
 
         Ok(())
     }
@@ -399,67 +632,282 @@ impl SSIHolderService {
         organisation: Organisation,
         exchange: String,
         issuance_protocol: Arc<dyn IssuanceProtocol>,
-    ) -> Result<HandleInvitationResultDTO, ServiceError> {
-        let storage_access = StorageProxyImpl::new(
-            self.interaction_repository.clone(),
-            self.credential_schema_repository.clone(),
-            self.credential_repository.clone(),
-            self.did_repository.clone(),
-            self.identifier_repository.clone(),
-            self.did_method_provider.clone(),
-        );
+        redirect_uri: Option<String>,
+    ) -> Result<HandleInvitationResultDTO, HolderServiceError> {
+        let result = issuance_protocol
+            .holder_handle_invitation(url, organisation, &self.storage_proxy(), redirect_uri)
+            .await
+            .error_while("handling invitation")?;
 
-        let handle_operations = HandleInvitationOperationsImpl::new(
-            organisation.clone(),
-            self.credential_schema_repository.clone(),
-            self.vct_type_metadata_cache.clone(),
-            self.client.clone(),
-        );
+        match result {
+            InvitationResponseEnum::Credential {
+                interaction_id,
+                tx_code,
+                key_storage_security,
+                key_algorithms,
+                requires_wallet_instance_attestation,
+            } => Ok(HandleInvitationResultDTO::Credential {
+                interaction_id,
+                tx_code,
+                key_storage_security_levels: key_storage_security,
+                key_algorithms,
+                protocol: exchange,
+                requires_wallet_instance_attestation,
+            }),
+            InvitationResponseEnum::AuthorizationFlow {
+                organisation_id,
+                issuer,
+                client_id,
+                redirect_uri,
+                authorization_details,
+                scope,
+                issuer_state,
+                authorization_server,
+            } => {
+                let InitiateIssuanceResponseDTO {
+                    interaction_id,
+                    url,
+                } = self
+                    .initiate_issuance(InitiateIssuanceRequestDTO {
+                        organisation_id,
+                        protocol: exchange.to_owned(),
+                        issuer,
+                        client_id,
+                        redirect_uri,
+                        scope,
+                        authorization_details,
+                        issuer_state,
+                        authorization_server,
+                    })
+                    .await?;
 
-        let InvitationResponseDTO {
-            credentials,
-            interaction_id,
-            tx_code,
-        } = issuance_protocol
-            .holder_handle_invitation(url, organisation, &storage_access, &handle_operations)
-            .await?;
-
-        let result = HandleInvitationResultDTO::Credential {
-            interaction_id,
-            credential_ids: credentials.iter().map(|c| c.id).collect(),
-            tx_code,
-        };
-
-        for mut credential in credentials {
-            credential.exchange = exchange.to_owned();
-            self.credential_repository
-                .create_credential(credential)
-                .await?;
+                Ok(HandleInvitationResultDTO::AuthorizationCodeFlow {
+                    interaction_id,
+                    authorization_code_flow_url: url,
+                    protocol: exchange,
+                })
+            }
         }
-
-        Ok(result)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, err(level = "warn"))]
     async fn resolve_update_issuer_response(
         &self,
-        update_response: UpdateResponse<SubmitIssuerResponse>,
-    ) -> Result<SubmitIssuerResponse, ServiceError> {
-        if let Some(create_did) = update_response.create_did {
-            self.did_repository.create_did(create_did).await?;
-        }
-        if let Some(create_identifier) = update_response.create_identifier {
-            self.identifier_repository.create(create_identifier).await?;
-        }
+        update_response: UpdateResponse,
+    ) -> Result<SubmitIssuerResponse, HolderServiceError> {
         if let Some(update_credential_schema) = update_response.update_credential_schema {
             self.credential_schema_repository
                 .update_credential_schema(update_credential_schema)
-                .await?;
+                .await
+                .error_while("updating credential schema")?;
         }
         if let Some((credential_id, update_credential)) = update_response.update_credential {
             self.credential_repository
                 .update_credential(credential_id, update_credential)
-                .await?;
+                .await
+                .error_while("updating credential")?;
         }
         Ok(update_response.result)
+    }
+
+    pub async fn initiate_issuance(
+        &self,
+        request: InitiateIssuanceRequestDTO,
+    ) -> Result<InitiateIssuanceResponseDTO, HolderServiceError> {
+        throw_if_org_not_matching_session(&request.organisation_id, &*self.session_provider)
+            .error_while("checking session")?;
+        validate_initiate_issuance_request(&request, &self.config)?;
+
+        let Some(organisation) = self
+            .organisation_repository
+            .get_organisation(&request.organisation_id, &Default::default())
+            .await
+            .error_while("getting organisation")?
+        else {
+            return Err(HolderServiceError::MissingOrganisation(
+                request.organisation_id,
+            ));
+        };
+
+        let authorization_server = request
+            .authorization_server
+            .as_ref()
+            // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-ID1.html#section-11.2.3-2.2
+            // ... If this parameter is omitted, the entity providing the Credential Issuer is also acting as the Authorization Server
+            .unwrap_or(&request.issuer);
+
+        let authorization_server = Url::parse(authorization_server).map_err(|e| {
+            HolderServiceError::InvalidInput(format!("Invalid authorization server: {e}"))
+        })?;
+
+        let interaction_id: InteractionId = Uuid::new_v4().into();
+        let mut authorization_request = OAuthAuthorizationRequest::new(
+            request.client_id.clone(),
+            request.scope.as_ref().map(|s| s.join(" ")),
+            Some(interaction_id.to_string()),
+            request.redirect_uri.clone(),
+            request
+                .authorization_details
+                .as_ref()
+                .map(|ad| serde_json::json!(ad).to_string()),
+        );
+        if let Some(issuer_state) = &request.issuer_state {
+            authorization_request =
+                authorization_request.with_issuer_state(issuer_state.to_owned());
+        }
+
+        let authorization_response = self
+            .client
+            .oauth_client()
+            .initiate_authorization_code_flow(authorization_server, authorization_request)
+            .await
+            .error_while("initiating authorization code flow")?;
+
+        let interaction_data = OpenIDAuthorizationCodeFlowInteractionData {
+            request,
+            code_verifier: authorization_response.code_verifier,
+        };
+        // store request parameters inside interaction
+        let data = serialize_interaction_data(&interaction_data)
+            .error_while("storing interaction data")?;
+
+        let now = OffsetDateTime::now_utc();
+        self.interaction_repository
+            .create_interaction(Interaction {
+                id: interaction_id,
+                created_date: now,
+                last_modified: now,
+                data: Some(data),
+                organisation: Some(organisation),
+                nonce_id: None,
+                interaction_type: InteractionType::Issuance,
+                expires_at: None,
+            })
+            .await
+            .error_while("creating interaction")?;
+
+        tracing::info!(
+            "Initiated authorization code flow for credential issuance, created interaction {interaction_id}"
+        );
+        Ok(InitiateIssuanceResponseDTO {
+            interaction_id,
+            url: authorization_response.url.to_string(),
+        })
+    }
+
+    pub async fn continue_issuance(
+        &self,
+        url: impl AsRef<str>,
+    ) -> Result<ContinueIssuanceResponseDTO, HolderServiceError> {
+        let url = Url::parse(url.as_ref()).map_err(|error| {
+            HolderServiceError::InvalidInput(format!(
+                "Continuation URL has invalid format: {error}"
+            ))
+        })?;
+
+        let (_, state) = url.query_pairs().find(|(key, _)| key == STATE).ok_or(
+            HolderServiceError::InvalidInput(
+                "Continuation URL state parameter not specified".to_string(),
+            ),
+        )?;
+
+        let (_, authorization_code) = url
+            .query_pairs()
+            .find(|(key, _)| key == AUTHORIZATION_CODE)
+            .ok_or(HolderServiceError::InvalidInput(
+                "Continuation URL authorization_code parameter not specified".to_string(),
+            ))?;
+
+        let interaction_id = Uuid::parse_str(state.as_ref())
+            .map_err(|_| {
+                HolderServiceError::InvalidInput(
+                    "Continuation URL state parameter has invalid format".to_string(),
+                )
+            })?
+            .into();
+
+        let interaction = self
+            .interaction_repository
+            .get_interaction(
+                &interaction_id,
+                &InteractionRelations {
+                    organisation: Some(Default::default()),
+                },
+                None,
+            )
+            .await
+            .error_while("getting interaction")?
+            .ok_or(HolderServiceError::MissingInteraction(interaction_id))?;
+
+        throw_if_org_relation_not_matching_session(
+            interaction.organisation.as_ref(),
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+        let issuance: OpenIDAuthorizationCodeFlowInteractionData =
+            deserialize_interaction_data(interaction.data.as_ref())
+                .error_while("parsing holder interaction data")?;
+
+        let organisation = interaction
+            .organisation
+            .ok_or(HolderServiceError::MappingError(
+                "organisation missing".to_string(),
+            ))?;
+
+        if let (None, None) = (
+            issuance.request.scope.as_ref(),
+            issuance.request.authorization_details.as_ref(),
+        ) {
+            return Err(HolderServiceError::InvalidInput("Either `scope` or `authorization_details` has to be specified for credential issuance".to_string()));
+        }
+
+        let issuance_protocol::model::ContinueIssuanceResponseDTO {
+            interaction_id,
+            key_storage_security_levels: key_storage_security,
+            key_algorithms,
+            requires_wallet_instance_attestation,
+            protocol,
+        } = self
+            .issuance_protocol_provider
+            .get_protocol(&issuance.request.protocol)
+            .ok_or(MissingProviderError::ExchangeProtocol(
+                issuance.request.protocol.clone(),
+            ))
+            .error_while("getting protocol")?
+            .holder_continue_issuance(
+                ContinueIssuanceDTO {
+                    credential_issuer: issuance.request.issuer,
+                    authorization_code: authorization_code.to_string(),
+                    client_id: issuance.request.client_id,
+                    redirect_uri: issuance.request.redirect_uri,
+                    scope: issuance.request.scope.unwrap_or_default(),
+                    credential_configuration_ids: issuance
+                        .request
+                        .authorization_details
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|d| d.credential_configuration_id)
+                        .collect(),
+                    code_verifier: issuance.code_verifier,
+                    authorization_server: issuance.request.authorization_server,
+                },
+                organisation,
+                &self.storage_proxy(),
+            )
+            .await
+            .error_while("continuing issuance")?;
+
+        tracing::info!(
+            "Processed authorization code flow result for credential issuance using interaction {interaction_id}"
+        );
+
+        Ok(ContinueIssuanceResponseDTO {
+            interaction_id,
+            interaction_type: InteractionType::Issuance,
+            key_storage_security_levels: key_storage_security,
+            key_algorithms,
+            requires_wallet_instance_attestation,
+            protocol,
+        })
     }
 }

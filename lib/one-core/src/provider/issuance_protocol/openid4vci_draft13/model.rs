@@ -1,29 +1,103 @@
-use std::collections::HashMap;
 use std::fmt;
 
 use indexmap::IndexMap;
-use one_dto_mapper::{Into, convert_inner};
+use one_dto_mapper::{From, Into, convert_inner};
 use secrecy::{SecretSlice, SecretString};
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::skip_serializing_none;
-use shared_types::{CredentialId, CredentialSchemaId, DidId, DidValue, OrganisationId};
-use strum::Display;
-use time::OffsetDateTime;
-use uuid::Uuid;
-
-use crate::common_mapper::opt_secret_string;
-use crate::model::credential::{Credential, UpdateCredentialRequest};
-use crate::model::credential_schema::{
-    CredentialFormat, LayoutProperties, LayoutType, RevocationMethod,
-    UpdateCredentialSchemaRequest, WalletStorageTypeEnum,
+use serde_with::{DurationSeconds, serde_as, skip_serializing_none};
+use shared_types::{
+    CredentialFormat, CredentialSchemaId, DidValue, OrganisationId, RevocationMethodId,
 };
-use crate::model::did::{Did, DidType};
-use crate::model::identifier::Identifier;
-use crate::model::interaction::InteractionId;
+use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
+use strum::{Display, EnumString};
+use time::{Duration, OffsetDateTime};
+use url::Url;
+
+use super::super::dto::ContinueIssuanceDTO;
+use super::super::model::{
+    CommonParams, CredentialSigningAlgValue, OpenID4VCIProofTypeSupported, OpenID4VCITxCode,
+    OpenID4VCRedirectUriParams, default_enable_credential_preview, default_issuance_url_scheme,
+};
+use crate::mapper::opt_secret_string;
+use crate::mapper::params::deserialize_encryption_key;
+use crate::model::credential_schema::{
+    KeyStorageSecurity, LayoutProperties, LayoutType, TransactionCode, TransactionCodeType,
+};
 use crate::provider::credential_formatter::vcdm::ContextType;
 use crate::service::credential_schema::dto::CredentialClaimSchemaDTO;
-use crate::util::params::deserialize_encryption_key;
+
+#[serde_as]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OpenID4VCIDraft13Params {
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub pre_authorized_code_expires_in: Duration,
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub token_expires_in: Duration,
+    #[serde_as(as = "DurationSeconds<i64>")]
+    pub refresh_expires_in: Duration,
+    #[serde(default)]
+    pub credential_offer_by_value: bool,
+    #[serde(deserialize_with = "deserialize_encryption_key")]
+    pub encryption: SecretSlice<u8>,
+
+    #[serde(default = "default_issuance_url_scheme")]
+    pub url_scheme: String,
+
+    pub redirect_uri: OpenID4VCRedirectUriParams,
+
+    #[serde(default = "default_enable_credential_preview")]
+    pub enable_credential_preview: bool,
+
+    #[serde(flatten)]
+    pub common: CommonParams,
+}
+
+/// [IANA registry](https://www.iana.org/assignments/oauth-parameters/oauth-parameters.xhtml#pkce-code-challenge-method)
+///
+/// [RFC7636](https://www.rfc-editor.org/rfc/rfc7636.html#section-4.2)
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum OAuthCodeChallengeMethod {
+    #[serde(rename = "plain")]
+    Plain,
+    #[serde(rename = "S256")]
+    S256,
+}
+
+/// <https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata>
+///
+/// [RFC8414](https://datatracker.ietf.org/doc/html/rfc8414#section-2)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct OAuthAuthorizationServerMetadata {
+    pub issuer: Url,
+    pub authorization_endpoint: Option<Url>,
+    pub token_endpoint: Option<Url>,
+    pub pushed_authorization_request_endpoint: Option<Url>,
+    pub jwks_uri: Option<String>,
+    #[serde(default)]
+    pub code_challenge_methods_supported: Vec<OAuthCodeChallengeMethod>,
+    #[serde(default)]
+    pub response_types_supported: Vec<String>,
+    #[serde(default)]
+    pub grant_types_supported: Vec<String>,
+    #[serde(default)]
+    pub token_endpoint_auth_methods_supported: Vec<TokenEndpointAuthMethod>,
+
+    /// Attestation-Based Client Authentication challenge endpoint
+    /// <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-07#section-13.1>
+    pub challenge_endpoint: Option<Url>,
+
+    /// Attestation-Based Client Authentication - supported signing algorithms for client attestation
+    /// <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-07#section-10.1>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_attestation_signing_alg_values_supported: Option<Vec<String>>,
+
+    /// Attestation-Based Client Authentication - supported signing algorithms for client attestation PoP
+    /// <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-07#section-10.1>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_attestation_pop_signing_alg_values_supported: Option<Vec<String>>,
+}
 
 #[skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -33,19 +107,29 @@ pub(crate) struct HolderInteractionData {
     #[serde(default)]
     pub token_endpoint: Option<String>,
     #[serde(default)]
+    pub notification_endpoint: Option<String>,
+    #[serde(default)]
     pub grants: Option<OpenID4VCIGrants>,
+    #[serde(default)]
+    pub continue_issuance: Option<ContinueIssuanceDTO>,
     #[serde(default)]
     pub access_token: Option<Vec<u8>>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub access_token_expires_at: Option<OffsetDateTime>,
     #[serde(default)]
     pub refresh_token: Option<Vec<u8>>,
+    #[serde(default)]
+    pub nonce: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub refresh_token_expires_at: Option<OffsetDateTime>,
     #[serde(default)]
     pub cryptographic_binding_methods_supported: Option<Vec<String>>,
     #[serde(default)]
-    pub credential_signing_alg_values_supported: Option<Vec<String>>,
+    pub credential_signing_alg_values_supported: Option<Vec<CredentialSigningAlgValue>>,
+    #[serde(default)]
+    pub proof_types_supported: Option<IndexMap<String, OpenID4VCIProofTypeSupported>>,
+    #[serde(default)]
+    pub notification_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,7 +140,9 @@ pub struct OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO {
 #[derive(Clone, Debug, Deserialize)]
 pub struct OpenID4VCIIssuerMetadataResponseDTO {
     pub credential_issuer: String,
+    pub authorization_servers: Option<Vec<String>>,
     pub credential_endpoint: String,
+    pub notification_endpoint: Option<String>,
     pub credential_configurations_supported:
         IndexMap<String, OpenID4VCICredentialConfigurationData>,
     pub display: Option<Vec<OpenID4VCIIssuerMetadataDisplayResponseDTO>>,
@@ -86,28 +172,28 @@ pub struct OpenID4VCICredentialConfigurationData {
     pub scope: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct OpenID4VCIProofTypeSupported {
-    pub proof_signing_alg_values_supported: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-pub(crate) struct OpenID4VCIIssuerMetadataMdocClaimsValuesDTO {
-    #[serde(default)]
-    pub value: HashMap<String, OpenID4VCIIssuerMetadataMdocClaimsValuesDTO>,
-    pub value_type: String,
-    pub mandatory: Option<bool>,
-    pub order: Option<Vec<String>>,
-    pub array: Option<bool>,
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Display,
+    EnumString,
+    Hash,
+    PartialOrd,
+    Ord,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WalletStorageTypeEnum {
+    Hardware,
+    Software,
+    RemoteSecureElement,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct OpenID4VCIIssuerMetadataCredentialSchemaResponseDTO {
-    pub id: String,
-    pub r#type: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Timestamp(pub i64);
 
@@ -127,12 +213,26 @@ pub struct OpenID4VCITokenResponseDTO {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "grant_type")]
 pub enum OpenID4VCITokenRequestDTO {
+    /// [OpenID4VCI](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-4.1.1)
     #[serde(rename = "urn:ietf:params:oauth:grant-type:pre-authorized_code")]
     PreAuthorizedCode {
         #[serde(rename = "pre-authorized_code")]
         pre_authorized_code: String,
         tx_code: Option<String>,
     },
+
+    /// [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.3)
+    #[serde(rename = "authorization_code")]
+    AuthorizationCode {
+        #[serde(rename = "code")]
+        authorization_code: String,
+        client_id: String,
+        redirect_uri: Option<String>,
+
+        /// [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636#section-4.5)
+        code_verifier: Option<String>,
+    },
+
     #[serde(rename = "refresh_token")]
     RefreshToken { refresh_token: String },
 }
@@ -159,6 +259,8 @@ pub(crate) struct OpenID4VCIIssuerInteractionDataDTO {
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub refresh_token_expires_at: Option<OffsetDateTime>,
     pub nonce: Option<String>,
+    pub notification_id: Option<String>,
+    pub transaction_code: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -185,7 +287,23 @@ pub struct OpenID4VCIProofRequestDTO {
     pub jwt: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenID4VCINotificationEvent {
+    CredentialAccepted,
+    CredentialFailure,
+    CredentialDeleted,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, Serialize)]
+pub struct OpenID4VCINotificationRequestDTO {
+    pub notification_id: String,
+    pub event: OpenID4VCINotificationEvent,
+    pub event_description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct OpenID4VCIDiscoveryResponseDTO {
     pub issuer: String,
     pub authorization_endpoint: Option<String>,
@@ -202,39 +320,7 @@ pub struct OpenID4VCIDiscoveryResponseDTO {
 }
 
 #[skip_serializing_none]
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub(crate) struct OpenID4VCICredential {
-    pub format: String,
-    #[serde(default)]
-    pub credential_definition: Option<OpenID4VCICredentialDefinitionRequestDTO>,
-    #[serde(default)]
-    pub vct: Option<String>,
-    #[serde(default)]
-    pub doctype: Option<String>,
-    pub proof: OpenID4VCIProof,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct OpenID4VCIProof {
-    pub proof_type: String,
-    pub jwt: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct LdpVcAlgs {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub proof_type: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct InvitationResponseDTO {
-    pub interaction_id: InteractionId,
-    pub credentials: Vec<Credential>,
-    pub tx_code: Option<OpenID4VCITxCode>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Into)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Into)]
 #[into(LayoutProperties)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialSchemaLayoutPropertiesRequestDTO {
@@ -250,7 +336,7 @@ pub(crate) struct CredentialSchemaLayoutPropertiesRequestDTO {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialSchemaLogoPropertiesRequestDTO {
     pub font_color: Option<String>,
@@ -259,68 +345,27 @@ pub(crate) struct CredentialSchemaLogoPropertiesRequestDTO {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialSchemaBackgroundPropertiesRequestDTO {
     pub color: Option<String>,
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CredentialSchemaCodePropertiesRequestDTO {
     pub attribute: String,
     pub r#type: CredentialSchemaCodeTypeEnum,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum CredentialSchemaCodeTypeEnum {
     Barcode,
     Mrz,
     QrCode,
 }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DidListItemResponseDTO {
-    pub id: DidId,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_date: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub last_modified: OffsetDateTime,
-    pub name: String,
-    pub did: DidValue,
-    #[serde(rename = "type")]
-    pub did_type: DidType,
-    #[serde(rename = "method")]
-    pub did_method: String,
-    pub deactivated: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ShareResponse<T> {
-    pub url: String,
-    pub interaction_id: Uuid,
-    pub context: T,
-}
-
-#[derive(Clone, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SubmitIssuerResponse {
-    pub credential: String,
-    pub redirect_uri: Option<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct UpdateResponse<T> {
-    pub result: T,
-    pub create_did: Option<Did>,
-    pub create_identifier: Option<Identifier>,
-    pub update_credential: Option<(CredentialId, UpdateCredentialRequest)>,
-    pub update_credential_schema: Option<UpdateCredentialSchemaRequest>,
-}
-
 #[skip_serializing_none]
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct OpenID4VCICredentialOfferDTO {
@@ -332,6 +377,8 @@ pub struct OpenID4VCICredentialOfferDTO {
     pub credential_subject: Option<ExtendedSubjectDTO>,
     // This is a custom field with the issuer did
     pub issuer_did: Option<DidValue>,
+    // This is a custom field with the issuer certificate
+    pub issuer_certificate: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -347,54 +394,51 @@ pub struct ExtendedSubjectClaimsDTO {
     pub claims: IndexMap<String, OpenID4VCICredentialValueDetails>,
 }
 
-#[skip_serializing_none]
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub(crate) struct OpenID4VCICredentialOfferCredentialDTO {
-    pub format: String,
-    #[serde(default)]
-    pub credential_definition: Option<OpenID4VCICredentialDefinitionRequestDTO>,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
-    #[serde(default)]
-    pub doctype: Option<String>,
-    #[serde(default)]
-    pub claims: Option<IndexMap<String, OpenID4VCICredentialSubjectItem>>,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct OpenID4VCIGrants {
+pub enum OpenID4VCIGrants {
     #[serde(rename = "urn:ietf:params:oauth:grant-type:pre-authorized_code")]
-    pub code: OpenID4VCIGrant,
+    PreAuthorizedCode(OpenID4VCIPreAuthorizedCodeGrant),
+    #[serde(rename = "authorization_code")]
+    AuthorizationCode(OpenID4VCIAuthorizationCodeGrant),
+}
+
+impl OpenID4VCIGrants {
+    pub fn tx_code(&self) -> Option<&OpenID4VCITxCode> {
+        match self {
+            OpenID4VCIGrants::PreAuthorizedCode(pre_authorized_code) => {
+                pre_authorized_code.tx_code.as_ref()
+            }
+            OpenID4VCIGrants::AuthorizationCode(_authorization_code) => None,
+        }
+    }
+
+    pub fn authorization_server(&self) -> Option<&String> {
+        match self {
+            OpenID4VCIGrants::PreAuthorizedCode(pre_authorized_code) => {
+                pre_authorized_code.authorization_server.as_ref()
+            }
+            OpenID4VCIGrants::AuthorizationCode(authorization_code) => {
+                authorization_code.authorization_server.as_ref()
+            }
+        }
+    }
 }
 
 #[skip_serializing_none]
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct OpenID4VCIGrant {
+pub struct OpenID4VCIPreAuthorizedCodeGrant {
     #[serde(rename = "pre-authorized_code")]
     pub pre_authorized_code: String,
     #[serde(default)]
     pub tx_code: Option<OpenID4VCITxCode>,
+    pub authorization_server: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct OpenID4VCITxCode {
-    #[serde(default)]
-    pub input_mode: OpenID4VCITxCodeInputMode,
-    #[serde(default)]
-    pub length: Option<i64>,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Display, Default)]
-pub enum OpenID4VCITxCodeInputMode {
-    #[serde(rename = "numeric")]
-    #[strum(serialize = "numeric")]
-    #[default]
-    Numeric,
-    #[serde(rename = "text")]
-    #[strum(serialize = "text")]
-    Text,
+pub struct OpenID4VCIAuthorizationCodeGrant {
+    pub issuer_state: Option<String>,
+    pub authorization_server: Option<String>,
 }
 
 #[skip_serializing_none]
@@ -560,29 +604,17 @@ pub struct CredentialSubjectDisplay {
     pub locale: Option<String>,
 }
 
+#[skip_serializing_none]
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct OpenID4VCICredentialValueDetails {
-    pub value: String,
+    pub value: Option<String>,
     pub value_type: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct OpenID4VCICredentialOfferClaim {
-    pub value: OpenID4VCICredentialOfferClaimValue,
-    pub value_type: String,
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
-#[serde(untagged)]
-pub(crate) enum OpenID4VCICredentialOfferClaimValue {
-    Nested(IndexMap<String, OpenID4VCICredentialOfferClaim>),
-    String(String),
 }
 
 /// deserializes from CredentialSchemaResponseRestDTO
-#[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[expect(unused)]
 pub(crate) struct CredentialSchemaDetailResponseDTO {
     pub id: CredentialSchemaId,
     #[serde(with = "time::serde::rfc3339")]
@@ -591,29 +623,37 @@ pub(crate) struct CredentialSchemaDetailResponseDTO {
     pub last_modified: OffsetDateTime,
     pub name: String,
     pub format: CredentialFormat,
-    pub revocation_method: RevocationMethod,
+    pub revocation_method: Option<RevocationMethodId>,
     pub organisation_id: OrganisationId,
     pub claims: Vec<CredentialClaimSchemaDTO>,
-    #[serde(default)]
-    pub external_schema: bool,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub schema_id: String,
-    pub schema_type: String,
     pub layout_type: Option<LayoutType>,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesRequestDTO>,
+    pub transaction_code: Option<CredentialSchemaTransactionCodeDTO>,
+}
+
+#[derive(Clone, Debug, Deserialize, From, Into)]
+#[serde(rename_all = "camelCase")]
+#[from(TransactionCode)]
+#[into(TransactionCode)]
+pub struct CredentialSchemaTransactionCodeDTO {
+    pub r#type: TransactionCodeType,
+    pub length: u32,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct CreateCredentialSchemaRequestDTO {
     pub name: String,
-    pub format: String,
-    pub revocation_method: String,
+    pub format: CredentialFormat,
+    pub revocation_method: Option<RevocationMethodId>,
     pub claims: Vec<CredentialClaimSchemaRequestDTO>,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
+    pub key_storage_security: Option<KeyStorageSecurity>,
     pub layout_type: LayoutType,
-    pub external_schema: bool,
     pub layout_properties: Option<CredentialSchemaLayoutPropertiesRequestDTO>,
-    pub schema_id: Option<String>,
+    pub schema_id: String,
+    pub imported_source_url: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -625,80 +665,28 @@ pub(crate) struct CredentialClaimSchemaRequestDTO {
     pub claims: Vec<CredentialClaimSchemaRequestDTO>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-/// deserializes matching `ProofRequestClaimRestDTO`
-pub(crate) struct ProofClaimSchema {
-    pub id: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_date: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub last_modified: OffsetDateTime,
-    pub key: String,
-    pub datatype: String,
-    pub required: bool,
-    pub credential_schema: ProofCredentialSchema,
+pub(crate) struct CredentialIssuerParams {
+    #[expect(dead_code)]
+    pub logo: Option<String>,
+    pub issuer: String,
+    pub client_id: String,
 }
 
-#[skip_serializing_none]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-/// deserializes matching `CredentialSchemaListValueResponseRestDTO`
-pub(crate) struct ProofCredentialSchema {
-    pub id: String,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_date: OffsetDateTime,
-    #[serde(with = "time::serde::rfc3339")]
-    pub last_modified: OffsetDateTime,
-    pub name: String,
-    pub format: String,
-    pub revocation_method: String,
-    pub wallet_storage_type: Option<WalletStorageTypeEnum>,
-    pub schema_type: String,
-    pub schema_id: String,
+pub struct ContinuationIssuanceDTO {
+    pub organisation_id: OrganisationId,
+    pub protocol: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub redirect_uri: Option<String>,
+    pub scope: Option<Vec<String>>,
+    pub authorization_details: Option<Vec<ContinueIssuanceAuthorizationDetailDTO>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OpenID4VCIParams {
-    pub pre_authorized_code_expires_in: u64,
-    pub token_expires_in: u64,
-    pub refresh_expires_in: u64,
-    #[serde(default)]
-    pub credential_offer_by_value: bool,
-    #[serde(deserialize_with = "deserialize_encryption_key")]
-    pub encryption: SecretSlice<u8>,
-
-    #[serde(default = "default_issuance_url_scheme")]
-    pub url_scheme: String,
-
-    pub redirect_uri: OpenID4VCRedirectUriParams,
-}
-
-// Apparently the indirection via functions is required: https://github.com/serde-rs/serde/issues/368
-fn default_issuance_url_scheme() -> String {
-    "openid-credential-offer".to_string()
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Deserialize, Serialize, Display)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub(crate) enum ClientIdScheme {
-    RedirectUri,
-    VerifierAttestation,
-    Did,
-    X509SanDns,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OpenID4VCRedirectUriParams {
-    pub enabled: bool,
-    pub allowed_schemes: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub(crate) struct OpenID4VCVerifierAttestationPayload {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub redirect_uris: Vec<String>,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ContinueIssuanceAuthorizationDetailDTO {
+    pub r#type: String,
+    pub credential_configuration_id: String,
 }

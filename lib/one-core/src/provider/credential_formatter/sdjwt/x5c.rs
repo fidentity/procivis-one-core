@@ -1,0 +1,84 @@
+use serde::Deserialize;
+use standardized_types::jwk::PublicJwk;
+use url::Url;
+
+use crate::error::ContextWithErrorCode;
+use crate::proto::http_client::HttpClient;
+use crate::provider::credential_formatter::error::FormatterError;
+
+pub async fn resolve_jwks_url(
+    issuer_url: Url,
+    http_client: &dyn HttpClient,
+) -> Result<Vec<PublicJwk>, FormatterError> {
+    let issuer_url_path = issuer_url.path().trim_end_matches('/').to_string();
+
+    const PATH_PREFIX: &str = "/.well-known/jwt-vc-issuer";
+
+    let jwks_endpoint = {
+        let mut cloned = issuer_url.clone();
+        cloned.set_path(&format!("{PATH_PREFIX}{issuer_url_path}"));
+        cloned
+    };
+
+    let response: SdJwtVcIssuerMetadataDTO = async {
+        http_client
+            .get(jwks_endpoint.as_str())
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+    }
+    .await
+    .error_while("fetching jwt-vc-issuer metadata")?;
+
+    let response_issuer = Url::parse(&response.issuer)?;
+
+    if response_issuer != issuer_url {
+        return Err(FormatterError::CouldNotExtractCredentials(
+            "Response issuer and url issuer mismatch".to_string(),
+        ));
+    }
+
+    let keys = get_jwks_list(&response, http_client).await?;
+
+    Ok(keys)
+}
+
+async fn get_jwks_list(
+    dto: &SdJwtVcIssuerMetadataDTO,
+    http_client: &dyn HttpClient,
+) -> Result<Vec<PublicJwk>, FormatterError> {
+    if let Some(jwks) = &dto.jwks {
+        Ok(jwks.keys.clone())
+    } else if let Some(jwks_uri) = &dto.jwks_uri {
+        Ok(async {
+            http_client
+                .get(jwks_uri.as_str())
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<SdJwtVcIssuerMetadataJwkDTO>()
+        }
+        .await
+        .error_while("fetching JWKs")?
+        .keys)
+    } else {
+        Err(FormatterError::CouldNotExtractCredentials(
+            "Missing `jwks` or `jwks_uri`".to_string(),
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct SdJwtVcIssuerMetadataDTO {
+    pub issuer: String,
+    #[serde(default)]
+    pub jwks: Option<SdJwtVcIssuerMetadataJwkDTO>,
+    #[serde(default)]
+    pub jwks_uri: Option<Url>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct SdJwtVcIssuerMetadataJwkDTO {
+    pub keys: Vec<PublicJwk>,
+}

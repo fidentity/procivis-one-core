@@ -2,47 +2,99 @@
 //! https://openid.net/specs/openid-4-verifiable-presentations-1_0.html
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use mapper::{get_claim_name_by_json_path, presentation_definition_from_interaction_data};
 use one_dto_mapper::convert_inner;
 
-use super::dto::{
-    CredentialGroup, CredentialGroupItem, InvitationResponseDTO, PresentationDefinitionResponseDTO,
-    PresentedCredential, UpdateResponse,
-};
+use super::dto::{CredentialGroup, CredentialGroupItem, PresentationDefinitionResponseDTO};
 use super::{FormatMapper, StorageAccess, TypeToDescriptorMapper, VerificationProtocolError};
 use crate::config::core_config::CoreConfig;
+use crate::error::ContextWithErrorCode;
+use crate::mapper::oidc::map_from_openid4vp_format;
+use crate::model::identifier::{Identifier, IdentifierType};
+use crate::model::key::Key;
 use crate::model::proof::Proof;
+use crate::provider::credential_formatter::model::AuthenticationFn;
+use crate::provider::key_algorithm::KeyAlgorithm;
+use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::verification_protocol::mapper::{
     gather_object_datatypes_from_config, get_relevant_credentials_to_credential_schemas,
 };
 use crate::provider::verification_protocol::openid4vp::model::{
-    OpenID4VPClientMetadata, OpenID4VPPresentationDefinition,
+    ClientIdScheme, OpenID4VPClientMetadata, OpenID4VPPresentationDefinition,
 };
-use crate::util::oidc::map_from_openid4vp_format;
-
+use crate::service::proof::dto::ShareProofRequestParamsDTO;
+pub(crate) mod dcql;
 pub mod draft20;
 pub mod draft20_swiyu;
 pub mod draft25;
 pub mod error;
+pub mod final1_0;
 pub(crate) mod jwe_presentation;
 pub(crate) mod mapper;
 pub(crate) mod mdoc;
 pub mod model;
+mod presentation_exchange;
 pub mod proximity_draft00;
 pub mod service;
 pub mod validator;
-pub(crate) mod x509;
+
+fn get_client_id_scheme(
+    params: Option<ShareProofRequestParamsDTO>,
+    supported_client_id_schemes: &[ClientIdScheme],
+    verifier_identifier: Identifier,
+) -> Result<ClientIdScheme, VerificationProtocolError> {
+    let param_scheme = params.unwrap_or_default().client_id_scheme;
+
+    if let Some(scheme) = param_scheme {
+        return Ok(scheme);
+    }
+
+    let fallback_scheme = supported_client_id_schemes
+        .iter()
+        .find(|scheme| {
+            get_supported_client_id_scheme_for_identifier(&verifier_identifier.r#type)
+                .contains(scheme)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            VerificationProtocolError::InvalidRequest(
+                "No supported client_id_scheme for selected identifier type".to_string(),
+            )
+        })?;
+
+    Ok(fallback_scheme)
+}
+
+fn get_supported_client_id_scheme_for_identifier(
+    identifier: &IdentifierType,
+) -> Vec<ClientIdScheme> {
+    match identifier {
+        IdentifierType::Key => vec![],
+        IdentifierType::Did => vec![
+            ClientIdScheme::Did,
+            ClientIdScheme::VerifierAttestation,
+            ClientIdScheme::RedirectUri,
+        ],
+        IdentifierType::Certificate => vec![ClientIdScheme::X509SanDns, ClientIdScheme::X509Hash],
+        IdentifierType::CertificateAuthority => vec![],
+    }
+}
 
 fn extract_common_formats(
     allowed_schema_input_descriptor_formats: HashSet<String>,
     client_metadata: &Option<OpenID4VPClientMetadata>,
 ) -> Result<HashSet<String>, VerificationProtocolError> {
     if let Some(client_metadata) = client_metadata {
-        let oidc_formats = client_metadata.vp_formats.keys().collect::<HashSet<_>>();
+        let vp_formats_supported = match client_metadata {
+            OpenID4VPClientMetadata::Draft(metadata) => &metadata.vp_formats,
+            OpenID4VPClientMetadata::Final1_0(metadata) => &metadata.vp_formats_supported,
+        };
 
-        let schema_formats: HashSet<String> = oidc_formats
-            .iter()
+        let schema_formats: HashSet<String> = vp_formats_supported
+            .keys()
             .map(|oidc_format| {
                 map_from_openid4vp_format(oidc_format)
                     .map_err(|e| VerificationProtocolError::Failed(e.to_string()))
@@ -74,7 +126,6 @@ pub(crate) async fn get_presentation_definition_with_local_credentials(
         input_descriptor.format.keys().for_each(|key| {
             allowed_oidc_input_descriptor_formats.insert(key.to_owned());
         });
-        let validity_credential_nbf = input_descriptor.constraints.validity_credential_nbf;
 
         let mut fields = input_descriptor.constraints.fields;
 
@@ -116,10 +167,9 @@ pub(crate) async fn get_presentation_definition_with_local_credentials(
                         required: !requested_claim.optional.is_some_and(|optional| optional),
                     })
                 })
-                .collect::<anyhow::Result<Vec<_>, _>>()?,
+                .collect::<anyhow::Result<Vec<_>, VerificationProtocolError>>()?,
             applicable_credentials: vec![],
             inapplicable_credentials: vec![],
-            validity_credential_nbf,
         });
     }
 
@@ -158,4 +208,49 @@ pub(crate) async fn get_presentation_definition_with_local_credentials(
         convert_inner(credential_groups),
         config,
     )
+}
+
+struct JWTSigner<'a> {
+    pub auth_fn: AuthenticationFn,
+    pub verifier_key: &'a Key,
+    pub key_algorithm: Arc<dyn KeyAlgorithm>,
+    pub jose_algorithm: String,
+}
+
+fn get_jwt_signer<'a>(
+    proof: &'a Proof,
+    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
+    key_provider: &dyn KeyProvider,
+) -> Result<JWTSigner<'a>, VerificationProtocolError> {
+    let verifier_key = proof
+        .verifier_key
+        .as_ref()
+        .ok_or(VerificationProtocolError::Failed(
+            "verifier_key is None".to_string(),
+        ))?;
+
+    let auth_fn = key_provider
+        .get_signature_provider(verifier_key, None, key_algorithm_provider.to_owned())
+        .error_while("getting signature provider")?;
+
+    let key_algorithm = verifier_key
+        .key_algorithm_type()
+        .and_then(|alg| key_algorithm_provider.key_algorithm_from_type(alg))
+        .ok_or(VerificationProtocolError::Failed(
+            "algorithm not found".to_string(),
+        ))?;
+
+    let jose_algorithm =
+        key_algorithm
+            .issuance_jose_alg_id()
+            .ok_or(VerificationProtocolError::Failed(
+                "JOSE algorithm not found".to_string(),
+            ))?;
+
+    Ok(JWTSigner {
+        auth_fn,
+        verifier_key,
+        key_algorithm,
+        jose_algorithm,
+    })
 }

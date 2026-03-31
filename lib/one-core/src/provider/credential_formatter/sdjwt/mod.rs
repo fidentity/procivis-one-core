@@ -1,18 +1,31 @@
-use anyhow::Context;
+use std::borrow::Cow;
+
 use disclosures::recursively_expand_disclosures;
 use model::{DecomposedToken as DecomposedTokenWithDisclosures, Disclosure};
 use one_crypto::{CryptoProvider, Hasher};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use shared_types::DidValue;
 use time::{Duration, OffsetDateTime};
 
-use super::jwt::model::{JWTPayload, ProofOfPossessionJwk, ProofOfPossessionKey};
-use super::model::{AuthenticationFn, HolderBindingCtx, TokenVerifier, VerificationFn};
+use super::model::{
+    AuthenticationFn, CertificateDetails, CredentialClaim, HolderBindingCtx, IdentifierDetails,
+    PublicKeySource, SettableClaims, SignatureProvider, VerificationFn,
+};
+use crate::error::ContextWithErrorCode;
+use crate::mapper::x509::{pem_chain_into_x5c, x5c_into_pem_chain};
 use crate::model::did::KeyRole;
+use crate::model::identifier::IdentifierType;
+use crate::proto::certificate_validator::{
+    CertificateValidationOptions, CertificateValidator, ParsedCertificate,
+};
+use crate::proto::http_client::HttpClient;
+use crate::proto::jwt::model::{
+    DecomposedJwt, JWTPayload, ProofOfPossessionJwk, ProofOfPossessionKey,
+};
+use crate::proto::jwt::{AnyPayload, Jwt, JwtPublicKeyInfo, TokenError};
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::model::DecomposedToken;
-use crate::provider::credential_formatter::jwt::{AnyPayload, Jwt};
 use crate::provider::credential_formatter::model::CredentialPresentation;
 use crate::provider::credential_formatter::sdjwt::disclosures::{
     compute_object_disclosures, parse_token, select_disclosures,
@@ -20,14 +33,16 @@ use crate::provider::credential_formatter::sdjwt::disclosures::{
 use crate::provider::credential_formatter::sdjwt::model::{
     KeyBindingPayload, SdJwtFormattingInputs,
 };
+use crate::provider::credential_formatter::sdjwt::x5c::resolve_jwks_url;
 use crate::provider::credential_formatter::vcdm::VcdmCredential;
-use crate::provider::did_method::jwk::jwk_helpers::encode_to_did;
+use crate::provider::did_method::error::DidMethodError;
 use crate::provider::did_method::provider::DidMethodProvider;
-use crate::service::key::dto::PublicKeyJwkDTO;
-
+use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
+use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 pub mod disclosures;
 pub mod mapper;
 pub mod model;
+pub mod x5c;
 
 #[cfg(test)]
 pub mod test;
@@ -37,6 +52,7 @@ pub(crate) enum SdJwtType {
     SdJwtVc,
 }
 
+#[expect(clippy::too_many_arguments)]
 pub(crate) async fn format_credential<T: Serialize>(
     credential: VcdmCredential,
     claims: Value,
@@ -44,43 +60,85 @@ pub(crate) async fn format_credential<T: Serialize>(
     auth_fn: AuthenticationFn,
     hasher: &dyn Hasher,
     did_method_provider: &dyn DidMethodProvider,
+    key_algorithm_provider: &dyn KeyAlgorithmProvider,
     digests_to_payload: impl FnOnce(Vec<String>) -> Result<T, FormatterError>,
+    sd_array_elements: bool,
 ) -> Result<String, FormatterError> {
-    let issuer = credential.issuer.to_did_value()?.to_string();
+    let issuer = credential.issuer.as_url().to_string();
     let id = credential.id.clone();
-    let issued_at = credential.valid_from.or(credential.issuance_date);
+    let invalid_before = credential.valid_from.or(credential.issuance_date);
     let expires_at = credential.valid_until.or(credential.expiration_date);
-    let (payload, disclosures) = format_hashed_credential(&claims, hasher, digests_to_payload)?;
+    let (payload, disclosures) =
+        format_hashed_credential(&claims, hasher, digests_to_payload, sd_array_elements)?;
 
-    let proof_of_possession_key = if let Some(ref holder_did) = additional_inputs.holder_did {
-        let did_document = did_method_provider
-            .resolve(holder_did)
-            .await
-            .map_err(|err| FormatterError::CouldNotFormat(format!("{}", err)))?;
-        did_document
-            .find_verification_method(
-                additional_inputs.holder_key_id.as_deref(),
-                Some(KeyRole::AssertionMethod),
-            )
-            .map(|verification_method| verification_method.public_key_jwk.clone())
-            .map(PublicKeyJwkDTO::from)
-            .map(|jwk| {
-                let jwk = match additional_inputs.swiyu_proof_of_possession {
-                    false => ProofOfPossessionJwk::Jwk { jwk },
-                    true => ProofOfPossessionJwk::Swiyu(jwk),
-                };
-                ProofOfPossessionKey { key_id: None, jwk }
-            })
-    } else {
-        None
+    let proof_of_possession_key = match &additional_inputs.holder_identifier {
+        Some(identifier) => match identifier.r#type {
+            IdentifierType::Did => {
+                let did = identifier
+                    .did
+                    .as_ref()
+                    .ok_or(FormatterError::CouldNotFormat("Missing did".to_string()))?;
+                let did_document = did_method_provider
+                    .resolve(&did.did)
+                    .await
+                    .error_while("resolving DID")?;
+                did_document
+                    .find_verification_method(
+                        additional_inputs.holder_key_id.as_deref(),
+                        Some(KeyRole::AssertionMethod),
+                    )
+                    .map(|verification_method| verification_method.public_key_jwk.clone())
+                    .map(|jwk| ProofOfPossessionKey {
+                        key_id: None,
+                        jwk: ProofOfPossessionJwk::Jwk { jwk },
+                    })
+            }
+            IdentifierType::Key => {
+                let key = identifier
+                    .key
+                    .as_ref()
+                    .ok_or(FormatterError::CouldNotFormat("Missing key".to_string()))?;
+                let key_type = key
+                    .key_algorithm_type()
+                    .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                        key.key_type.to_string(),
+                    ))
+                    .error_while("getting key algorithm")?;
+
+                let key_algorithm = key_algorithm_provider
+                    .key_algorithm_from_type(key_type)
+                    .ok_or(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
+                        key_type.to_string(),
+                    ))
+                    .error_while("getting key algorithm")?;
+
+                let jwk = key_algorithm
+                    .reconstruct_key(key.public_key.as_slice(), None, None)
+                    .error_while("reconstructing key")?;
+
+                let jwk = jwk.public_key_as_jwk().error_while("getting JWK")?;
+                Some(ProofOfPossessionKey {
+                    key_id: None,
+                    jwk: ProofOfPossessionJwk::Jwk { jwk },
+                })
+            }
+            r#type => return Err(FormatterError::UnsupportedIdentifierType(r#type)),
+        },
+        None => None,
     };
 
+    let subject = additional_inputs
+        .holder_identifier
+        .as_ref()
+        .and_then(|identifier| identifier.did.as_ref())
+        .map(|did| did.did.clone())
+        .map(|did| did.to_string());
+
     let payload = JWTPayload {
-        issued_at,
+        issued_at: Some(OffsetDateTime::now_utc()),
         expires_at,
-        invalid_before: issued_at
-            .and_then(|iat| iat.checked_sub(Duration::seconds(additional_inputs.leeway as i64))),
-        subject: additional_inputs.holder_did.map(|did| did.to_string()),
+        invalid_before,
+        subject,
         audience: None,
         issuer: Some(issuer),
         jwt_id: id.map(|id| id.to_string()),
@@ -91,15 +149,26 @@ pub(crate) async fn format_credential<T: Serialize>(
     let key_id = auth_fn.get_key_id();
     let jwt = Jwt::new(
         additional_inputs.token_type,
-        auth_fn.jose_alg().ok_or(FormatterError::CouldNotFormat(
-            "Invalid key algorithm".to_string(),
-        ))?,
+        auth_fn
+            .jose_alg()
+            .ok_or(TokenError::MissingJOSEAlgorithm(
+                "Missing key algorithm".to_string(),
+            ))
+            .error_while("preparing JWT")?,
         key_id,
-        None,
+        additional_inputs
+            .issuer_certificate
+            .map(|issuer_certificate| pem_chain_into_x5c(&issuer_certificate.chain))
+            .transpose()
+            .error_while("parsing PEM chain")?
+            .map(JwtPublicKeyInfo::X5c),
         payload,
     );
 
-    let mut token = jwt.tokenize(Some(auth_fn)).await?;
+    let mut token = jwt
+        .tokenize(Some(&*auth_fn))
+        .await
+        .error_while("creating SD-JWT token")?;
     append_disclosures(&mut token, disclosures);
     Ok(token)
 }
@@ -108,8 +177,9 @@ fn format_hashed_credential<T>(
     claims: &Value,
     hasher: &dyn Hasher,
     digests_to_payload: impl FnOnce(Vec<String>) -> Result<T, FormatterError>,
+    sd_array_elements: bool,
 ) -> Result<(T, Vec<String>), FormatterError> {
-    let (disclosures, digests) = compute_object_disclosures(claims, hasher)?;
+    let (disclosures, digests) = compute_object_disclosures(claims, hasher, sd_array_elements)?;
     let payload = digests_to_payload(digests)?;
     Ok((payload, disclosures))
 }
@@ -119,7 +189,8 @@ pub(crate) fn detect_sdjwt_type_from_token(token: &str) -> Result<SdJwtType, For
         None => token,
         Some((without_claims, _)) => without_claims,
     };
-    let jwt: DecomposedToken<AnyPayload> = Jwt::decompose_token(without_claims)?;
+    let jwt: DecomposedJwt<AnyPayload> =
+        Jwt::decompose_token(without_claims).error_while("parsing SD-JWT token")?;
 
     if jwt.payload.custom.contains_key("vct") {
         Ok(SdJwtType::SdJwtVc)
@@ -131,26 +202,28 @@ pub(crate) fn detect_sdjwt_type_from_token(token: &str) -> Result<SdJwtType, For
 pub(crate) async fn prepare_sd_presentation(
     presentation: CredentialPresentation,
     hasher: &dyn Hasher,
-    holder_binding_ctx: Option<HolderBindingCtx>,
-    holder_binding_fn: Option<AuthenticationFn>,
+    user_claim_path: &[String],
 ) -> Result<String, FormatterError> {
     let model::DecomposedToken {
         jwt, disclosures, ..
     } = parse_token(&presentation.token)?;
-    let disclosures = select_disclosures(presentation.disclosed_keys, disclosures, hasher)?;
+    let jwt_payload = Jwt::<Value>::decompose_token(jwt)
+        .error_while("parsing SD-JWT token")?
+        .payload;
+    let disclosed_keys = if !user_claim_path.is_empty() {
+        let prefix = user_claim_path.join("/");
+        presentation
+            .disclosed_keys
+            .iter()
+            .map(|disclosed_key| format!("{prefix}/{disclosed_key}",))
+            .collect()
+    } else {
+        presentation.disclosed_keys.clone()
+    };
+    let disclosures = select_disclosures(disclosed_keys, &jwt_payload.custom, disclosures, hasher)?;
     let mut token = jwt.to_owned();
     append_disclosures(&mut token, disclosures);
 
-    let jwt_payload = Jwt::<()>::decompose_token(jwt)?.payload;
-    if jwt_payload.proof_of_possession_key.is_some() {
-        let holder_binding_ctx = holder_binding_ctx.ok_or(FormatterError::Failed(
-            "holder binding required, but no context provided".to_string(),
-        ))?;
-        let holder_binding_fn = holder_binding_fn.ok_or(FormatterError::Failed(
-            "holder binding required, but no signature provider provided".to_string(),
-        ))?;
-        append_key_binding_token(hasher, holder_binding_ctx, holder_binding_fn, &mut token).await?;
-    }
     Ok(token)
 }
 
@@ -164,10 +237,10 @@ fn append_disclosures(token: &mut String, disclosures: Vec<String>) {
     }
 }
 
-async fn append_key_binding_token(
+pub(crate) async fn append_key_binding_token(
     hasher: &dyn Hasher,
     holder_binding_ctx: HolderBindingCtx,
-    holder_binding_fn: AuthenticationFn,
+    holder_binding_fn: &dyn SignatureProvider,
     token: &mut String,
 ) -> Result<(), FormatterError> {
     const KEY_BINDING_TYPE: &str = "kb+jwt";
@@ -176,9 +249,7 @@ async fn append_key_binding_token(
         .ok_or(FormatterError::CouldNotFormat(
             "Invalid key algorithm".to_string(),
         ))?;
-    let sd_hash = hasher
-        .hash_base64_url(token.as_bytes())
-        .map_err(|err| FormatterError::CouldNotFormat(format!("failed to hash token: {err}")))?;
+    let sd_hash = hasher.hash_base64_url(token.as_bytes())?;
     let payload = JWTPayload {
         issued_at: Some(OffsetDateTime::now_utc()),
         audience: Some(vec![holder_binding_ctx.audience]),
@@ -188,37 +259,34 @@ async fn append_key_binding_token(
         },
         ..Default::default()
     };
-    let kb_token = Jwt::new(
-        KEY_BINDING_TYPE.to_string(),
-        alg,
-        holder_binding_fn.get_key_id(),
-        None,
-        payload,
-    )
-    .tokenize(Some(holder_binding_fn))
-    .await
-    .map_err(|err| {
-        FormatterError::CouldNotFormat(format!("failed to tokenize key binding token: {err}"))
-    })?;
+    let kb_token = Jwt::new(KEY_BINDING_TYPE.to_string(), alg, None, None, payload)
+        .tokenize(Some(holder_binding_fn))
+        .await
+        .error_while("creating KB token")?;
     token.push_str(&kb_token);
     Ok(())
 }
 
-impl<Payload: DeserializeOwned> Jwt<Payload> {
+pub(crate) struct SdJwtHolderBindingParams {
+    pub holder_binding_context: Option<HolderBindingCtx>,
+    pub leeway: Duration,
+}
+
+impl<Payload: DeserializeOwned + SettableClaims> Jwt<Payload> {
     pub(crate) async fn build_from_token_with_disclosures(
         token: &str,
         crypto: &dyn CryptoProvider,
         verification: Option<&VerificationFn>,
-        key_binding_context: Option<HolderBindingCtx>,
-        leeway: Duration,
-        skip_holder_binding_aud_check: bool,
-    ) -> Result<(Jwt<Payload>, Option<JWTPayload<KeyBindingPayload>>), FormatterError> {
+        certificate_validator: Option<&dyn CertificateValidator>,
+        http_client: &dyn HttpClient,
+    ) -> Result<(Jwt<Payload>, IdentifierDetails, Option<String>), FormatterError> {
         let DecomposedTokenWithDisclosures {
             jwt,
             disclosures,
             key_binding_token,
         } = parse_token(token)?;
-        let decomposed_token = Jwt::<serde_json::Map<String, Value>>::decompose_token(jwt)?;
+        let decomposed_token = Jwt::<serde_json::Map<String, Value>>::decompose_token(jwt)
+            .error_while("parsing SD-JWT token")?;
 
         let hash_alg = decomposed_token
             .payload
@@ -233,69 +301,88 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
             )
         })?;
 
-        let key_binding_payload =
-            if let Some(ref cnf) = decomposed_token.payload.proof_of_possession_key {
-                Self::verify_holder_binding(
-                    cnf,
-                    token,
-                    key_binding_token,
-                    &*hasher,
-                    verification,
-                    key_binding_context,
-                    leeway,
-                    skip_holder_binding_aud_check,
+        let issuer = decomposed_token.payload.issuer.as_deref();
+        let x5c = decomposed_token.header.x5c.as_deref();
+
+        let (params, issuer_details) = match (issuer, x5c) {
+            // DID issuer
+            (Some(iss), _) if iss.starts_with("did:") => {
+                let did: DidValue = iss
+                    .parse()
+                    .map_err(DidMethodError::DidValueError)
+                    .error_while("parsing issuer DID")?;
+                let params = PublicKeySource::Did {
+                    did: Cow::Owned(did.clone()),
+                    key_id: decomposed_token.header.key_id.as_deref(),
+                };
+                (params, IdentifierDetails::Did(did))
+            }
+            // URL issuer, resolve JWKS
+            (Some(iss), None) => {
+                let jwks = resolve_jwks_url(
+                    iss.parse().map_err(|e| {
+                        FormatterError::CouldNotExtractCredentials(format!(
+                            "failed parsing jwks url: {e}"
+                        ))
+                    })?,
+                    http_client,
                 )
-                .await?
-            } else {
-                None
-            };
-        let issuer = decomposed_token
-            .payload
-            .issuer
-            .as_ref()
-            .ok_or(FormatterError::Failed(
-                "Missing issuer in sd-jwt".to_string(),
-            ))?;
+                .await?;
+                let header_key_id = decomposed_token.header.key_id.as_deref();
 
-        let issuer_did = if issuer.starts_with("did:") {
-            issuer.clone()
-        } else {
-            let url = match decomposed_token.header.x5c.as_ref() {
-                None => issuer.clone(),
-                Some(x5c) => {
-                    let mut url = url::Url::parse(issuer)
-                        .map_err(|e| FormatterError::Failed(e.to_string()))?;
+                let jwk = jwks
+                    .iter()
+                    .find(|dto| dto.kid() == header_key_id)
+                    .or(jwks.first())
+                    .ok_or(FormatterError::CouldNotExtractCredentials(
+                        "empty JWK list".to_string(),
+                    ))?;
 
-                    for cert in x5c {
-                        let mut query_pairs = url.query_pairs_mut();
-                        query_pairs.append_pair("x5c", cert);
-                    }
-
-                    url.into()
-                }
-            };
-
-            format!(
-                "did:sd_jwt_vc_issuer_metadata:{}",
-                urlencoding::encode(&url)
-            )
-        };
-
-        let subject = match (
-            decomposed_token.payload.subject.as_ref(),
-            decomposed_token.payload.proof_of_possession_key.as_ref(),
-        ) {
-            (Some(subject), _) => Some(subject.to_string()),
-            (None, Some(cnf)) => Some(
-                encode_to_did(cnf.jwk.jwk())
-                    .map(|did| did.to_string())
-                    .map_err(|e| FormatterError::Failed(e.to_string()))?,
-            ),
-            (None, None) => None,
+                let params = PublicKeySource::Jwk {
+                    jwk: Cow::Owned(jwk.clone()),
+                };
+                (params, IdentifierDetails::Key(jwk.clone()))
+            }
+            (_, Some(x5c)) => {
+                let certificate_validator =
+                    certificate_validator.ok_or(FormatterError::CouldNotExtractCredentials(
+                        "x5c header param not supported".to_string(),
+                    ))?;
+                let params = PublicKeySource::X5c { x5c };
+                let chain = x5c_into_pem_chain(x5c).error_while("parsing x5c")?;
+                let validation_options =
+                    CertificateValidationOptions::signature_and_revocation(None);
+                let ParsedCertificate {
+                    attributes,
+                    subject_common_name,
+                    ..
+                } = certificate_validator
+                    .parse_pem_chain(&chain, validation_options)
+                    .await
+                    .error_while("parsing PEM chain")?;
+                (
+                    params,
+                    IdentifierDetails::Certificate(CertificateDetails {
+                        chain,
+                        fingerprint: attributes.fingerprint,
+                        expiry: attributes.not_after,
+                        subject_common_name,
+                    }),
+                )
+            }
+            // Neither iss nor x5c
+            (None, None) => {
+                return Err(FormatterError::CouldNotExtractCredentials(
+                    "Missing issuer: no iss claim and no x5c in header".to_string(),
+                ));
+            }
         };
 
         if let Some(verification) = verification {
-            Self::verify_token_signature(&decomposed_token, &issuer_did, verification).await?;
+            decomposed_token
+                .verify_signature(params, verification)
+                .await
+                .error_while("verifying SD-JWT token")?;
         };
 
         let disclosures_with_hashes = disclosures
@@ -312,23 +399,26 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
             .collect::<Result<Vec<(&Disclosure, (String, String))>, FormatterError>>()?;
 
         let expanded_payload: Payload = {
-            let mut payload_before_expanding = Value::from(decomposed_token.payload.custom);
+            let mut payload_before_expanding =
+                CredentialClaim::try_from(Value::from(decomposed_token.payload.custom.clone()))?;
 
-            recursively_expand_disclosures(&disclosures_with_hashes, &mut payload_before_expanding);
-            serde_json::from_value(payload_before_expanding).map_err(|_| {
-                FormatterError::CouldNotExtractCredentials(
-                    "Failed to deserialize JWT payload".to_string(),
-                )
-            })?
+            recursively_expand_disclosures(
+                &disclosures_with_hashes,
+                &mut payload_before_expanding,
+            )?;
+
+            let mut extended_payload: Payload =
+                serde_json::from_value(Value::from(decomposed_token.payload.custom))?;
+            extended_payload.set_claims(payload_before_expanding)?;
+            extended_payload
         };
-
         let new_payload = JWTPayload {
             custom: expanded_payload,
             invalid_before: decomposed_token.payload.invalid_before,
             issued_at: decomposed_token.payload.issued_at,
             expires_at: decomposed_token.payload.expires_at,
-            issuer: Some(issuer_did),
-            subject,
+            issuer: issuer.map(String::from),
+            subject: decomposed_token.payload.subject,
             audience: None,
             jwt_id: decomposed_token.payload.jwt_id,
             proof_of_possession_key: decomposed_token.payload.proof_of_possession_key,
@@ -339,50 +429,50 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
                 header: decomposed_token.header.clone(),
                 payload: new_payload,
             },
-            key_binding_payload,
+            issuer_details,
+            key_binding_token.map(String::from),
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn verify_holder_binding(
+    pub(crate) async fn verify_holder_binding(
         cnf: &ProofOfPossessionKey,
         token: &str,
         key_binding_token: Option<&str>,
         hasher: &dyn Hasher,
         verification: Option<&VerificationFn>,
-        holder_binding_context: Option<HolderBindingCtx>,
-        leeway: Duration,
-        skip_holder_binding_aud_check: bool,
-    ) -> Result<Option<JWTPayload<KeyBindingPayload>>, FormatterError> {
+        params: SdJwtHolderBindingParams,
+    ) -> Result<JWTPayload<KeyBindingPayload>, FormatterError> {
         let decomposed_kb_token = key_binding_token.map(Jwt::<KeyBindingPayload>::decompose_token);
 
-        let Some(holder_binding_context) = holder_binding_context else {
+        let Some(holder_binding_context) = params.holder_binding_context else {
             if let Some(decomposed_kb_token) = decomposed_kb_token {
-                let token = decomposed_kb_token?;
-                return Ok(Some(token.payload));
+                let token = decomposed_kb_token.error_while("parsing SD-JWT key binding token")?;
+                return Ok(token.payload);
             } else {
-                return Ok(None);
+                return Err(FormatterError::CouldNotExtractCredentials(
+                    "Missing key binding token".to_string(),
+                ));
             }
         };
 
-        let decomposed_kb_token =
-            decomposed_kb_token
-                .transpose()?
-                .ok_or(FormatterError::CouldNotExtractCredentials(
-                    "Missing key binding token".to_string(),
-                ))?;
+        let decomposed_kb_token = decomposed_kb_token
+            .transpose()
+            .error_while("parsing SD-JWT key binding token")?
+            .ok_or(FormatterError::CouldNotExtractCredentials(
+                "Missing key binding token".to_string(),
+            ))?;
 
         if let Some(verification) = verification {
-            let kb_issuer = encode_to_did(cnf.jwk.jwk()).map_err(|err| {
-                FormatterError::CouldNotExtractCredentials(format!(
-                    "Failed to encode cnf JWK to did: {err}"
-                ))
-            })?;
-            Self::verify_token_signature(&decomposed_kb_token, kb_issuer.as_str(), verification)
-                .await?;
+            let params = PublicKeySource::Jwk {
+                jwk: Cow::Borrowed(cnf.jwk.jwk()),
+            };
+            decomposed_kb_token
+                .verify_signature(params, verification)
+                .await
+                .error_while("verifying SD-JWT key binding token")?;
         }
 
-        let DecomposedToken {
+        let DecomposedJwt {
             payload: kb_payload,
             ..
         } = decomposed_kb_token;
@@ -395,11 +485,11 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
                 .ok_or(FormatterError::CouldNotExtractCredentials(
                     "Invalid credential format".to_string(),
                 ))?;
-        let expected_hash = hasher
-            .hash_base64_url(&token.as_bytes()[..=payload_end])
-            .map_err(|err| {
-                FormatterError::CouldNotFormat(format!("failed to hash token: {err}"))
-            })?;
+        let expected_hash = hasher.hash_base64_url(token.as_bytes().get(..=payload_end).ok_or(
+            FormatterError::CouldNotExtractCredentials(
+                "Could not extract payload for hash".to_string(),
+            ),
+        )?)?;
         if kb_payload.custom.sd_hash != expected_hash {
             return Err(FormatterError::CouldNotExtractCredentials(format!(
                 "Invalid key binding token sd_hash: expected '{}', got '{}'",
@@ -412,29 +502,24 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
                 "Missing iat claim in key binding token".to_string(),
             ));
         };
-        if (iat - leeway) > OffsetDateTime::now_utc() {
+        if (iat - params.leeway) > OffsetDateTime::now_utc() {
             // kb token is supposedly issued in the future
             return Err(FormatterError::CouldNotExtractCredentials(
                 "Invalid iat claim in key binding token, token is issued in the future".to_string(),
             ));
         }
 
-        if !skip_holder_binding_aud_check {
-            let Some(ref audience) = kb_payload.audience else {
-                return Err(FormatterError::CouldNotExtractCredentials(
-                    "Missing aud claim in key binding token".to_string(),
-                ));
-            };
+        let Some(ref audience) = kb_payload.audience else {
+            return Err(FormatterError::CouldNotExtractCredentials(
+                "Missing aud claim in key binding token".to_string(),
+            ));
+        };
 
-            if !audience
-                .iter()
-                .any(|aud| *aud == holder_binding_context.audience)
-            {
-                return Err(FormatterError::CouldNotExtractCredentials(format!(
-                    "Invalid key binding token aud: expected '{}' to be listed, got '{:?}'",
-                    holder_binding_context.audience, kb_payload.audience
-                )));
-            }
+        if !audience.contains(&holder_binding_context.audience) {
+            return Err(FormatterError::CouldNotExtractCredentials(format!(
+                "Invalid key binding token aud: expected '{}' to be listed, got '{:?}'",
+                holder_binding_context.audience, kb_payload.audience
+            )));
         }
 
         if kb_payload.custom.nonce != holder_binding_context.nonce {
@@ -443,36 +528,6 @@ impl<Payload: DeserializeOwned> Jwt<Payload> {
                 holder_binding_context.nonce, kb_payload.custom.nonce
             )));
         }
-        Ok(Some(kb_payload))
-    }
-
-    async fn verify_token_signature<AnyPayload>(
-        token: &DecomposedToken<AnyPayload>,
-        issuer: &str,
-        verification_fn: &dyn TokenVerifier,
-    ) -> Result<(), FormatterError> {
-        let (_, algorithm) = verification_fn
-            .key_algorithm_provider()
-            .key_algorithm_from_jose_alg(&token.header.algorithm)
-            .ok_or(FormatterError::CouldNotVerify(format!(
-                "Missing key algorithm for {}",
-                token.header.algorithm
-            )))?;
-
-        verification_fn
-            .verify(
-                Some(
-                    issuer
-                        .parse()
-                        .context("issuer did parsing error")
-                        .map_err(|e| FormatterError::Failed(e.to_string()))?,
-                ),
-                token.header.key_id.as_deref(),
-                algorithm.algorithm_type(),
-                token.unverified_jwt.as_bytes(),
-                &token.signature,
-            )
-            .await
-            .map_err(|e| FormatterError::CouldNotVerify(e.to_string()))
+        Ok(kb_payload)
     }
 }

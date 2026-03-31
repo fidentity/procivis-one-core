@@ -4,14 +4,16 @@ use axum::Json;
 use axum::handler::Handler;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use proc_macros::endpoint;
 use serde_json::{Value, json};
 
 use crate::build_info;
 use crate::metrics::encode_metrics;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
-    path = "/build-info",
+    path = "/api/build-info/v1",
     responses(
         (status = 200, description = "Ok")
     ),
@@ -31,7 +33,8 @@ pub(crate) async fn get_build_info() -> Json<Value> {
     }))
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/health",
     responses(
@@ -45,7 +48,8 @@ pub(crate) async fn health_check() -> impl IntoResponse {
     StatusCode::NO_CONTENT
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/metrics",
     responses(
@@ -61,12 +65,13 @@ pub(crate) async fn get_metrics() -> Response {
         Ok(result) => (StatusCode::OK, result).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Metrics encoding error: {:?}", error),
+            format!("Metrics encoding error: {error:?}"),
         )
             .into_response(),
     }
 }
 
+#[expect(clippy::unwrap_used)]
 pub(crate) fn get_openapi_yaml<S>(openapi: &utoipa::openapi::OpenApi) -> impl Handler<((),), S> {
     let yaml = openapi.to_yaml().unwrap();
     move || future::ready((StatusCode::OK, yaml.clone()).into_response())

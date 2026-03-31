@@ -5,10 +5,11 @@ use one_core::model::remote_entity_cache::{
 use one_core::repository::error::DataLayerError;
 use one_core::repository::remote_entity_cache_repository::RemoteEntityCacheRepository;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, ModelTrait, PaginatorTrait, QueryFilter,
-    QueryOrder, QueryTrait,
+    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, QueryTrait,
 };
 use shared_types::RemoteEntityCacheEntryId;
+use time::OffsetDateTime;
 
 use crate::entity::remote_entity_cache;
 use crate::mapper::{to_data_layer_error, to_update_data_layer_error};
@@ -28,19 +29,47 @@ impl RemoteEntityCacheRepository for RemoteEntityCacheProvider {
         Ok(context.id)
     }
 
-    async fn delete_oldest(&self, r#type: CacheType) -> Result<(), DataLayerError> {
-        if let Some(model) = remote_entity_cache::Entity::find()
-            .order_by_asc(remote_entity_cache::Column::HitCounter)
-            .order_by_asc(remote_entity_cache::Column::LastModified)
-            .filter(
-                remote_entity_cache::Column::Type.eq(remote_entity_cache::CacheType::from(r#type)),
-            )
-            .one(&self.db)
+    async fn delete_expired_or_least_used(
+        &self,
+        r#type: CacheType,
+        target_max_size: u32,
+    ) -> Result<(), DataLayerError> {
+        let cache_type = remote_entity_cache::CacheType::from(r#type);
+
+        // first delete all expired
+        remote_entity_cache::Entity::delete_many()
+            .filter(remote_entity_cache::Column::ExpirationDate.lt(OffsetDateTime::now_utc()))
+            .filter(remote_entity_cache::Column::Type.eq(cache_type))
+            .exec(&self.db)
             .await
-            .map_err(|e| DataLayerError::Db(e.into()))?
-        {
-            model
-                .delete(&self.db)
+            .map_err(|e| DataLayerError::Db(e.into()))?;
+
+        let current_size = self.get_repository_size(r#type).await?;
+
+        if current_size <= target_max_size {
+            // no need to continue
+            return Ok(());
+        }
+
+        // delete oldest non-persistent (unused) to fit into the `target_max_size` limit
+        let still_to_remove = current_size - target_max_size;
+
+        let to_remove: Vec<RemoteEntityCacheEntryId> = remote_entity_cache::Entity::find()
+            .select_only()
+            .column(remote_entity_cache::Column::Id)
+            .filter(remote_entity_cache::Column::ExpirationDate.is_not_null())
+            .filter(remote_entity_cache::Column::Type.eq(cache_type))
+            .order_by_asc(remote_entity_cache::Column::LastUsed)
+            .limit(still_to_remove as u64)
+            .into_tuple()
+            .all(&self.db)
+            .await
+            .map_err(|e| DataLayerError::Db(e.into()))?;
+
+        if !to_remove.is_empty() {
+            remote_entity_cache::Entity::delete_many()
+                .filter(remote_entity_cache::Column::Id.is_in(to_remove))
+                .exec(&self.db)
                 .await
                 .map_err(|e| DataLayerError::Db(e.into()))?;
         }
@@ -50,7 +79,7 @@ impl RemoteEntityCacheRepository for RemoteEntityCacheProvider {
 
     async fn delete_all(&self, r#type: Option<Vec<CacheType>>) -> Result<(), DataLayerError> {
         remote_entity_cache::Entity::delete_many()
-            .filter(remote_entity_cache::Column::Persistent.eq(false))
+            .filter(remote_entity_cache::Column::ExpirationDate.is_not_null())
             .apply_if(r#type, |query, value| {
                 query.filter(
                     remote_entity_cache::Column::Type

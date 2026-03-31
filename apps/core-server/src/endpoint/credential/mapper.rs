@@ -1,11 +1,22 @@
+use one_core::model::credential::CredentialFilterValue;
 use one_core::model::list_filter::{
-    ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
 };
-use one_core::service::credential::dto::CredentialFilterValue;
+use one_core::service::credential::dto::{
+    CredentialDetailResponseDTO, DetailCredentialClaimValueResponseDTO,
+};
 use one_core::service::error::{BusinessLogicError, ServiceError};
+use one_core::{model, service};
+use one_dto_mapper::{convert_inner, try_convert_inner};
 
-use super::dto::{CredentialsFilterQueryParamsRest, SearchType};
+use super::dto::{
+    CredentialDetailClaimValueResponseRestDTO, CredentialsFilterQueryParamsRest,
+    GetCredentialResponseRestDTO, SearchType,
+};
 use crate::dto::common::ExactColumn;
+use crate::dto::mapper::fallback_organisation_id_from_session;
+use crate::mapper::MapperError;
 
 impl TryFrom<CredentialsFilterQueryParamsRest> for ListFilterCondition<CredentialFilterValue> {
     type Error = ServiceError;
@@ -24,8 +35,10 @@ impl TryFrom<CredentialsFilterQueryParamsRest> for ListFilterCondition<Credentia
             }
         };
 
-        let organisation_id =
-            CredentialFilterValue::OrganisationId(value.organisation_id).condition();
+        let organisation_id = CredentialFilterValue::OrganisationId(
+            fallback_organisation_id_from_session(value.organisation_id)?,
+        )
+        .condition();
 
         let name = value.name.map(|name| {
             CredentialFilterValue::CredentialSchemaName(StringMatch {
@@ -33,6 +46,8 @@ impl TryFrom<CredentialsFilterQueryParamsRest> for ListFilterCondition<Credentia
                 value: name,
             })
         });
+
+        let profiles = value.profiles.map(CredentialFilterValue::Profiles);
 
         let search_filters = match (value.search_text, value.search_type) {
             (Some(search_test), Some(search_type)) => {
@@ -69,16 +84,148 @@ impl TryFrom<CredentialsFilterQueryParamsRest> for ListFilterCondition<Credentia
             _ => organisation_id,
         };
 
-        let role = value
-            .role
-            .map(|role| CredentialFilterValue::Role(role.into()));
+        let roles = value.roles.map(|roles| {
+            CredentialFilterValue::Roles(
+                roles
+                    .into_iter()
+                    .map(service::credential::dto::CredentialRole::from)
+                    .map(model::credential::CredentialRole::from)
+                    .collect(),
+            )
+        });
 
         let credential_ids = value.ids.map(CredentialFilterValue::CredentialIds);
 
-        let states = value.status.map(|values| {
-            CredentialFilterValue::State(values.into_iter().map(|status| status.into()).collect())
+        let credential_schema_ids = value
+            .credential_schema_ids
+            .map(CredentialFilterValue::CredentialSchemaIds);
+
+        let issuers = value.issuers.map(CredentialFilterValue::IssuerIds);
+
+        let states = value.states.map(|values| {
+            CredentialFilterValue::States(
+                values
+                    .into_iter()
+                    .map(service::credential::dto::CredentialStateEnum::from)
+                    .map(model::credential::CredentialStateEnum::from)
+                    .collect(),
+            )
         });
 
-        Ok(search_filters & name & role & credential_ids & states)
+        let created_date_after = value.created_date_after.map(|date| {
+            CredentialFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            CredentialFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            CredentialFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            CredentialFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let issuance_date_after = value.issuance_date_after.map(|date| {
+            CredentialFilterValue::IssuanceDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let issuance_date_before = value.issuance_date_before.map(|date| {
+            CredentialFilterValue::IssuanceDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let revocation_date_after = value.revocation_date_after.map(|date| {
+            CredentialFilterValue::RevocationDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let revocation_date_before = value.revocation_date_before.map(|date| {
+            CredentialFilterValue::RevocationDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        Ok(search_filters
+            & name
+            & roles
+            & credential_ids
+            & credential_schema_ids
+            & issuers
+            & states
+            & profiles
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+            & issuance_date_after
+            & issuance_date_before
+            & revocation_date_after
+            & revocation_date_before)
+    }
+}
+
+impl<IN, OUT: From<IN>> TryFrom<CredentialDetailResponseDTO<IN>>
+    for GetCredentialResponseRestDTO<OUT>
+{
+    type Error = MapperError;
+
+    fn try_from(value: CredentialDetailResponseDTO<IN>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id.into(),
+            created_date: value.created_date,
+            issuance_date: value.issuance_date,
+            revocation_date: value.revocation_date,
+            state: value.state.into(),
+            last_modified: value.last_modified,
+            schema: value.schema.into(),
+            issuer: convert_inner(value.issuer),
+            issuer_certificate: try_convert_inner(value.issuer_certificate)?,
+            claims: convert_inner(value.claims),
+            redirect_uri: value.redirect_uri,
+            role: value.role.into(),
+            suspend_end_date: value.suspend_end_date,
+            mdoc_mso_validity: convert_inner(value.mdoc_mso_validity),
+            holder: convert_inner(value.holder),
+            protocol: value.protocol,
+            profile: value.profile,
+            wallet_instance_attestation: convert_inner(value.wallet_instance_attestation),
+            wallet_unit_attestation: convert_inner(value.wallet_unit_attestation),
+            webhook_destination_url: value.webhook_destination_url,
+        })
+    }
+}
+
+impl<IN, OUT: From<IN>> From<DetailCredentialClaimValueResponseDTO<IN>>
+    for CredentialDetailClaimValueResponseRestDTO<OUT>
+{
+    fn from(value: DetailCredentialClaimValueResponseDTO<IN>) -> Self {
+        match value {
+            DetailCredentialClaimValueResponseDTO::Boolean(val) => Self::Boolean(val),
+            DetailCredentialClaimValueResponseDTO::Float(val) => Self::Float(val),
+            DetailCredentialClaimValueResponseDTO::Integer(val) => Self::Integer(val),
+            DetailCredentialClaimValueResponseDTO::String(val) => Self::String(val),
+            DetailCredentialClaimValueResponseDTO::Nested(nested) => {
+                Self::Nested(convert_inner(nested))
+            }
+        }
     }
 }

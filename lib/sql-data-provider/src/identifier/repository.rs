@@ -5,16 +5,15 @@ use one_core::model::identifier::{
 };
 use one_core::repository::error::DataLayerError;
 use one_core::repository::identifier_repository::IdentifierRepository;
-use one_dto_mapper::convert_inner;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, Select, Set, Unchanged,
+    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Select, Set,
+    Unchanged,
 };
 use shared_types::{CertificateId, DidId, IdentifierId};
 use time::OffsetDateTime;
 
 use super::IdentifierProvider;
-use crate::common::calculate_pages_count;
+use crate::common::list_query_with_base_model;
 use crate::entity::{certificate, identifier};
 use crate::list_query_generic::{SelectWithFilterJoin, SelectWithListQuery};
 use crate::mapper::{to_data_layer_error, to_update_data_layer_error};
@@ -27,79 +26,78 @@ impl IdentifierProvider {
     ) -> Result<Identifier, DataLayerError> {
         let mut result: Identifier = model.clone().into();
 
-        if let Some(organisation_relations) = &relations.organisation {
-            if let Some(organisation_id) = &model.organisation_id {
-                result.organisation = Some(
-                    self.organisation_repository
-                        .get_organisation(organisation_id, organisation_relations)
+        if let Some(organisation_relations) = &relations.organisation
+            && let Some(organisation_id) = &model.organisation_id
+        {
+            result.organisation = Some(
+                self.organisation_repository
+                    .get_organisation(organisation_id, organisation_relations)
+                    .await?
+                    .ok_or(DataLayerError::MissingRequiredRelation {
+                        relation: "identifier-organisation",
+                        id: organisation_id.to_string(),
+                    })?,
+            );
+        }
+
+        if model.r#type == identifier::IdentifierType::Did
+            && let Some(did_relations) = &relations.did
+            && let Some(did_id) = &model.did_id
+        {
+            result.did = Some(
+                self.did_repository
+                    .get_did(did_id, did_relations)
+                    .await?
+                    .ok_or(DataLayerError::MissingRequiredRelation {
+                        relation: "identifier-did",
+                        id: did_id.to_string(),
+                    })?,
+            );
+        }
+
+        if model.r#type == identifier::IdentifierType::Key
+            && let Some(key_relations) = &relations.key
+            && let Some(key_id) = &model.key_id
+        {
+            result.key = Some(
+                self.key_repository
+                    .get_key(key_id, key_relations)
+                    .await?
+                    .ok_or(DataLayerError::MissingRequiredRelation {
+                        relation: "identifier-key",
+                        id: key_id.to_string(),
+                    })?,
+            );
+        }
+
+        if (model.r#type == identifier::IdentifierType::Certificate
+            || model.r#type == identifier::IdentifierType::CertificateAuthority)
+            && let Some(certificate_relations) = &relations.certificates
+        {
+            let certificate_ids: Vec<CertificateId> = certificate::Entity::find()
+                .select_only()
+                .column(certificate::Column::Id)
+                .filter(certificate::Column::IdentifierId.eq(model.id))
+                .order_by_desc(certificate::Column::ExpiryDate)
+                .order_by_asc(certificate::Column::Name)
+                .into_tuple()
+                .all(&self.db)
+                .await
+                .map_err(to_data_layer_error)?;
+
+            let mut certs = vec![];
+            for certificate_id in certificate_ids {
+                certs.push(
+                    self.certificate_repository
+                        .get(certificate_id, certificate_relations)
                         .await?
                         .ok_or(DataLayerError::MissingRequiredRelation {
-                            relation: "identifier-organisation",
-                            id: organisation_id.to_string(),
+                            relation: "identifier-certificate",
+                            id: certificate_id.to_string(),
                         })?,
                 );
             }
-        }
-
-        if model.r#type == identifier::IdentifierType::Did {
-            if let Some(did_relations) = &relations.did {
-                if let Some(did_id) = &model.did_id {
-                    result.did = Some(
-                        self.did_repository
-                            .get_did(did_id, did_relations)
-                            .await?
-                            .ok_or(DataLayerError::MissingRequiredRelation {
-                                relation: "identifier-did",
-                                id: did_id.to_string(),
-                            })?,
-                    );
-                }
-            }
-        }
-
-        if model.r#type == identifier::IdentifierType::Key {
-            if let Some(key_relations) = &relations.key {
-                if let Some(key_id) = &model.key_id {
-                    result.key = Some(
-                        self.key_repository
-                            .get_key(key_id, key_relations)
-                            .await?
-                            .ok_or(DataLayerError::MissingRequiredRelation {
-                                relation: "identifier-key",
-                                id: key_id.to_string(),
-                            })?,
-                    );
-                }
-            }
-        }
-
-        if model.r#type == identifier::IdentifierType::Certificate {
-            if let Some(certificate_relations) = &relations.certificates {
-                let certificate_ids: Vec<CertificateId> = certificate::Entity::find()
-                    .select_only()
-                    .column(certificate::Column::Id)
-                    .filter(certificate::Column::IdentifierId.eq(model.id))
-                    .order_by_desc(certificate::Column::ExpiryDate)
-                    .order_by_asc(certificate::Column::Name)
-                    .into_tuple()
-                    .all(&self.db)
-                    .await
-                    .map_err(to_data_layer_error)?;
-
-                let mut certs = vec![];
-                for certificate_id in certificate_ids {
-                    certs.push(
-                        self.certificate_repository
-                            .get(certificate_id, certificate_relations)
-                            .await?
-                            .ok_or(DataLayerError::MissingRequiredRelation {
-                                relation: "identifier-certificate",
-                                id: certificate_id.to_string(),
-                            })?,
-                    );
-                }
-                result.certificates = Some(certs);
-            }
+            result.certificates = Some(certs);
         }
 
         Ok(result)
@@ -199,26 +197,7 @@ impl IdentifierRepository for IdentifierProvider {
     ) -> Result<GetIdentifierList, DataLayerError> {
         let query = get_identifier_list_query(&query_params);
 
-        let limit = query_params
-            .pagination
-            .map(|pagination| pagination.page_size as u64);
-
-        let items_count = query
-            .to_owned()
-            .count(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        let identifiers: Vec<identifier::Model> = query
-            .all(&self.db)
-            .await
-            .map_err(|e| DataLayerError::Db(e.into()))?;
-
-        Ok(GetIdentifierList {
-            values: convert_inner(identifiers),
-            total_pages: calculate_pages_count(items_count, limit.unwrap_or(0)),
-            total_items: items_count,
-        })
+        list_query_with_base_model(query, query_params, &self.db).await
     }
 }
 
@@ -254,5 +233,4 @@ fn get_identifier_list_query(query_params: &IdentifierListQuery) -> Select<ident
         .group_by(identifier::Column::DeletedAt)
         .order_by_desc(identifier::Column::CreatedDate)
         .order_by_desc(identifier::Column::Id)
-        .distinct()
 }

@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use shared_types::TrustAnchorId;
+use one_core::service::trust_anchor::error::TrustAnchorServiceError;
+use proc_macros::endpoint;
+use shared_types::{Permission, TrustAnchorId};
 
 use crate::dto::common::{EntityResponseRestDTO, GetTrustAnchorListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
@@ -12,7 +14,8 @@ use crate::endpoint::trust_anchor::dto::{
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::TrustAnchorCreate],
     post,
     path = "/api/trust-anchor/v1",
     request_body = CreateTrustAnchorRequestRestDTO,
@@ -30,6 +33,7 @@ use crate::router::AppState;
     configurations of the same type.
 "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn create_trust_anchor(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -45,7 +49,8 @@ pub(crate) async fn create_trust_anchor(
     CreatedOrErrorResponse::from_result(result, state, "creating trust anchor")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::TrustAnchorDetail],
     get,
     path = "/api/trust-anchor/v1/{id}",
     params(
@@ -59,6 +64,7 @@ pub(crate) async fn create_trust_anchor(
     summary = "Retrieve a trust anchor",
     description = "Returns details on a given trust anchor.",
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,
@@ -67,7 +73,8 @@ pub(crate) async fn get_trust_anchor(
     OkOrErrorResponse::from_result(result, state, "fetching trust anchor")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::TrustAnchorList],
     get,
     path = "/api/trust-anchor/v1",
     responses(OkOrErrorResponse<GetTrustAnchorListResponseRestDTO>),
@@ -77,21 +84,28 @@ pub(crate) async fn get_trust_anchor(
         ("bearer" = [])
     ),
     summary = "List trust anchors",
-    description = "Returns a list of trust anchors in an organization. See the [guidelines](/api/general_guidelines) for handling list endpoints.",
+    description = "Returns a list of trust anchors in an organization.",
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_anchors(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<ListTrustAnchorsQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetTrustAnchorListResponseRestDTO> {
-    let result = state
-        .core
-        .trust_anchor_service
-        .list_trust_anchors(query.into())
-        .await;
+    let result = async {
+        state
+            .core
+            .trust_anchor_service
+            .list_trust_anchors(query.try_into().map_err(|e: std::convert::Infallible| {
+                TrustAnchorServiceError::MappingError(e.to_string())
+            })?)
+            .await
+    }
+    .await;
     OkOrErrorResponse::from_result(result, state, "listing trust anchors")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::TrustAnchorDelete],
     delete,
     path = "/api/trust-anchor/v1/{id}",
     params(
@@ -108,6 +122,7 @@ pub(crate) async fn get_trust_anchors(
         are also deleted.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn delete_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,

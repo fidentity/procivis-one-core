@@ -1,0 +1,202 @@
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::{Form, Json};
+use axum_extra::extract::WithRejection;
+use one_core::error::{ErrorCode, ErrorCodeMixin};
+use one_core::provider::verification_protocol::openid4vp::error::OpenID4VCError;
+use one_core::service::oid4vp_final1_0::error::OID4VPFinal1_0ServiceError;
+use proc_macros::endpoint;
+use shared_types::ProofId;
+use standardized_types::openid4vp::ClientMetadata;
+
+use super::super::super::dto::{OpenID4VCIErrorResponseRestDTO, OpenID4VCIErrorRestEnum};
+use super::super::dto::{OpenID4VPDirectPostRequestRestDTO, OpenID4VPDirectPostResponseRestDTO};
+use crate::dto::error::ErrorResponseRestDTO;
+use crate::router::AppState;
+
+#[endpoint(
+    permissions = [],
+    post,
+    path = "/ssi/openid4vp/final-1.0/response",
+    request_body(content = OpenID4VPDirectPostRequestRestDTO, description = "Verifier request", content_type = "application/x-www-form-urlencoded"
+    ),
+    responses(
+        (status = 200, description = "OK", body = OpenID4VPDirectPostResponseRestDTO),
+        (status = 400, description = "OIDC Verifier errors", body = OpenID4VCIErrorResponseRestDTO),
+        (status = 409, description = "Wrong proof state"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "openid4vp-final-1.0",
+    summary = "OID4VC - Verifier direct post",
+    description = indoc::formatdoc! {"
+        This endpoint handles low-level mechanisms in interactions between agents.
+        Deep understanding of the involved protocols is recommended.
+    "},
+)]
+pub(crate) async fn oid4vp_final1_0_direct_post(
+    state: State<AppState>,
+    WithRejection(Form(request), _): WithRejection<
+        Form<OpenID4VPDirectPostRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> Response {
+    let result = state
+        .core
+        .oid4vp_final1_0_service
+        .direct_post(request.into())
+        .await;
+
+    match result {
+        Ok(value) => (
+            StatusCode::OK,
+            Json(OpenID4VPDirectPostResponseRestDTO::from(value)),
+        )
+            .into_response(),
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0323) => {
+            tracing::error!("Validation error: {:?}", error);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(OpenID4VCIErrorResponseRestDTO {
+                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
+                }),
+            )
+                .into_response()
+        }
+        Err(OID4VPFinal1_0ServiceError::OpenID4VCError(OpenID4VCError::InvalidRequest)) => {
+            tracing::error!("OpenID4VC invalid request");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(OpenID4VCIErrorResponseRestDTO {
+                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) if error.error_code() == ErrorCode::BR_0089 => {
+            tracing::error!("Config validation error: {error}");
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(error) if error.error_code() == ErrorCode::BR_0099 => {
+            tracing::error!("Credential is revoked or suspended");
+            (
+                StatusCode::BAD_REQUEST,
+                "Credential is revoked or suspended",
+            )
+                .into_response()
+        }
+        Err(OID4VPFinal1_0ServiceError::MissingProofForInteraction(_)) => {
+            tracing::error!("Missing interaction or proof");
+            (StatusCode::BAD_REQUEST, "Missing interaction of proof").into_response()
+        }
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/openid4vp/final-1.0/{id}/client-metadata",
+    params(
+        ("id" = ProofId, Path, description = "Proof id")
+    ),
+    responses(
+        (status = 200, description = "OK", body = ClientMetadata),
+        (status = 400, description = "OIDC Verifier errors", body = OpenID4VCIErrorResponseRestDTO),
+        (status = 404, description = "Proof does not exist"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "openid4vp-final-1.0",
+    summary = "OID4VC - Client metadata",
+    description = indoc::formatdoc! {"
+        This endpoint handles low-level mechanisms in interactions between agents.
+        Deep understanding of the involved protocols is recommended.
+    "},
+)]
+pub(crate) async fn oid4vp_final1_0_client_metadata(
+    state: State<AppState>,
+    WithRejection(Path(proof_id), _): WithRejection<Path<ProofId>, ErrorResponseRestDTO>,
+) -> Response {
+    let result = state
+        .core
+        .oid4vp_final1_0_service
+        .get_client_metadata(proof_id)
+        .await;
+
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)).into_response(),
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0089) => {
+            tracing::error!("BAD_REQUEST validation error: {error}");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(OpenID4VCIErrorResponseRestDTO {
+                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
+                }),
+            )
+                .into_response()
+        }
+        Err(OID4VPFinal1_0ServiceError::MissingProof(_)) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/openid4vp/final-1.0/{id}/client-request",
+    params(
+        ("id" = ProofId, Path, description = "Proof id")
+    ),
+    responses(
+        (status = 200, description = "OK", body = String, content_type = "application/oauth-authz-req+jwt"),
+        (status = 400, description = "OIDC Verifier errors", body = OpenID4VCIErrorResponseRestDTO),
+        (status = 404, description = "Proof does not exist"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "openid4vp-final-1.0",
+    summary = "OID4VC - Proof request data",
+    description = indoc::formatdoc! {"
+        This endpoint handles low-level mechanisms in interactions between agents.
+        Deep understanding of the involved protocols is recommended.
+    "},
+)]
+pub(crate) async fn oid4vp_final1_0_client_request(
+    state: State<AppState>,
+    WithRejection(Path(proof_id), _): WithRejection<Path<ProofId>, ErrorResponseRestDTO>,
+) -> Response {
+    let result = state
+        .core
+        .oid4vp_final1_0_service
+        .get_client_request(proof_id)
+        .await;
+
+    match result {
+        Ok(jwt) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/oauth-authz-req+jwt")],
+            jwt,
+        )
+            .into_response(),
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0089) => {
+            tracing::warn!("BAD_REQUEST validation error: {error}");
+            (
+                StatusCode::BAD_REQUEST,
+                Json(OpenID4VCIErrorResponseRestDTO {
+                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
+                }),
+            )
+                .into_response()
+        }
+        Err(OID4VPFinal1_0ServiceError::MissingProof(_)) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}

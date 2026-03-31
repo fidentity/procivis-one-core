@@ -1,8 +1,9 @@
 use shared_types::DidValue;
 
 use self::model::VC;
+use crate::error::ContextWithErrorCode;
+use crate::proto::jwt::Jwt;
 use crate::provider::credential_formatter::error::FormatterError;
-use crate::provider::credential_formatter::jwt::Jwt;
 use crate::provider::credential_formatter::model::VerificationFn;
 
 mod model;
@@ -15,8 +16,9 @@ impl StatusList2021JWTFormatter {
         issuer_did: &DidValue,
         verification: VerificationFn,
     ) -> Result<String, FormatterError> {
-        let jwt: Jwt<VC> =
-            Jwt::build_from_token(status_list_token, Some(&(verification)), None).await?;
+        let jwt: Jwt<VC> = Jwt::build_from_token(status_list_token, Some(&(verification)), None)
+            .await
+            .error_while("parsing StatusList2021 token")?;
 
         let payload = jwt.payload;
         if payload

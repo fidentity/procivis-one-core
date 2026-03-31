@@ -1,14 +1,15 @@
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
 use one_core::service::error::ServiceError;
-use shared_types::CertificateId;
+use shared_types::{CertificateId, Permission};
 
 use super::dto::CertificateResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
 use crate::dto::response::OkOrErrorResponse;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[proc_macros::endpoint(
+    permissions = [Permission::IdentifierDetail],
     get,
     path = "/api/certificate/v1/{id}",
     responses(OkOrErrorResponse<CertificateResponseRestDTO>),
@@ -33,15 +34,15 @@ pub(crate) async fn get_certificate(
             Ok(value) => OkOrErrorResponse::ok(value),
             Err(error) => {
                 tracing::error!("Error while converting certificate response: {:?}", error);
-                OkOrErrorResponse::from_service_error(
-                    ServiceError::MappingError(error.to_string()),
+                OkOrErrorResponse::from_error(
+                    &ServiceError::MappingError(error.to_string()),
                     state.config.hide_error_response_cause,
                 )
             }
         },
         Err(error) => {
             tracing::error!("Error while getting certificate details: {:?}", error);
-            OkOrErrorResponse::from_service_error(error, state.config.hide_error_response_cause)
+            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
         }
     }
 }

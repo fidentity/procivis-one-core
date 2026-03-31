@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use itertools::Itertools;
 
-use crate::config::core_config::{Fields, TransportConfig, TransportType};
+use crate::config::core_config::{ConfigExt, Fields, TransportConfig, TransportType};
 use crate::provider::verification_protocol::dto::VerificationProtocolCapabilities;
 use crate::service::error::ValidationError;
 
@@ -14,10 +14,10 @@ pub(crate) enum SelectedTransportType {
 pub(crate) fn get_first_available_transport<'config>(
     config: &'config TransportConfig,
     supported_options: &[TransportType],
-) -> Result<(&'config str, TransportType), ValidationError> {
+) -> Result<(&'config String, TransportType), ValidationError> {
     config
         .iter()
-        .filter(|(_, fields)| fields.enabled())
+        .filter(|(_, fields)| fields.enabled)
         .filter(|(_, fields)| supported_options.contains(&fields.r#type))
         .sorted_by_key(|(_, fields)| fields.order)
         .next()
@@ -30,7 +30,7 @@ pub(crate) fn validate_and_select_transport_type(
     config: &TransportConfig,
     exchange_protocol_capabilities: &VerificationProtocolCapabilities,
 ) -> Result<SelectedTransportType, ValidationError> {
-    let check_transport_capabilities = |transport| {
+    let check_transport_capabilities = |transport: &str| {
         let r#type = config
             .get_fields(transport)
             .map_err(|e| ValidationError::InvalidTransportType {
@@ -105,6 +105,8 @@ fn validate_transport_type<'a>(
 mod test {
     use std::collections::BTreeSet;
 
+    use similar_asserts::assert_eq;
+
     use super::validate_and_select_transport_type;
     use crate::config::core_config::{CoreConfig, Fields, TransportType};
     use crate::config::validator::transport::SelectedTransportType;
@@ -115,8 +117,11 @@ mod test {
     fn test_selects_first_in_order_transport_from_config_if_transport_is_none() {
         let config = config(&["BLE", "MQTT"]);
         let capabilities = VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![TransportType::Ble, TransportType::Mqtt],
             did_methods: vec![],
+            verifier_identifier_types: vec![],
+            supported_presentation_definition: vec![],
         };
 
         let selected =
@@ -131,8 +136,11 @@ mod test {
     fn test_selects_one_transport() {
         let config = config(&["MQTT"]);
         let capabilities = VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![TransportType::Mqtt],
             did_methods: vec![],
+            verifier_identifier_types: vec![],
+            supported_presentation_definition: vec![],
         };
 
         let selected = validate_and_select_transport_type(
@@ -151,8 +159,11 @@ mod test {
     fn test_selects_multiple_transports() {
         let config = config(&["BLE", "MQTT"]);
         let capabilities = VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![TransportType::Ble, TransportType::Mqtt],
             did_methods: vec![],
+            verifier_identifier_types: vec![],
+            supported_presentation_definition: vec![],
         };
 
         let selected = validate_and_select_transport_type(
@@ -172,8 +183,11 @@ mod test {
     fn test_fails_if_capability_is_missing() {
         let config = config(&["MQTT"]);
         let capabilities = VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![],
             did_methods: vec![],
+            verifier_identifier_types: vec![],
+            supported_presentation_definition: vec![],
         };
 
         let selected = validate_and_select_transport_type(
@@ -192,12 +206,15 @@ mod test {
     fn test_fails_when_transport_combination_is_not_allowed() {
         let config = config(&["BLE", "MQTT", "HTTP"]);
         let capabilities = VerificationProtocolCapabilities {
+            features: vec![],
             supported_transports: vec![
                 TransportType::Ble,
                 TransportType::Mqtt,
                 TransportType::Http,
             ],
             did_methods: vec![],
+            verifier_identifier_types: vec![],
+            supported_presentation_definition: vec![],
         };
 
         let selected = validate_and_select_transport_type(
@@ -222,7 +239,8 @@ mod test {
                     r#type: TransportType::try_from(*transport).unwrap(),
                     display: "".into(),
                     order: Some(order as u64),
-                    enabled: Some(true),
+                    priority: None,
+                    enabled: true,
                     capabilities: None,
                     params: None,
                 },

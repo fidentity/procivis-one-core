@@ -1,18 +1,29 @@
 use axum::Json;
 use axum::extract::State;
 use axum_extra::extract::WithRejection;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
+use proc_macros::endpoint;
+use shared_types::Permission;
 
 use super::dto::{
+    ContinueIssuanceRequestRestDTO, ContinueIssuanceResponseRestDTO,
     HandleInvitationRequestRestDTO, HandleInvitationResponseRestDTO, IssuanceAcceptRequestRestDTO,
     IssuanceRejectRequestRestDTO, PresentationRejectRequestRestDTO,
-    PresentationSubmitRequestRestDTO, ProposeProofRequestRestDTO,
+    PresentationSubmitRequestRestDTO, PresentationSubmitV2RequestRestDTO,
+    ProposeProofRequestRestDTO,
 };
+use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse};
-use crate::endpoint::interaction::dto::ProposeProofResponseRestDTO;
+use crate::dto::mapper::fallback_organisation_id_from_session;
+use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
+use crate::endpoint::interaction::dto::{
+    InitiateIssuanceRequestRestDTO, InitiateIssuanceResponseRestDTO, ProposeProofResponseRestDTO,
+};
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance, Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/handle-invitation",
     request_body = HandleInvitationRequestRestDTO,
@@ -26,6 +37,9 @@ use crate::router::AppState;
         For a wallet, handles the interaction once the wallet connects to a share
         endpoint URL (for example, scans the QR code of an offered credential or
         request for proof).
+
+        To start the wallet-initiated Authorization Code Flow request for issuance,
+        use the [initiate-issuance](/reference/core/initiate-issuance) endpoint.
     "},
 )]
 pub(crate) async fn handle_invitation(
@@ -35,27 +49,40 @@ pub(crate) async fn handle_invitation(
         ErrorResponseRestDTO,
     >,
 ) -> CreatedOrErrorResponse<HandleInvitationResponseRestDTO> {
-    let result = state
-        .core
-        .ssi_holder_service
-        .handle_invitation(request.url, request.organisation_id, request.transport)
-        .await;
+    let result = async {
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .ssi_holder_service
+                .handle_invitation(
+                    request.url,
+                    fallback_organisation_id_from_session(request.organisation_id)?,
+                    request.transport,
+                    request.redirect_uri,
+                )
+                .await
+                .error_while("handling invitation")?,
+        )
+    }
+    .await;
     CreatedOrErrorResponse::from_result(result, state, "handling invitation")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/issuance-accept",
     request_body = IssuanceAcceptRequestRestDTO,
-    responses(EmptyOrErrorResponse),
+    responses(OkOrErrorResponse<EntityResponseRestDTO>),
     tag = "interaction",
     security(
         ("bearer" = [])
     ),
     summary = "Accept issuance",
     description = indoc::formatdoc! {"
-        Accepts an offered credential. The chosen identifier will be listed
-        as the subject of the issued credential.
+        Accepts an offered credential. The system will generate a new
+        identifier that matches issuer's restrictions. Alternatively,
+        you can specify an existing identifier.
 
         `didId` is deprecated.
     "},
@@ -66,22 +93,24 @@ pub(crate) async fn issuance_accept(
         Json<IssuanceAcceptRequestRestDTO>,
         ErrorResponseRestDTO,
     >,
-) -> EmptyOrErrorResponse {
+) -> OkOrErrorResponse<EntityResponseRestDTO> {
     let result = state
         .core
         .ssi_holder_service
         .accept_credential(
-            &request.interaction_id,
+            request.interaction_id,
             request.did_id,
             request.identifier_id,
             request.key_id,
             request.tx_code,
+            request.holder_wallet_unit_id,
         )
         .await;
-    EmptyOrErrorResponse::from_result(result, state, "accepting credential")
+    OkOrErrorResponse::from_result(result, state, "accepting credential")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/issuance-reject",
     request_body = IssuanceRejectRequestRestDTO,
@@ -108,7 +137,8 @@ pub(crate) async fn issuance_reject(
     EmptyOrErrorResponse::from_result(result, state, "rejecting credential")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/presentation-reject",
     request_body = PresentationRejectRequestRestDTO,
@@ -135,7 +165,8 @@ pub(crate) async fn presentation_reject(
     EmptyOrErrorResponse::from_result(result, state, "rejecting proof request")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/presentation-submit",
     request_body = PresentationSubmitRequestRestDTO,
@@ -147,7 +178,9 @@ pub(crate) async fn presentation_reject(
     summary = "Submit presentation",
     description = indoc::formatdoc! {"
         Submits a presentation in response to a request. Choose the
-        identifier used to accept the credentials.
+        identifier used to accept the credentials. This endpoint uses
+          Presentation Exchange as the query language and should be used
+          after \"Presentation Definition (V1)\".
 
         `didId` is deprecated.
     "},
@@ -167,7 +200,39 @@ pub(crate) async fn presentation_submit(
     EmptyOrErrorResponse::from_result(result, state, "submitting proof")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
+    post,
+    path = "/api/interaction/v2/presentation-submit",
+    request_body = PresentationSubmitV2RequestRestDTO,
+    responses(EmptyOrErrorResponse),
+    tag = "interaction",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Submit presentation",
+    description = indoc::formatdoc! {"
+        Submits a presentation in response to a request. This endpoint uses DCQL
+        as a query language and should be used after \"Presentation Definition (V2)\".
+    "},
+)]
+pub(crate) async fn presentation_submit_v2(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<PresentationSubmitV2RequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> EmptyOrErrorResponse {
+    let result = state
+        .core
+        .ssi_holder_service
+        .submit_proof_v2(request.into())
+        .await;
+    EmptyOrErrorResponse::from_result(result, state, "submitting proof v2")
+}
+
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/propose-proof",
     request_body = ProposeProofRequestRestDTO,
@@ -178,8 +243,8 @@ pub(crate) async fn presentation_submit(
     ),
     summary = "Propose a proof",
     description = indoc::formatdoc! {"
-        For digital wallets, creates an engagement QR code which can be scanned by a
-        mobile verifier to establish a Bluetooth Low Energy connection. See the [SDK](/sdk/propose_proof).
+        Not for use via the API; this enables mobile wallets to initiate
+        device engagement for offline flows. See the SDK.
     "},
 )]
 pub(crate) async fn propose_proof(
@@ -189,10 +254,83 @@ pub(crate) async fn propose_proof(
         ErrorResponseRestDTO,
     >,
 ) -> CreatedOrErrorResponse<ProposeProofResponseRestDTO> {
+    let result = async {
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .proof_service
+                .propose_proof(request.try_into()?)
+                .await
+                .error_while("proposing proof")?,
+        )
+    }
+    .await;
+    CreatedOrErrorResponse::from_result(result, state, "proposing proof")
+}
+
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
+    post,
+    path = "/api/interaction/v1/initiate-issuance",
+    request_body = InitiateIssuanceRequestRestDTO,
+    responses(OkOrErrorResponse<InitiateIssuanceResponseRestDTO>),
+    tag = "interaction",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Initiate OID4VCI issuance",
+    description = indoc::formatdoc! {"
+        For wallets, starts the OpenID4VCI Authorization Code Flow.
+    "},
+)]
+pub(crate) async fn initiate_issuance(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<InitiateIssuanceRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> OkOrErrorResponse<InitiateIssuanceResponseRestDTO> {
+    let result = async {
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .ssi_holder_service
+                .initiate_issuance(request.try_into()?)
+                .await
+                .error_while("initiating issuance")?,
+        )
+    }
+    .await;
+    OkOrErrorResponse::from_result(result, state, "initiating issuance")
+}
+
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
+    post,
+    path = "/api/interaction/v1/continue-issuance",
+    request_body = ContinueIssuanceRequestRestDTO,
+    responses(CreatedOrErrorResponse<ContinueIssuanceResponseRestDTO>),
+    tag = "interaction",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Continue OID4VCI issuance",
+    description = indoc::formatdoc! {"
+        For wallet-initiated flows, continues the OpenID4VCI issuance process after
+        completing authorization.
+    "},
+)]
+pub(crate) async fn continue_issuance(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<ContinueIssuanceRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> OkOrErrorResponse<ContinueIssuanceResponseRestDTO> {
     let result = state
         .core
-        .proof_service
-        .propose_proof(request.exchange, request.organisation_id)
+        .ssi_holder_service
+        .continue_issuance(request.url)
         .await;
-    CreatedOrErrorResponse::from_result(result, state, "proposing proof")
+    OkOrErrorResponse::from_result(result, state, "continue issuance")
 }

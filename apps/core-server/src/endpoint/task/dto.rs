@@ -1,23 +1,24 @@
+use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
-use serde_with::skip_serializing_none;
 use utoipa::ToSchema;
 
-#[skip_serializing_none]
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskRequestRestDTO {
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, ModifySchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TaskRequestRestDTO {
     /// Choose a task to run. Check the `task` object of the configuration
     /// for supported options and reference the configuration instance.
-    #[schema(example = "SUSPEND_CHECK")]
+    #[modify_schema(field = task)]
     pub name: String,
     /// Parameters to pass to the task.
     #[schema(value_type = Option<Object>)]
+    #[expect(dead_code)]
     pub params: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct TaskResponseRestDTO {
+pub(crate) struct TaskResponseRestDTO {
     #[serde(flatten)]
     pub result: serde_json::Value,
 }

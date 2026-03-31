@@ -4,7 +4,10 @@ use one_core::model::credential::{
 use one_dto_mapper::{From, Into};
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
-use shared_types::{CredentialId, CredentialSchemaId, DidId, IdentifierId, KeyId};
+use shared_types::{
+    BlobId, CertificateId, CredentialId, CredentialSchemaId, DidId, IdentifierId, InteractionId,
+    KeyId,
+};
 use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -18,28 +21,33 @@ pub struct Model {
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
 
-    pub issuance_date: OffsetDateTime,
+    pub issuance_date: Option<OffsetDateTime>,
     pub deleted_at: Option<OffsetDateTime>,
 
-    pub exchange: String,
+    pub protocol: String,
     pub redirect_uri: Option<String>,
-
-    #[sea_orm(column_type = "Blob")]
-    pub credential: Vec<u8>,
 
     pub role: CredentialRole,
 
     pub issuer_identifier_id: Option<IdentifierId>,
+    pub issuer_certificate_id: Option<CertificateId>,
     pub key_id: Option<KeyId>,
 
     pub holder_identifier_id: Option<IdentifierId>,
 
-    pub interaction_id: Option<String>,
-    pub revocation_list_id: Option<String>,
+    pub interaction_id: Option<InteractionId>,
 
     pub suspend_end_date: Option<OffsetDateTime>,
 
     pub state: CredentialState,
+
+    pub profile: Option<String>,
+
+    pub credential_blob_id: Option<BlobId>,
+    pub wallet_unit_attestation_blob_id: Option<BlobId>,
+    pub wallet_instance_attestation_blob_id: Option<BlobId>,
+
+    pub webhook_url: Option<String>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
@@ -65,6 +73,14 @@ pub enum Relation {
     )]
     IssuerIdentifier,
     #[sea_orm(
+        belongs_to = "super::certificate::Entity",
+        from = "Column::IssuerCertificateId",
+        to = "super::certificate::Column::Id",
+        on_update = "Restrict",
+        on_delete = "Restrict"
+    )]
+    IssuerCertificate,
+    #[sea_orm(
         belongs_to = "super::identifier::Entity",
         from = "Column::HolderIdentifierId",
         to = "super::identifier::Column::Id",
@@ -88,14 +104,6 @@ pub enum Relation {
         on_delete = "Restrict"
     )]
     Key,
-    #[sea_orm(
-        belongs_to = "super::revocation_list::Entity",
-        from = "Column::RevocationListId",
-        to = "super::revocation_list::Column::Id",
-        on_update = "Restrict",
-        on_delete = "Restrict"
-    )]
-    RevocationList,
 }
 
 impl Related<super::claim::Entity> for Entity {
@@ -119,12 +127,6 @@ impl Related<super::interaction::Entity> for Entity {
 impl Related<super::key::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Key.def()
-    }
-}
-
-impl Related<super::revocation_list::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::RevocationList.def()
     }
 }
 
@@ -162,4 +164,6 @@ pub enum CredentialState {
     Suspended,
     #[sea_orm(string_value = "ERROR")]
     Error,
+    #[sea_orm(string_value = "INTERACTION_EXPIRED")]
+    InteractionExpired,
 }

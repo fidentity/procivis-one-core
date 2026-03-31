@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use one_core::model::claim::{Claim, ClaimId, ClaimRelations};
+use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential::CredentialStateEnum;
 use one_core::repository::claim_repository::ClaimRepository;
@@ -11,11 +11,15 @@ use one_core::repository::claim_schema_repository::{
 use one_core::repository::error::DataLayerError;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use shared_types::{ClaimSchemaId, CredentialId, CredentialSchemaId, IdentifierId};
+use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::ClaimProvider;
 use crate::entity::claim_schema;
+use crate::entity::credential::CredentialRole;
+use crate::entity::credential_schema::KeyStorageSecurity;
 use crate::test_utilities::*;
+use crate::transaction_context::TransactionManagerImpl;
 
 struct TestSetup {
     pub db: DatabaseConnection,
@@ -30,21 +34,6 @@ async fn setup(claim_schema_repository: Arc<dyn ClaimSchemaRepository>) -> TestS
     let data_layer = setup_test_data_layer_and_connection().await;
     let db = data_layer.db;
 
-    let claim_schema_ids: Vec<ClaimSchemaId> = (0..4).map(|_| Uuid::new_v4().into()).collect();
-    for id in &claim_schema_ids {
-        claim_schema::ActiveModel {
-            id: Set(*id),
-            created_date: Set(get_dummy_date()),
-            last_modified: Set(get_dummy_date()),
-            key: Set("TestKey".to_string()),
-            datatype: Set("STRING".to_string()),
-            array: Set(false),
-        }
-        .insert(&db)
-        .await
-        .unwrap();
-    }
-
     let organisation_id = insert_organisation_to_database(&db, None, None)
         .await
         .unwrap();
@@ -55,10 +44,30 @@ async fn setup(claim_schema_repository: Arc<dyn ClaimSchemaRepository>) -> TestS
         organisation_id,
         "credential schema",
         "JWT",
-        "NONE",
+        None,
+        Some(KeyStorageSecurity::Basic),
     )
     .await
     .unwrap();
+
+    let claim_schema_ids: Vec<ClaimSchemaId> = (0..4).map(|_| Uuid::new_v4().into()).collect();
+    for (index, id) in claim_schema_ids.iter().enumerate() {
+        claim_schema::ActiveModel {
+            id: Set(*id),
+            created_date: Set(get_dummy_date()),
+            last_modified: Set(get_dummy_date()),
+            key: Set("TestKey".to_string()),
+            datatype: Set("STRING".to_string()),
+            array: Set(false),
+            metadata: Set(false),
+            credential_schema_id: Set(*credential_schema_id),
+            order: Set(index as u32),
+            required: Set(false),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+    }
 
     let did_id = insert_did_key(
         &db,
@@ -90,13 +99,15 @@ async fn setup(claim_schema_repository: Arc<dyn ClaimSchemaRepository>) -> TestS
         identifier_id,
         None,
         None,
+        Uuid::new_v4().into(),
+        CredentialRole::Issuer,
     )
     .await
     .unwrap();
 
     TestSetup {
         repository: Box::new(ClaimProvider {
-            db: db.clone(),
+            db: TransactionManagerImpl::new(db.clone()),
             claim_schema_repository,
         }),
         db,
@@ -110,6 +121,8 @@ async fn setup(claim_schema_repository: Arc<dyn ClaimSchemaRepository>) -> TestS
                 created_date: get_dummy_date(),
                 last_modified: get_dummy_date(),
                 array: false,
+                metadata: false,
+                required: true,
             })
             .collect(),
         identifier_id,
@@ -136,12 +149,13 @@ async fn test_create_claim_list_success() {
             claim_schemas
                 .into_iter()
                 .map(|schema| Claim {
-                    id: ClaimId::new_v4(),
+                    id: Uuid::new_v4().into(),
                     credential_id,
-                    value: "value".to_string(),
+                    value: Some("value".to_string()),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
                     path: schema.key.to_owned(),
+                    selectively_disclosable: false,
                     schema: Some(schema),
                 })
                 .collect(),
@@ -174,13 +188,14 @@ async fn test_delete_claims_for_credential() {
             claim_schemas
                 .into_iter()
                 .map(|schema| Claim {
-                    id: ClaimId::new_v4(),
+                    id: Uuid::new_v4().into(),
                     credential_id,
-                    value: "value".to_string(),
+                    value: Some("value".to_string()),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
                     path: schema.key.to_owned(),
                     schema: Some(schema),
+                    selectively_disclosable: false,
                 })
                 .collect(),
         )
@@ -222,6 +237,8 @@ async fn test_delete_claims_for_credentials() {
         identifier_id,
         None,
         None,
+        Uuid::new_v4().into(),
+        CredentialRole::Issuer,
     )
     .await
     .unwrap()
@@ -232,13 +249,14 @@ async fn test_delete_claims_for_credentials() {
             claim_schemas
                 .iter()
                 .map(|schema| Claim {
-                    id: ClaimId::new_v4(),
+                    id: Uuid::new_v4().into(),
                     credential_id,
-                    value: "value".to_string(),
+                    value: Some("value".to_string()),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
                     path: schema.key.to_owned(),
                     schema: Some(schema.clone()),
+                    selectively_disclosable: false,
                 })
                 .collect(),
         )
@@ -250,13 +268,14 @@ async fn test_delete_claims_for_credentials() {
             claim_schemas
                 .into_iter()
                 .map(|schema| Claim {
-                    id: ClaimId::new_v4(),
+                    id: Uuid::new_v4().into(),
                     credential_id: credential_id_2,
-                    value: "value".to_string(),
+                    value: Some("value".to_string()),
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
                     path: schema.key.to_owned(),
                     schema: Some(schema),
+                    selectively_disclosable: false,
                 })
                 .collect(),
         )
@@ -288,13 +307,14 @@ async fn test_create_claim_list_missing_schema() {
 
     let result = repository
         .create_claim_list(vec![Claim {
-            id: ClaimId::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
-            value: "value".to_string(),
+            value: Some("value".to_string()),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             path: String::default(),
             schema: None,
+            selectively_disclosable: false,
         }])
         .await;
     assert!(matches!(result, Err(DataLayerError::IncorrectParameters)));
@@ -312,13 +332,14 @@ async fn test_get_claim_list() {
     let claims: Vec<Claim> = claim_schemas
         .iter()
         .map(|schema| Claim {
-            id: ClaimId::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
-            value: "value".to_string(),
+            value: Some("value".to_string()),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             path: schema.key.to_owned(),
             schema: Some(schema.to_owned()),
+            selectively_disclosable: false,
         })
         .collect();
     repository.create_claim_list(claims.clone()).await.unwrap();
@@ -345,7 +366,7 @@ async fn test_get_claim_list() {
     // one item missing
     let result = repository
         .get_claim_list(
-            vec![claims[0].id, ClaimId::new_v4()],
+            vec![claims[0].id, Uuid::new_v4().into()],
             &ClaimRelations::default(),
         )
         .await;
@@ -375,6 +396,8 @@ async fn test_get_claim_list_with_relation() {
                     created_date: get_dummy_date(),
                     last_modified: get_dummy_date(),
                     array: false,
+                    metadata: false,
+                    required: true,
                 })
                 .collect())
         });
@@ -389,13 +412,14 @@ async fn test_get_claim_list_with_relation() {
     let claims: Vec<Claim> = claim_schemas
         .iter()
         .map(|schema| Claim {
-            id: ClaimId::new_v4(),
+            id: Uuid::new_v4().into(),
             credential_id,
-            value: "value".to_string(),
+            value: Some("value".to_string()),
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             path: schema.key.to_owned(),
             schema: Some(schema.to_owned()),
+            selectively_disclosable: false,
         })
         .collect();
     repository.create_claim_list(claims.clone()).await.unwrap();

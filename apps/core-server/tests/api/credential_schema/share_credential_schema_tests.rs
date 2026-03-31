@@ -1,3 +1,5 @@
+use similar_asserts::assert_eq;
+
 use crate::utils::context::TestContext;
 
 #[tokio::test]
@@ -10,7 +12,7 @@ async fn test_share_credential_schema_success() {
         .create(
             "test schema",
             &organisation,
-            "BITSTRINGSTATUSLIST",
+            Some("BITSTRINGSTATUSLIST".into()),
             Default::default(),
         )
         .await;

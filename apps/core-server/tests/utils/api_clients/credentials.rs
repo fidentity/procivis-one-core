@@ -1,21 +1,69 @@
+use std::borrow::Cow;
 use std::fmt::Display;
 
-use one_core::service::credential::dto::CredentialListIncludeEntityTypeEnum;
+use one_core::model::credential::CredentialListIncludeEntityTypeEnum;
 use serde_json::json;
-use shared_types::{CredentialId, KeyId};
+use shared_types::{CredentialId, IdentifierId};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{HttpClient, Response};
+use crate::utils::serialization::query_time_urlencoded;
 
 pub struct CredentialsApi {
     client: HttpClient,
 }
 
 #[derive(Debug, Default)]
-pub struct Filters {
-    pub name: Option<String>,
-    pub search_text: Option<String>,
-    pub search_type: Option<Vec<String>>,
+pub struct Filters<'a> {
+    pub name: Option<&'a str>,
+    pub search_text: Option<&'a str>,
+    pub search_type: Option<&'a [&'a str]>,
+    pub profiles: Option<&'a [&'a str]>,
+    pub roles: Option<&'a [&'a str]>,
+    pub credential_schema_ids: Option<&'a [&'a str]>,
+    pub ids: Option<&'a [CredentialId]>,
+    pub issuers: Option<&'a [IdentifierId]>,
+    pub states: Option<&'a [&'a str]>,
+
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+    pub issuance_date_after: Option<OffsetDateTime>,
+    pub issuance_date_before: Option<OffsetDateTime>,
+    pub revocation_date_after: Option<OffsetDateTime>,
+    pub revocation_date_before: Option<OffsetDateTime>,
+}
+
+impl<'a> Filters<'a> {
+    pub fn ids(ids: &'a [CredentialId]) -> Self {
+        Self {
+            ids: Some(ids),
+            ..Self::default()
+        }
+    }
+
+    pub fn roles(roles: &'a [&'a str]) -> Self {
+        Self {
+            roles: Some(roles),
+            ..Self::default()
+        }
+    }
+
+    pub fn none() -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct CreateCredentialTestParams {
+    pub issuer: Option<Cow<'static, str>>,
+    pub issuer_did: Option<Cow<'static, str>>,
+    pub issuer_key: Option<Cow<'static, str>>,
+    pub issuer_certificate: Option<Cow<'static, str>>,
+    pub profile: Option<&'static str>,
+    pub webhook_destination_url: Option<&'static str>,
 }
 
 impl CredentialsApi {
@@ -26,59 +74,137 @@ impl CredentialsApi {
     pub async fn create(
         &self,
         credential_schema_id: impl Into<Uuid>,
-        exchange: impl Into<String>,
-        issuer_did: impl Into<Uuid>,
+        protocol: impl Into<String>,
         claims: serde_json::Value,
-        issuer_key: impl Into<Option<KeyId>>,
+        params: CreateCredentialTestParams,
     ) -> Response {
-        let body = json!({
+        let mut body = json!({
           "credentialSchemaId": credential_schema_id.into(),
-          "exchange": exchange.into(),
-          "issuerDid": issuer_did.into(),
-          "issuerKey": issuer_key.into(),
+          "protocol": protocol.into(),
           "claimValues": claims
         });
+
+        if let Some(issuer) = params.issuer {
+            body["issuer"] = issuer.into();
+        }
+
+        if let Some(issuer_did) = params.issuer_did {
+            body["issuerDid"] = issuer_did.into();
+        }
+
+        if let Some(issuer_key) = params.issuer_key {
+            body["issuerKey"] = issuer_key.into();
+        }
+
+        if let Some(issuer_certificate) = params.issuer_certificate {
+            body["issuerCertificate"] = issuer_certificate.into();
+        }
+
+        if let Some(profile) = params.profile {
+            body["profile"] = profile.into();
+        }
+
+        if let Some(webhook_destination_url) = params.webhook_destination_url {
+            body["webhookDestinationUrl"] = webhook_destination_url.into();
+        }
 
         self.client.post("/api/credential/v1", body).await
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn list(
         &self,
         page: u64,
         size: u64,
         organisation_id: &impl Display,
-        role: Option<&str>,
-        filters: Option<Filters>,
-        ids: Option<&[CredentialId]>,
+        filters: Filters<'_>,
         include: Option<Vec<CredentialListIncludeEntityTypeEnum>>,
     ) -> Response {
         let mut url = format!(
             "/api/credential/v1?page={page}&pageSize={size}&organisationId={organisation_id}"
         );
-        if let Some(role) = role {
-            url += &format!("&role={role}")
+
+        if let Some(name) = filters.name {
+            url += &format!("&name={name}")
         }
-        if let Some(filters) = filters {
-            if let Some(name) = filters.name {
-                url += &format!("&name={name}")
-            }
-            if let Some(search_text) = filters.search_text {
-                url += &format!("&searchText={search_text}")
-            }
-            url += &filters
-                .search_type
-                .into_iter()
-                .flatten()
-                .fold(String::new(), |url, search_type| {
-                    url + &format!("&searchType[]={search_type}")
-                });
+        if let Some(search_text) = filters.search_text {
+            url += &format!("&searchText={search_text}")
         }
-        if let Some(ids) = ids {
-            for id in ids {
-                url += &format!("&ids[]={id}")
-            }
+        url += &filters
+            .profiles
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, search_type| {
+                url + &format!("&profiles[]={search_type}")
+            });
+
+        url += &filters
+            .search_type
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, search_type| {
+                url + &format!("&searchType[]={search_type}")
+            });
+
+        url += &filters
+            .roles
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, role| url + &format!("&roles[]={role}"));
+
+        url += &filters
+            .ids
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, id| url + &format!("&ids[]={id}"));
+
+        url += &filters
+            .issuers
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, issuer| {
+                url + &format!("&issuers[]={issuer}")
+            });
+
+        url += &filters
+            .states
+            .into_iter()
+            .flatten()
+            .fold(String::new(), |url, state| {
+                url + &format!("&states[]={state}")
+            });
+
+        url += &filters.credential_schema_ids.into_iter().flatten().fold(
+            String::new(),
+            |url, credential_schema_id| {
+                url + &format!("&credentialSchemaIds[]={credential_schema_id}")
+            },
+        );
+
+        if let Some(date) = filters.created_date_after {
+            url += &format!("&{}", query_time_urlencoded("createdDateAfter", date));
         }
+        if let Some(date) = filters.created_date_before {
+            url += &format!("&{}", query_time_urlencoded("createdDateBefore", date));
+        }
+        if let Some(date) = filters.last_modified_after {
+            url += &format!("&{}", query_time_urlencoded("lastModifiedAfter", date));
+        }
+        if let Some(date) = filters.last_modified_before {
+            url += &format!("&{}", query_time_urlencoded("lastModifiedBefore", date));
+        }
+        if let Some(date) = filters.issuance_date_after {
+            url += &format!("&{}", query_time_urlencoded("issuanceDateAfter", date));
+        }
+        if let Some(date) = filters.issuance_date_before {
+            url += &format!("&{}", query_time_urlencoded("issuanceDateBefore", date));
+        }
+        if let Some(date) = filters.revocation_date_after {
+            url += &format!("&{}", query_time_urlencoded("revocationDateAfter", date));
+        }
+        if let Some(date) = filters.revocation_date_before {
+            url += &format!("&{}", query_time_urlencoded("revocationDateBefore", date));
+        }
+
         if let Some(include) = include {
             for item in include {
                 url += &format!("&include[]={item}")

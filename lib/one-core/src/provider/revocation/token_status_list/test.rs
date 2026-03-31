@@ -1,11 +1,15 @@
+use similar_asserts::assert_eq;
+
+use crate::model::revocation_list::RevocationListEntryStatus;
 use crate::provider::credential_formatter::jwt_formatter::model::TokenStatusListSubject;
-use crate::provider::revocation::model::CredentialRevocationState;
 use crate::provider::revocation::token_status_list::util::{
     TokenError, extract_state_from_token, generate_token, get_most_significant_bit_index,
 };
 
-fn example_token_status_list_subject_with_bit_size_1()
--> (TokenStatusListSubject, Vec<CredentialRevocationState>) {
+fn example_token_status_list_subject_with_bit_size_1() -> (
+    TokenStatusListSubject,
+    Vec<(usize, RevocationListEntryStatus)>,
+) {
     // Taken from: https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-03.html#name-status-list-in-json-format
     (
         TokenStatusListSubject {
@@ -13,28 +17,30 @@ fn example_token_status_list_subject_with_bit_size_1()
             value: "eNrbuRgAAhcBXQ".to_string(),
         },
         vec![
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
+            (0, RevocationListEntryStatus::Revoked),
+            (1, RevocationListEntryStatus::Active),
+            (2, RevocationListEntryStatus::Active),
+            (3, RevocationListEntryStatus::Revoked),
+            (4, RevocationListEntryStatus::Revoked),
+            (5, RevocationListEntryStatus::Revoked),
+            (6, RevocationListEntryStatus::Active),
+            (7, RevocationListEntryStatus::Revoked),
+            (8, RevocationListEntryStatus::Revoked),
+            (9, RevocationListEntryStatus::Revoked),
+            (10, RevocationListEntryStatus::Active),
+            (11, RevocationListEntryStatus::Active),
+            (12, RevocationListEntryStatus::Active),
+            (13, RevocationListEntryStatus::Revoked),
+            (14, RevocationListEntryStatus::Active),
+            (15, RevocationListEntryStatus::Revoked),
         ],
     )
 }
 
-fn example_token_status_list_subject_with_bit_size_2()
--> (TokenStatusListSubject, Vec<CredentialRevocationState>) {
+fn example_token_status_list_subject_with_bit_size_2() -> (
+    TokenStatusListSubject,
+    Vec<(usize, RevocationListEntryStatus)>,
+) {
     // Taken from: https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-03.html#name-status-list-in-json-format
     (
         TokenStatusListSubject {
@@ -42,22 +48,22 @@ fn example_token_status_list_subject_with_bit_size_2()
             value: "eNpzdGV1AQACJQDQ".to_string(),
         },
         vec![
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
+            (0, RevocationListEntryStatus::Revoked),
+            (1, RevocationListEntryStatus::Active),
+            (2, RevocationListEntryStatus::Active),
+            (3, RevocationListEntryStatus::Revoked),
+            (4, RevocationListEntryStatus::Revoked),
+            (5, RevocationListEntryStatus::Revoked),
+            (6, RevocationListEntryStatus::Active),
+            (7, RevocationListEntryStatus::Revoked),
+            (8, RevocationListEntryStatus::Revoked),
+            (9, RevocationListEntryStatus::Revoked),
+            (10, RevocationListEntryStatus::Active),
+            (11, RevocationListEntryStatus::Active),
+            (12, RevocationListEntryStatus::Active),
+            (13, RevocationListEntryStatus::Revoked),
+            (14, RevocationListEntryStatus::Active),
+            (15, RevocationListEntryStatus::Revoked),
         ],
     )
 }
@@ -117,10 +123,10 @@ fn test_get_most_significant_bit_index() {
 fn test_parse_token_status_list() {
     let (subject, states) = example_token_status_list_subject_with_bit_size_1();
 
-    states.iter().enumerate().for_each(|(index, expected)| {
+    states.into_iter().for_each(|(index, expected)| {
         assert_eq!(
-            *expected,
-            extract_state_from_token(&subject, index).unwrap()
+            expected,
+            RevocationListEntryStatus::from(extract_state_from_token(&subject, index).unwrap())
         );
     });
 }
@@ -138,9 +144,7 @@ fn test_generate_token_status_list() {
     let token = generate_token(states, example.bits, PREFERRED_TOKEN_SIZE_FOR_BIT_SIZE_2).unwrap();
     assert_eq!(example.value, token);
 
-    let state = vec![CredentialRevocationState::Suspended {
-        suspend_end_date: None,
-    }];
+    let state = vec![(0, RevocationListEntryStatus::Suspended)];
     assert!(matches!(
         generate_token(state, 1, PREFERRED_TOKEN_SIZE_FOR_BIT_SIZE_1),
         Err(TokenError::SuspensionRequiresAtLeastTwoBits)
@@ -152,9 +156,7 @@ fn test_generate_and_parse_token_status_list() {
     const PREFERRED_TOKEN_SIZE_FOR_BIT_SIZE_2: usize = 16 * 2;
 
     let (_, mut states) = example_token_status_list_subject_with_bit_size_2();
-    states[12] = CredentialRevocationState::Suspended {
-        suspend_end_date: None,
-    };
+    states[12] = (12, RevocationListEntryStatus::Suspended);
 
     let token = generate_token(states.clone(), 2, PREFERRED_TOKEN_SIZE_FOR_BIT_SIZE_2).unwrap();
 
@@ -163,16 +165,20 @@ fn test_generate_and_parse_token_status_list() {
         bits: 2,
     };
 
-    states.iter().enumerate().for_each(|(index, expected)| {
+    states.into_iter().for_each(|(index, expected)| {
         assert_eq!(
-            *expected,
-            extract_state_from_token(&status_list_subject, index).unwrap()
+            expected,
+            RevocationListEntryStatus::from(
+                extract_state_from_token(&status_list_subject, index).unwrap()
+            )
         );
     });
 }
 
-fn example_token_from_spec_with_bits_2() -> (TokenStatusListSubject, Vec<CredentialRevocationState>)
-{
+fn example_token_from_spec_with_bits_2() -> (
+    TokenStatusListSubject,
+    Vec<(usize, RevocationListEntryStatus)>,
+) {
     // Taken from: https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-03.html#name-status-list-token-with-2-bi
     (
         TokenStatusListSubject {
@@ -180,22 +186,18 @@ fn example_token_from_spec_with_bits_2() -> (TokenStatusListSubject, Vec<Credent
             bits: 2,
         },
         vec![
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Suspended {
-                suspend_end_date: None,
-            },
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Valid,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Suspended {
-                suspend_end_date: None,
-            },
-            CredentialRevocationState::Revoked,
-            CredentialRevocationState::Revoked,
+            (0, RevocationListEntryStatus::Revoked),
+            (1, RevocationListEntryStatus::Suspended),
+            (2, RevocationListEntryStatus::Active),
+            (3, RevocationListEntryStatus::Revoked),
+            (4, RevocationListEntryStatus::Active),
+            (5, RevocationListEntryStatus::Revoked),
+            (6, RevocationListEntryStatus::Active),
+            (7, RevocationListEntryStatus::Revoked),
+            (8, RevocationListEntryStatus::Revoked),
+            (9, RevocationListEntryStatus::Suspended),
+            (10, RevocationListEntryStatus::Revoked),
+            (11, RevocationListEntryStatus::Revoked),
         ],
     )
 }
@@ -204,10 +206,10 @@ fn example_token_from_spec_with_bits_2() -> (TokenStatusListSubject, Vec<Credent
 fn test_generate_and_parse_token_from_spec() {
     let (subject, states) = example_token_from_spec_with_bits_2();
 
-    states.iter().enumerate().for_each(|(index, expected)| {
+    states.iter().for_each(|(index, expected)| {
         assert_eq!(
             *expected,
-            extract_state_from_token(&subject, index).unwrap()
+            RevocationListEntryStatus::from(extract_state_from_token(&subject, *index).unwrap())
         );
     });
 
@@ -217,10 +219,12 @@ fn test_generate_and_parse_token_from_spec() {
         value: token,
     };
 
-    states.iter().enumerate().for_each(|(index, expected)| {
+    states.into_iter().for_each(|(index, expected)| {
         assert_eq!(
-            *expected,
-            extract_state_from_token(&token_subject, index).unwrap()
+            expected,
+            RevocationListEntryStatus::from(
+                extract_state_from_token(&token_subject, index).unwrap()
+            )
         );
     });
 }

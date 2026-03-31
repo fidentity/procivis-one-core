@@ -1,6 +1,11 @@
-use shared_types::{EntityId, HistoryId};
+use shared_types::{EntityId, HistoryId, OrganisationId};
+use time::OffsetDateTime;
 
-use crate::model::history::{GetHistoryList, History, HistoryListQuery};
+use crate::model::history::{
+    GetHistoryList, GetIssuerStats, GetSystemInteractionStats, GetSystemManagementStats,
+    GetVerifierStats, History, HistoryListQuery, IssuerStatsQuery, OrganisationStats,
+    SystemInteractionStatsQuery, SystemManagementStatsQuery, SystemStats, VerifierStatsQuery,
+};
 use crate::repository::error::DataLayerError;
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -19,4 +24,43 @@ pub trait HistoryRepository: Send + Sync {
         &self,
         history_id: HistoryId,
     ) -> Result<Option<History>, DataLayerError>;
+
+    async fn organisation_stats(
+        &self,
+        from: Option<OffsetDateTime>,
+        to: OffsetDateTime,
+        organisation_id: OrganisationId,
+        include_previous: bool,
+    ) -> Result<OrganisationStats, DataLayerError>;
+
+    async fn system_stats(
+        &self,
+        from: Option<OffsetDateTime>,
+        to: OffsetDateTime,
+        organisation_count: usize,
+    ) -> Result<SystemStats, DataLayerError>;
+
+    async fn issuer_stats(
+        &self,
+        query: IssuerStatsQuery,
+        previous_query: Option<IssuerStatsQuery>,
+    ) -> Result<GetIssuerStats, DataLayerError>;
+
+    async fn verifier_stats(
+        &self,
+        query: VerifierStatsQuery,
+        previous_query: Option<VerifierStatsQuery>,
+    ) -> Result<GetVerifierStats, DataLayerError>;
+
+    async fn system_interaction_stats(
+        &self,
+        query: SystemInteractionStatsQuery,
+        previous_query: Option<SystemInteractionStatsQuery>,
+    ) -> Result<GetSystemInteractionStats, DataLayerError>;
+
+    async fn system_management_stats(
+        &self,
+        query: SystemManagementStatsQuery,
+        previous_query: Option<SystemManagementStatsQuery>,
+    ) -> Result<GetSystemManagementStats, DataLayerError>;
 }

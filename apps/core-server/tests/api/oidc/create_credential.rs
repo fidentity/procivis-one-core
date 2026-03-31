@@ -1,28 +1,37 @@
+use std::ops::Add;
 use std::str::FromStr;
 
+use futures::future::join_all;
+use one_core::model::certificate::{Certificate, CertificateState};
 use one_core::model::credential::CredentialStateEnum;
-use one_core::model::did::{Did, DidType, KeyRole, RelatedKey};
+use one_core::model::did::{DidType, KeyRole, RelatedKey};
 use one_core::model::identifier::{Identifier, IdentifierType};
-use one_core::model::interaction::InteractionId;
+use one_core::model::interaction::InteractionType;
 use one_core::model::key::Key;
 use one_core::model::organisation::Organisation;
-use one_core::model::revocation_list::{
-    RevocationListPurpose, RevocationListRelations, StatusListType,
-};
+use one_core::model::revocation_list::{RevocationListPurpose, RevocationListRelations};
 use one_core::model::validity_credential::ValidityCredentialType;
+use one_core::provider::key_algorithm::KeyAlgorithm;
+use one_core::provider::key_algorithm::eddsa::Eddsa;
 use one_crypto::Hasher;
 use one_crypto::hasher::sha256::SHA256;
 use serde_json::json;
-use shared_types::{CredentialId, DidValue};
-use time::OffsetDateTime;
+use shared_types::{CredentialFormat, CredentialId, DidValue, InteractionId};
+use similar_asserts::assert_eq;
 use time::macros::format_description;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::api_oidc_tests::common::proof_jwt;
-use crate::fixtures::{TestingCredentialParams, TestingDidParams, TestingIdentifierParams};
+use crate::api_oidc_tests::common::{proof_jwt, proof_jwt_for};
+use crate::fixtures::{
+    ClaimData, TestingCredentialParams, TestingDidParams, TestingIdentifierParams,
+};
+use crate::utils::api_clients::Client;
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::certificates::TestingCertificateParams;
 use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
 use crate::utils::db_clients::keys::eddsa_testing_params;
+use crate::utils::db_clients::revocation_lists::TestingRevocationListParams;
 
 #[tokio::test]
 async fn test_post_issuer_credential() {
@@ -37,7 +46,7 @@ async fn test_post_issuer_credential() {
 async fn test_post_issuer_credential_sd_jwt_vc() {
     let params = PostCredentialTestParams {
         schema_id: Some("some-vct-value".to_string()),
-        credential_format: Some("SD_JWT_VC".to_string()),
+        credential_format: Some("SD_JWT_VC".into()),
         format: Some("vc+sd-jwt"),
         ..Default::default()
     };
@@ -48,7 +57,7 @@ async fn test_post_issuer_credential_sd_jwt_vc() {
 async fn test_post_issuer_credential_sd_jwt_vc_invalid_format() {
     let params = PostCredentialTestParams {
         schema_id: Some("some-vct-value".to_string()),
-        credential_format: Some("SD_JWT_VC".to_string()),
+        credential_format: Some("SD_JWT_VC".into()),
         expect_failure: true,
         ..Default::default()
     };
@@ -70,6 +79,110 @@ async fn test_post_issuer_credential_with_nonce() {
         ..Default::default()
     };
     test_post_issuer_credential_with(params, None).await;
+}
+
+#[tokio::test]
+async fn test_post_issuer_credential_in_parallel() {
+    let params = PostCredentialTestParams {
+        use_kid_in_proof: true,
+        schema_id: Some("some-schema-id".to_string()),
+        ..Default::default()
+    };
+    let TestIssuerSetup {
+        interaction_id,
+        access_token,
+        organisation,
+        context,
+        key,
+        issuer_identifier,
+        ..
+    } = issuer_setup(None).await;
+
+    let PostCredentialTestParams {
+        revocation_method,
+        use_kid_in_proof,
+        schema_id,
+        credential_format,
+        ..
+    } = params;
+
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "schema-1",
+            &organisation,
+            revocation_method.map(|v| v.into()),
+            TestingCreateSchemaParams {
+                format: credential_format,
+                schema_id: schema_id.clone(),
+                key_storage_security: None,
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let date_format =
+        format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]Z");
+    let interaction_data = json!({
+        "pre_authorized_code_used": true,
+        "access_token_hash": SHA256.hash(access_token.as_bytes()).unwrap(),
+        "access_token_expires_at": (OffsetDateTime::now_utc() + time::Duration::seconds(20)).format(&date_format).unwrap(),
+    });
+
+    let interaction = context
+        .db
+        .interactions
+        .create(
+            Some(interaction_id),
+            &serde_json::to_vec(&interaction_data).unwrap(),
+            &organisation,
+            InteractionType::Issuance,
+            None,
+        )
+        .await;
+
+    context
+        .db
+        .credentials
+        .create(
+            &credential_schema,
+            CredentialStateEnum::Offered,
+            &issuer_identifier,
+            "OPENID4VCI_FINAL1",
+            TestingCredentialParams {
+                interaction: Some(interaction),
+                key: Some(key),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let value = context
+        .api
+        .ssi
+        .generate_nonce("OPENID4VCI_FINAL1")
+        .await
+        .json_value()
+        .await;
+    let nonce = value["c_nonce"].as_str().unwrap();
+    let jwt = proof_jwt(use_kid_in_proof, Some(nonce)).await;
+    let mut multiple_attempts = vec![];
+    let num_credentials = 10;
+    for _ in 0..num_credentials {
+        multiple_attempts.push(context.api.ssi.issuer_create_credential_vci_final(
+            credential_schema.id,
+            schema_id.as_ref().unwrap(),
+            &jwt,
+        ));
+    }
+    let results = join_all(multiple_attempts).await;
+    // one attempt must succeed
+    let num_successful = results.iter().filter(|resp| resp.status() == 200).count();
+    assert_eq!(num_successful, 1);
+    // one attempt must fail
+    let num_failed = results.iter().filter(|resp| resp.status() == 400).count();
+    assert_eq!(num_failed, num_credentials - 1);
 }
 
 #[tokio::test]
@@ -117,22 +230,240 @@ async fn test_post_issuer_credential_with_bitstring_revocation_method() {
 }
 
 #[tokio::test]
+async fn test_post_issuer_credential_with_bitstring_in_parallel() {
+    let TestIssuerSetup {
+        organisation,
+        context,
+        key,
+        issuer_identifier,
+        ..
+    } = issuer_setup(None).await;
+
+    let schema_id = "schema-id".to_string();
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "schema-1",
+            &organisation,
+            Some("BITSTRINGSTATUSLIST".into()),
+            TestingCreateSchemaParams {
+                schema_id: Some(schema_id.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let date_format =
+        format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]Z");
+
+    let mut issuances = vec![];
+    const NUM_CREDENTIALS: usize = 10;
+    for _ in 0..NUM_CREDENTIALS {
+        let schema_id = schema_id.clone();
+        let interaction_id: InteractionId = Uuid::new_v4().into();
+        let access_token = format!("{interaction_id}.test");
+        let interaction_data = json!({
+            "pre_authorized_code_used": true,
+            "access_token_hash": SHA256.hash(access_token.as_bytes()).unwrap(),
+            "access_token_expires_at": (OffsetDateTime::now_utc() + time::Duration::seconds(20)).format(&date_format).unwrap(),
+        });
+
+        let interaction = context
+            .db
+            .interactions
+            .create(
+                Some(interaction_id),
+                &serde_json::to_vec(&interaction_data).unwrap(),
+                &organisation,
+                InteractionType::Issuance,
+                None,
+            )
+            .await;
+
+        context
+            .db
+            .credentials
+            .create(
+                &credential_schema,
+                CredentialStateEnum::Offered,
+                &issuer_identifier,
+                "OPENID4VCI_FINAL1",
+                TestingCredentialParams {
+                    interaction: Some(interaction),
+                    key: Some(key.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let value = context
+            .api
+            .ssi
+            .generate_nonce("OPENID4VCI_FINAL1")
+            .await
+            .json_value()
+            .await;
+        let nonce = value["c_nonce"].as_str().unwrap();
+        let key = Eddsa.generate_key().unwrap();
+        let jwt = proof_jwt_for(&key.key, "EdDSA".to_string(), None, Some(nonce)).await;
+        let api = Client::new(context.api.base_url.clone(), access_token);
+
+        issuances.push(async move {
+            api.ssi
+                .issuer_create_credential_vci_final(credential_schema.id, &schema_id, &jwt)
+                .await
+        });
+    }
+
+    let responses = join_all(issuances).await;
+    for response in responses {
+        assert_eq!(200, response.status());
+    }
+
+    let list = context
+        .db
+        .revocation_lists
+        .get_revocation_by_issuer_identifier_id(
+            issuer_identifier.id,
+            RevocationListPurpose::Revocation,
+            &"BITSTRINGSTATUSLIST".into(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+    let entries = context.db.revocation_lists.get_entries(list.id).await;
+    assert_eq!(entries.len(), NUM_CREDENTIALS);
+}
+
+#[tokio::test]
+async fn test_post_issuer_credential_with_tokenstatuslist_in_parallel() {
+    let TestIssuerSetup {
+        organisation,
+        context,
+        key,
+        issuer_identifier,
+        ..
+    } = issuer_setup(None).await;
+
+    let schema_id = "schema-id".to_string();
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create(
+            "schema-1",
+            &organisation,
+            Some("TOKENSTATUSLIST".into()),
+            TestingCreateSchemaParams {
+                format: Some("SD_JWT_VC".into()),
+                schema_id: Some(schema_id.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let date_format =
+        format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]Z");
+
+    let mut issuances = vec![];
+    const NUM_CREDENTIALS: usize = 10;
+    for _ in 0..NUM_CREDENTIALS {
+        let schema_id = schema_id.clone();
+        let interaction_id: InteractionId = Uuid::new_v4().into();
+        let access_token = format!("{interaction_id}.test");
+        let interaction_data = json!({
+            "pre_authorized_code_used": true,
+            "access_token_hash": SHA256.hash(access_token.as_bytes()).unwrap(),
+            "access_token_expires_at": (OffsetDateTime::now_utc() + time::Duration::seconds(20)).format(&date_format).unwrap(),
+        });
+
+        let interaction = context
+            .db
+            .interactions
+            .create(
+                Some(interaction_id),
+                &serde_json::to_vec(&interaction_data).unwrap(),
+                &organisation,
+                InteractionType::Issuance,
+                None,
+            )
+            .await;
+
+        context
+            .db
+            .credentials
+            .create(
+                &credential_schema,
+                CredentialStateEnum::Offered,
+                &issuer_identifier,
+                "OPENID4VCI_FINAL1",
+                TestingCredentialParams {
+                    interaction: Some(interaction),
+                    key: Some(key.clone()),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        let value = context
+            .api
+            .ssi
+            .generate_nonce("OPENID4VCI_FINAL1")
+            .await
+            .json_value()
+            .await;
+        let nonce = value["c_nonce"].as_str().unwrap();
+        let key = Eddsa.generate_key().unwrap();
+        let jwt = proof_jwt_for(&key.key, "EdDSA".to_string(), None, Some(nonce)).await;
+        let api = Client::new(context.api.base_url.clone(), access_token);
+
+        issuances.push(async move {
+            api.ssi
+                .issuer_create_credential_vci_final(credential_schema.id, &schema_id, &jwt)
+                .await
+        });
+    }
+
+    let responses = join_all(issuances).await;
+    for response in responses {
+        assert_eq!(200, response.status());
+    }
+
+    let list = context
+        .db
+        .revocation_lists
+        .get_revocation_by_issuer_identifier_id(
+            issuer_identifier.id,
+            RevocationListPurpose::RevocationAndSuspension,
+            &"TOKENSTATUSLIST".into(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+    let entries = context.db.revocation_lists.get_entries(list.id).await;
+    assert_eq!(entries.len(), NUM_CREDENTIALS);
+}
+
+#[tokio::test]
 async fn test_post_issuer_credential_with_bitstring_revocation_method_and_existing_token_status_list()
  {
-    let issuer_setup = issuer_setup().await;
+    let issuer_setup = issuer_setup(None).await;
     issuer_setup
         .context
         .db
         .revocation_lists
         .create(
-            &issuer_setup.issuer_did,
-            RevocationListPurpose::Revocation,
-            None,
-            Some(StatusListType::TokenStatusList),
+            issuer_setup.issuer_identifier.clone(),
+            Some(TestingRevocationListParams {
+                r#type: Some("TOKENSTATUSLIST".into()),
+                ..Default::default()
+            }),
         )
         .await;
 
-    let issuer_did_id = issuer_setup.issuer_did.id;
+    let issuer_identifier_id = issuer_setup.issuer_identifier.id;
     let params = PostCredentialTestParams {
         revocation_method: Some("BITSTRINGSTATUSLIST"),
         use_kid_in_proof: true,
@@ -144,66 +475,76 @@ async fn test_post_issuer_credential_with_bitstring_revocation_method_and_existi
         context
             .db
             .revocation_lists
-            .get_revocation_by_issuer_did_id(
-                &issuer_did_id,
+            .get_revocation_by_issuer_identifier_id(
+                issuer_identifier_id,
                 RevocationListPurpose::Revocation,
-                StatusListType::BitstringStatusList,
+                &"BITSTRINGSTATUSLIST".into(),
                 &RevocationListRelations::default()
             )
             .await
             .unwrap()
-            .r#type,
-        StatusListType::BitstringStatusList
+            .r#type
+            .as_ref(),
+        "BITSTRINGSTATUSLIST"
     );
     assert_eq!(
         context
             .db
             .revocation_lists
-            .get_revocation_by_issuer_did_id(
-                &issuer_did_id,
+            .get_revocation_by_issuer_identifier_id(
+                issuer_identifier_id,
                 RevocationListPurpose::Suspension,
-                StatusListType::BitstringStatusList,
+                &"BITSTRINGSTATUSLIST".into(),
                 &RevocationListRelations::default()
             )
             .await
             .unwrap()
-            .r#type,
-        StatusListType::BitstringStatusList
+            .r#type
+            .as_ref(),
+        "BITSTRINGSTATUSLIST"
     );
     assert_eq!(
         context
             .db
             .revocation_lists
-            .get_revocation_by_issuer_did_id(
-                &issuer_did_id,
+            .get_revocation_by_issuer_identifier_id(
+                issuer_identifier_id,
                 RevocationListPurpose::Revocation,
-                StatusListType::TokenStatusList,
+                &"TOKENSTATUSLIST".into(),
                 &RevocationListRelations::default()
             )
             .await
             .unwrap()
-            .r#type,
-        StatusListType::TokenStatusList
+            .r#type
+            .as_ref(),
+        "TOKENSTATUSLIST"
     );
 }
 
 #[tokio::test]
-async fn test_post_issuer_credential_with_lvvc_revocation_method() {
-    let params = PostCredentialTestParams {
-        revocation_method: Some("LVVC"),
-        use_kid_in_proof: true,
-        ..Default::default()
-    };
-    let (context, credential_id) = test_post_issuer_credential_with(params, None).await;
-
-    let lvvcs = context
+async fn test_post_issuer_credential_with_disabled_issuer_key_storage() {
+    let disabled_key_storage = Some(
+        indoc::indoc! {"
+        keyStorage:
+            INTERNAL:
+                enabled: false
+        "}
+        .to_string(),
+    );
+    let issuer_setup = issuer_setup(disabled_key_storage).await;
+    issuer_setup
+        .context
         .db
-        .validity_credentials
-        .get_all_by_credential_id(credential_id, ValidityCredentialType::Lvvc)
+        .revocation_lists
+        .create(
+            issuer_setup.issuer_identifier.clone(),
+            Some(TestingRevocationListParams {
+                r#type: Some("TOKENSTATUSLIST".into()),
+                ..Default::default()
+            }),
+        )
         .await;
-
-    assert_eq!(1, lvvcs.len());
-    assert_eq!(credential_id, lvvcs[0].linked_credential_id);
+    test_post_issuer_credential_with(PostCredentialTestParams::default(), Some(issuer_setup)).await;
 }
 
 struct TestIssuerSetup {
@@ -212,15 +553,13 @@ struct TestIssuerSetup {
     context: TestContext,
     organisation: Organisation,
     key: Key,
-    issuer_did: Did,
     issuer_identifier: Identifier,
 }
 
-async fn issuer_setup() -> TestIssuerSetup {
-    let interaction_id = Uuid::new_v4();
+async fn issuer_setup(additional_config: Option<String>) -> TestIssuerSetup {
+    let interaction_id = Uuid::new_v4().into();
     let access_token = format!("{interaction_id}.test");
-
-    let context = TestContext::new_with_token(&access_token, None).await;
+    let context = TestContext::new_with_token(&access_token, additional_config).await;
 
     let organisation = context.db.organisations.create().await;
 
@@ -239,6 +578,7 @@ async fn issuer_setup() -> TestIssuerSetup {
                 keys: Some(vec![RelatedKey {
                     role: KeyRole::AssertionMethod,
                     key: key.clone(),
+                    reference: "1".to_string(),
                 }]),
                 did: Some(
                     DidValue::from_str("did:key:z6MkuJnXWiLNmV3SooQ72iDYmUE1sz5HTCXWhKNhDZuqk4Rj")
@@ -267,7 +607,6 @@ async fn issuer_setup() -> TestIssuerSetup {
         context,
         organisation,
         key,
-        issuer_did,
         issuer_identifier,
     }
 }
@@ -280,7 +619,7 @@ struct PostCredentialTestParams<'a> {
     pop_nonce: Option<&'a str>,
     expect_failure: bool,
     schema_id: Option<String>,
-    credential_format: Option<String>,
+    credential_format: Option<CredentialFormat>,
     format: Option<&'a str>,
 }
 
@@ -297,7 +636,7 @@ async fn test_post_issuer_credential_with(
         issuer_identifier,
         ..
     } = match context {
-        None => issuer_setup().await,
+        None => issuer_setup(None).await,
         Some(context) => context,
     };
 
@@ -318,7 +657,7 @@ async fn test_post_issuer_credential_with(
         .create(
             "schema-1",
             &organisation,
-            revocation_method.unwrap_or("NONE"),
+            revocation_method.map(|v| v.into()),
             TestingCreateSchemaParams {
                 format: credential_format,
                 schema_id: schema_id.clone(),
@@ -339,15 +678,15 @@ async fn test_post_issuer_credential_with(
         interaction_data["nonce"] = interaction_nonce.into();
     }
 
-    let base_url = &context.config.app.core_base_url;
     let interaction = context
         .db
         .interactions
         .create(
             Some(interaction_id),
-            base_url,
             &serde_json::to_vec(&interaction_data).unwrap(),
             &organisation,
+            InteractionType::Issuance,
+            None,
         )
         .await;
 
@@ -389,6 +728,7 @@ async fn test_post_issuer_credential_with(
             .get_by_entity_id(&credential.id.into())
             .await;
         let credential = context.db.credentials.get(&credential.id).await;
+        assert!(credential.issuance_date.is_some());
         assert_eq!(
             credential_history
                 .values
@@ -407,7 +747,7 @@ async fn test_post_issuer_credential_with(
 
 #[tokio::test]
 async fn test_post_issuer_credential_mdoc() {
-    let interaction_id = Uuid::new_v4();
+    let interaction_id = Uuid::new_v4().into();
     let access_token = format!("{interaction_id}.test");
 
     let context = TestContext::new_with_token(&access_token, None).await;
@@ -420,41 +760,74 @@ async fn test_post_issuer_credential_mdoc() {
         .create(&organisation, eddsa_testing_params())
         .await;
 
-    let did = "did:mdl:certificate:MIIDYTCCAwegAwIBAgIUOfrQW7V3t1Df5wF54HMja4jXSiowCgYIKoZIzj0EAwIwYjELMAkGA1UEBhMCQ0gxDzANBgNVBAcMBlp1cmljaDERMA8GA1UECgwIUHJvY2l2aXMxETAPBgNVBAsMCFByb2NpdmlzMRwwGgYDVQQDDBNjYS5kZXYubWRsLXBsdXMuY29tMB4XDTI0MDUxNDA3MjcwMFoXDTI0MDgxMjAwMDAwMFowSjELMAkGA1UEBhMCQ0gxDzANBgNVBAcMBlp1cmljaDEUMBIGA1UECgwLUHJvY2l2aXMgQUcxFDASBgNVBAMMC3Byb2NpdmlzLmNoMCowBQYDK2VwAyEA3LOKxB5ik9WikgQmqNFtmuvNC0FMFFVXr6ATVoL-kT6jggHgMIIB3DAOBgNVHQ8BAf8EBAMCB4AwFQYDVR0lAQH_BAswCQYHKIGMXQUBAjAMBgNVHRMBAf8EAjAAMB8GA1UdIwQYMBaAFO0asJ3iYEVQADvaWjQyGpi-LbfFMFoGA1UdHwRTMFEwT6BNoEuGSWh0dHBzOi8vY2EuZGV2Lm1kbC1wbHVzLmNvbS9jcmwvNDBDRDIyNTQ3RjM4MzRDNTI2QzVDMjJFMUEyNkM3RTIwMzMyNDY2OC8wgcgGCCsGAQUFBwEBBIG7MIG4MFoGCCsGAQUFBzAChk5odHRwOi8vY2EuZGV2Lm1kbC1wbHVzLmNvbS9pc3N1ZXIvNDBDRDIyNTQ3RjM4MzRDNTI2QzVDMjJFMUEyNkM3RTIwMzMyNDY2OC5kZXIwWgYIKwYBBQUHMAGGTmh0dHA6Ly9jYS5kZXYubWRsLXBsdXMuY29tL29jc3AvNDBDRDIyNTQ3RjM4MzRDNTI2QzVDMjJFMUEyNkM3RTIwMzMyNDY2OC9jZXJ0LzAmBgNVHRIEHzAdhhtodHRwczovL2NhLmRldi5tZGwtcGx1cy5jb20wFgYDVR0RBA8wDYILcHJvY2l2aXMuY2gwHQYDVR0OBBYEFKz7jJBlcj4WlpOgMzjKwilDZ_ogMAoGCCqGSM49BAMCA0gAMEUCIDj2w5vOQacNAfIdHmfqlsn0nBpBlbBdC784VT0lqA1FAiEAtCGKf9Pd6dOyz6ke30fFb-YfKaOmbDngZ3dlZIh4dvg";
-    let issuer_did = context
-        .db
-        .dids
-        .create(
-            Some(organisation.clone()),
-            TestingDidParams {
-                keys: Some(vec![RelatedKey {
-                    role: KeyRole::AssertionMethod,
-                    key: key.clone(),
-                }]),
-                did: Some(did.parse().unwrap()),
-                ..Default::default()
-            },
-        )
-        .await;
+    let identifier_id = Uuid::new_v4().into();
+    let now = OffsetDateTime::now_utc();
+
+    let certificate_model = Certificate {
+        id: Uuid::new_v4().into(),
+        identifier_id,
+        organisation_id: Some(organisation.id),
+        created_date: now,
+        last_modified: now,
+        expiry_date: now.add(Duration::minutes(10)),
+        name: "test cert".to_string(),
+        chain: r#"-----BEGIN CERTIFICATE-----
+MIIDhzCCAyygAwIBAgIUahQKX8KQ86zDl0g9Wy3kW6oxFOQwCgYIKoZIzj0EAwIw
+YjELMAkGA1UEBhMCQ0gxDzANBgNVBAcMBlp1cmljaDERMA8GA1UECgwIUHJvY2l2
+aXMxETAPBgNVBAsMCFByb2NpdmlzMRwwGgYDVQQDDBNjYS5kZXYubWRsLXBsdXMu
+Y29tMB4XDTI0MDUxNDA5MDAwMFoXDTI4MDIyOTAwMDAwMFowVTELMAkGA1UEBhMC
+Q0gxDzANBgNVBAcMBlp1cmljaDEUMBIGA1UECgwLUHJvY2l2aXMgQUcxHzAdBgNV
+BAMMFnRlc3QuZXMyNTYucHJvY2l2aXMuY2gwOTATBgcqhkjOPQIBBggqhkjOPQMB
+BwMiAAJx38tO0JCdq3ZecMSW6a+BAAzllydQxVOQ+KDjnwLXJ6OCAeswggHnMA4G
+A1UdDwEB/wQEAwIHgDAVBgNVHSUBAf8ECzAJBgcogYxdBQECMAwGA1UdEwEB/wQC
+MAAwHwYDVR0jBBgwFoAU7RqwneJgRVAAO9paNDIamL4tt8UwWgYDVR0fBFMwUTBP
+oE2gS4ZJaHR0cHM6Ly9jYS5kZXYubWRsLXBsdXMuY29tL2NybC80MENEMjI1NDdG
+MzgzNEM1MjZDNUMyMkUxQTI2QzdFMjAzMzI0NjY4LzCByAYIKwYBBQUHAQEEgbsw
+gbgwWgYIKwYBBQUHMAKGTmh0dHA6Ly9jYS5kZXYubWRsLXBsdXMuY29tL2lzc3Vl
+ci80MENEMjI1NDdGMzgzNEM1MjZDNUMyMkUxQTI2QzdFMjAzMzI0NjY4LmRlcjBa
+BggrBgEFBQcwAYZOaHR0cDovL2NhLmRldi5tZGwtcGx1cy5jb20vb2NzcC80MENE
+MjI1NDdGMzgzNEM1MjZDNUMyMkUxQTI2QzdFMjAzMzI0NjY4L2NlcnQvMCYGA1Ud
+EgQfMB2GG2h0dHBzOi8vY2EuZGV2Lm1kbC1wbHVzLmNvbTAhBgNVHREEGjAYghZ0
+ZXN0LmVzMjU2LnByb2NpdmlzLmNoMB0GA1UdDgQWBBTGxO0mgPbDCn3/AoQxNFem
+Fp40RTAKBggqhkjOPQQDAgNJADBGAiEAiRmxICo5Gxa4dlcK0qeyGDqyBOA9s/EI
+1V1b4KfIsl0CIQCHu0eIGECUJIffrjmSc7P6YnQfxgocBUko7nra5E0Lhg==
+-----END CERTIFICATE-----
+"#
+        .to_string(),
+        fingerprint: "fingerprint".to_string(),
+        state: CertificateState::Active,
+        key: Some(key.clone()),
+    };
+
     let issuer_identifier = context
         .db
         .identifiers
         .create(
             &organisation,
             TestingIdentifierParams {
-                did: Some(issuer_did.clone()),
-                r#type: Some(IdentifierType::Did),
-                is_remote: Some(issuer_did.did_type == DidType::Remote),
+                id: Some(identifier_id),
+                r#type: Some(IdentifierType::Certificate),
+                certificates: Some(vec![certificate_model.clone()]),
                 ..Default::default()
             },
         )
         .await;
 
+    let _issuer_certificate = context
+        .db
+        .certificates
+        .create(
+            issuer_identifier.id,
+            TestingCertificateParams::from(certificate_model),
+        )
+        .await;
+
+    let root_claim_id = Uuid::new_v4();
     let str_claim_id = Uuid::new_v4();
     let num_claim_id = Uuid::new_v4();
     let bool_claim_id = Uuid::new_v4();
     let new_claim_schemas: Vec<(Uuid, &str, bool, &str, bool)> = vec![
-        (Uuid::new_v4(), "root", true, "OBJECT", false),
+        (root_claim_id, "root", true, "OBJECT", false),
         (str_claim_id, "root/str", true, "STRING", false),
         (num_claim_id, "root/num", true, "NUMBER", false),
         (bool_claim_id, "root/bool", true, "BOOLEAN", false),
@@ -467,7 +840,7 @@ async fn test_post_issuer_credential_mdoc() {
             &Uuid::new_v4(),
             "schema-1",
             &organisation,
-            "NONE",
+            None,
             &new_claim_schemas,
             "MDOC",
             "schema-id",
@@ -482,11 +855,16 @@ async fn test_post_issuer_credential_mdoc() {
         "access_token_expires_at": (OffsetDateTime::now_utc() + time::Duration::seconds(20)).format(&date_format).unwrap(),
     })).unwrap();
 
-    let base_url = &context.config.app.core_base_url;
     let interaction = context
         .db
         .interactions
-        .create(Some(interaction_id), base_url, &data, &organisation)
+        .create(
+            Some(interaction_id),
+            &data,
+            &organisation,
+            InteractionType::Issuance,
+            None,
+        )
         .await;
 
     let credential = context
@@ -501,9 +879,30 @@ async fn test_post_issuer_credential_mdoc() {
                 interaction: Some(interaction),
                 key: Some(key),
                 claims_data: Some(vec![
-                    (str_claim_id, "root/str", "str-value"),
-                    (num_claim_id, "root/num", "12"),
-                    (bool_claim_id, "root/bool", "false"),
+                    ClaimData {
+                        schema_id: root_claim_id.into(),
+                        path: "root".to_string(),
+                        value: None,
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: str_claim_id.into(),
+                        path: "root/str".to_string(),
+                        value: Some("str-value".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: num_claim_id.into(),
+                        path: "root/num".to_string(),
+                        value: Some("12".to_string()),
+                        selectively_disclosable: false,
+                    },
+                    ClaimData {
+                        schema_id: bool_claim_id.into(),
+                        path: "root/bool".to_string(),
+                        value: Some("false".to_string()),
+                        selectively_disclosable: false,
+                    },
                 ]),
                 ..Default::default()
             },

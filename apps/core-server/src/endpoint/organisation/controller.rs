@@ -1,20 +1,25 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use one_core::service::organisation::dto::UpsertOrganisationRequestDTO;
-use shared_types::OrganisationId;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
+use one_dto_mapper::convert_inner;
+use proc_macros::endpoint;
+use shared_types::{OrganisationId, Permission};
 
 use super::dto::{
     CreateOrganisationRequestRestDTO, CreateOrganisationResponseRestDTO,
-    GetOrganisationDetailsResponseRestDTO, UpsertOrganisationRequestRestDTO,
+    GetOrganisationDetailsResponseRestDTO, GetOrganisationsQuery, UpsertOrganisationRequestRestDTO,
 };
+use crate::dto::common::GetOrganisationListResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::response::{
-    CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse, VecResponse,
-};
+use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
+use crate::endpoint::organisation::mapper::upsert_request_from_request;
+use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationDetail],
     get,
     path = "/api/organisation/v1/{id}",
     responses(OkOrErrorResponse<GetOrganisationDetailsResponseRestDTO>),
@@ -36,10 +41,12 @@ pub(crate) async fn get_organisation(
     OkOrErrorResponse::from_result(result, state, "getting organization details")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationList],
     get,
     path = "/api/organisation/v1",
-    responses(OkOrErrorResponse<VecResponse<GetOrganisationDetailsResponseRestDTO>>),
+    responses(OkOrErrorResponse<GetOrganisationListResponseRestDTO>),
+    params(GetOrganisationsQuery),
     tag = "organisation_management",
     security(
         ("bearer" = [])
@@ -49,16 +56,35 @@ pub(crate) async fn get_organisation(
 )]
 pub(crate) async fn get_organisations(
     state: State<AppState>,
-) -> OkOrErrorResponse<VecResponse<GetOrganisationDetailsResponseRestDTO>> {
-    let result = state
-        .core
-        .organisation_service
-        .get_organisation_list()
-        .await;
-    OkOrErrorResponse::from_result(result, state, "getting organizations")
+    WithRejection(Qs(query), _): WithRejection<Qs<GetOrganisationsQuery>, ErrorResponseRestDTO>,
+) -> OkOrErrorResponse<GetOrganisationListResponseRestDTO> {
+    let result = async {
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .organisation_service
+                .get_organisation_list(query.try_into()?)
+                .await
+                .error_while("getting organisation list")?,
+        )
+    }
+    .await;
+
+    match result {
+        Err(error) => {
+            tracing::error!("Error while getting organisation list: {:?}", error);
+            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
+        }
+        Ok(value) => OkOrErrorResponse::Ok(GetOrganisationListResponseRestDTO {
+            values: convert_inner(value.values),
+            total_pages: value.total_pages,
+            total_items: value.total_items,
+        }),
+    }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationCreate],
     post,
     path = "/api/organisation/v1",
     request_body(
@@ -79,7 +105,6 @@ pub(crate) async fn get_organisations(
         supports the creation of as many organizations as is needed.
     "},
 )]
-#[axum::debug_handler]
 pub(crate) async fn post_organisation(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -95,8 +120,9 @@ pub(crate) async fn post_organisation(
     CreatedOrErrorResponse::from_result(result, state, "creating organization")
 }
 
-#[utoipa::path(
-    put,
+#[endpoint(
+    permissions = [Permission::StsOrganisationEdit],
+    patch,
     path = "/api/organisation/v1/{id}",
     params(
         ("id" = OrganisationId, Path, description = "Organization id")
@@ -109,12 +135,11 @@ pub(crate) async fn post_organisation(
     ),
     summary = "Update or insert organization",
     description = indoc::formatdoc! {"
-        Updates the name of an organization if it exists, otherwise creates
+        Updates the name or deactivates an organization if it exists, otherwise creates
         a new organization using the provided UUID and name.
     "},
 )]
-#[axum::debug_handler]
-pub(crate) async fn put_organisation(
+pub(crate) async fn patch_organisation(
     state: State<AppState>,
     Path(id): Path<OrganisationId>,
     WithRejection(Json(request), _): WithRejection<
@@ -122,14 +147,10 @@ pub(crate) async fn put_organisation(
         ErrorResponseRestDTO,
     >,
 ) -> EmptyOrErrorResponse {
-    let request = UpsertOrganisationRequestDTO {
-        id,
-        name: request.name,
-    };
     let result = state
         .core
         .organisation_service
-        .upsert_organisation(request)
+        .upsert_organisation(upsert_request_from_request(id, request))
         .await;
     EmptyOrErrorResponse::from_result(result, state, "upserting organization")
 }

@@ -269,7 +269,7 @@ async fn test_list_trust_list_subscription_with_trust_collection_filter() {
                 page_size: 10,
             }),
             filtering: Some(
-                TrustListSubscriptionFilterValue::TrustCollectionId(trust_collection_id)
+                TrustListSubscriptionFilterValue::TrustCollectionId(vec![trust_collection_id])
                     .condition(),
             ),
             ..Default::default()

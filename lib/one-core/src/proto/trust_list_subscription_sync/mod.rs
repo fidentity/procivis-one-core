@@ -96,9 +96,9 @@ impl TrustListSubscriptionSync for TrustListSubscriptionSyncImpl {
                     .subscription_repository
                     .list(TrustListSubscriptionListQuery {
                         filtering: Some(
-                            TrustListSubscriptionFilterValue::TrustCollectionId(
+                            TrustListSubscriptionFilterValue::TrustCollectionId(vec![
                                 trust_collection.id,
-                            )
+                            ])
                             .condition(),
                         ),
                         ..Default::default()

@@ -109,7 +109,7 @@ impl TrustCollectionService {
             .trust_list_subscription_repository
             .list(TrustListSubscriptionListQuery {
                 filtering: Some(
-                    TrustListSubscriptionFilterValue::TrustCollectionId(trust_collection_id)
+                    TrustListSubscriptionFilterValue::TrustCollectionId(vec![trust_collection_id])
                         .condition()
                         & TrustListSubscriptionFilterValue::State(vec![
                             TrustListSubscriptionState::Active,
@@ -196,7 +196,9 @@ impl TrustCollectionService {
             .trust_list_subscription_repository
             .list(ListQuery {
                 filtering: query.filtering.map(|f| {
-                    f & TrustListSubscriptionFilterValue::TrustCollectionId(trust_collection_id)
+                    f & TrustListSubscriptionFilterValue::TrustCollectionId(vec![
+                        trust_collection_id,
+                    ])
                 }),
                 ..query
             })
@@ -234,7 +236,7 @@ impl TrustCollectionService {
             .trust_list_subscription_repository
             .list(TrustListSubscriptionListQuery {
                 filtering: Some(
-                    TrustListSubscriptionFilterValue::TrustCollectionId(trust_collection_id)
+                    TrustListSubscriptionFilterValue::TrustCollectionId(vec![trust_collection_id])
                         .condition(),
                 ),
                 ..Default::default()

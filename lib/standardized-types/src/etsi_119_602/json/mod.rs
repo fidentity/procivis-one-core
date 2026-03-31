@@ -254,6 +254,7 @@ pub struct TrustedEntity {
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TrustedEntityInformation {
     #[serde(rename = "TEName")]
     pub te_name: Vec<MultiLangString>,
@@ -273,6 +274,7 @@ pub struct TrustedEntityInformation {
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct TEAddress {
     #[serde(rename = "TEElectronicAddress")]
     pub te_electronic_address: Option<Vec<MultiLangUri>>,
@@ -283,6 +285,7 @@ pub struct TEAddress {
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct PostalAddress {
     pub lang: String,
     #[serde(rename = "Country")]
@@ -343,6 +346,7 @@ pub struct ServiceInformation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct Extension {
     pub critical: bool,
 
@@ -379,12 +383,14 @@ pub struct PkiObject {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct MultiLangString {
     pub lang: String,
     pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MultiLangUri {
     pub lang: String,

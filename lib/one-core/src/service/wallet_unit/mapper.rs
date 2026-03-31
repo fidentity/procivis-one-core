@@ -105,7 +105,7 @@ pub(crate) async fn prepare_trust_collection_info(
         let subscriptions = trust_subscription_repository
             .list(TrustListSubscriptionListQuery {
                 filtering: Some(
-                    TrustListSubscriptionFilterValue::TrustCollectionId(id).condition()
+                    TrustListSubscriptionFilterValue::TrustCollectionId(vec![id]).condition()
                         & TrustListSubscriptionFilterValue::State(vec![
                             TrustListSubscriptionState::Active,
                         ]),
@@ -157,7 +157,7 @@ pub(crate) async fn set_active_trust_collections(
             trust_subscription_repository
                 .list(TrustListSubscriptionListQuery {
                     filtering: Some(
-                        TrustListSubscriptionFilterValue::TrustCollectionId(collection_id)
+                        TrustListSubscriptionFilterValue::TrustCollectionId(vec![collection_id])
                             .condition(),
                     ),
                     ..Default::default()

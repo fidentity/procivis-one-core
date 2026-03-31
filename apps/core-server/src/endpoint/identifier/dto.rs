@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use one_core::model::identifier::{IdentifierState, IdentifierType, SortableIdentifierColumn};
+use one_core::provider::trust_list_subscriber::TrustEntityResponse;
 use one_core::service::certificate::dto::{
     CreateCertificateCaDTO, CreateCertificateContentDTO, CreateCertificateRequestDTO,
 };
@@ -12,7 +13,9 @@ use one_core::service::identifier::dto::{
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
-    GetIdentifierListResponseDTO, GetIdentifierResponseDTO,
+    GetIdentifierListResponseDTO, GetIdentifierResponseDTO, ResolveTrustEntriesRequestDTO,
+    ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
+    ResolvedTrustEntrySourceResponseDTO,
 };
 use one_core::service::trust_entity::dto::{
     ResolveTrustEntitiesRequestDTO, ResolveTrustEntitiesResponseDTO, ResolveTrustEntityRequestDTO,
@@ -24,7 +27,11 @@ use one_dto_mapper::{
 };
 use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
-use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
+use shared_types::{
+    CertificateId, IdentifierId, KeyId, OrganisationId, TrustCollectionId, TrustListSubscriberId,
+    TrustListSubscriptionId,
+};
+use standardized_types::etsi_119_602::TrustedEntityInformation;
 use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
@@ -36,6 +43,10 @@ use crate::endpoint::certificate::dto::CertificateResponseRestDTO;
 use crate::endpoint::did::dto::{CreateDidRequestKeysRestDTO, DidResponseRestDTO, KeyRoleRestEnum};
 use crate::endpoint::key::dto::{
     KeyGenerateCSRRequestProfileRest, KeyGenerateCSRRequestSubjectRestDTO, KeyResponseRestDTO,
+};
+use crate::endpoint::trust_collection::dto::{
+    TrustCollectionListItemResponseRestDTO, TrustListRoleRestEnum,
+    TrustListSubscriptionStateRestEnum,
 };
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::mapper::MapperError;
@@ -436,4 +447,63 @@ pub struct CreateSelfSignedCaRequestIssuerAlternativeNameRestDTO {
 pub enum CreateSelfSignedCaRequestIssuerAlternativeNameTypeRest {
     Email,
     Uri,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, Validate, Into)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[into(ResolveTrustEntriesRequestDTO)]
+pub(crate) struct ResolveTrustEntriesRequestRestDTO {
+    pub identifiers: Vec<IdentifierId>,
+    #[into(with_fn = "convert_inner_of_inner")]
+    pub roles: Option<Vec<TrustListRoleRestEnum>>,
+    #[into(with_fn = "convert_inner_of_inner")]
+    pub trust_collection_ids: Option<Vec<TrustCollectionId>>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[serde(rename_all = "camelCase")]
+#[from(ResolvedTrustEntriesResponseDTO)]
+pub(crate) struct ResolvedTrustEntriesResponseRestDTO {
+    pub identifier: GetIdentifierListItemResponseRestDTO,
+    #[from(with_fn = "convert_inner")]
+    pub trust_entries: Vec<ResolvedTrustEntryResponseRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[serde(rename_all = "camelCase")]
+#[from(ResolvedTrustEntryResponseDTO)]
+pub(crate) struct ResolvedTrustEntryResponseRestDTO {
+    #[from(with_fn = "convert_inner")]
+    pub metadata: Option<TrustEntityResponseRestEnum>,
+    pub source: ResolvedTrustEntrySourceResponseRestDTO,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[serde(rename_all = "camelCase")]
+#[from(ResolvedTrustEntrySourceResponseDTO)]
+pub(crate) struct ResolvedTrustEntrySourceResponseRestDTO {
+    pub id: TrustListSubscriptionId,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_date: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_modified: OffsetDateTime,
+    pub name: String,
+    pub role: TrustListRoleRestEnum,
+    pub reference: String,
+    pub r#type: TrustListSubscriberId,
+    pub state: TrustListSubscriptionStateRestEnum,
+    pub trust_collection: TrustCollectionListItemResponseRestDTO,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[from(TrustEntityResponse)]
+#[allow(clippy::upper_case_acronyms)]
+pub(crate) enum TrustEntityResponseRestEnum {
+    LOTE(TrustedEntityInformation),
 }

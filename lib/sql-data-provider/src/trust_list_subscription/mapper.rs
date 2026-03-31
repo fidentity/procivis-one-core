@@ -11,8 +11,7 @@ use crate::entity::trust_list_publication::TrustRoleEnum;
 use crate::entity::trust_list_subscription;
 use crate::entity::trust_list_subscription::TrustListSubscriptionState;
 use crate::list_query_generic::{
-    IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_equals_condition,
-    get_string_match_condition,
+    IntoFilterCondition, IntoSortingColumn, get_comparison_condition, get_string_match_condition,
 };
 
 impl From<trust_list_subscription::Model> for TrustListSubscription {
@@ -73,10 +72,11 @@ impl IntoFilterCondition for TrustListSubscriptionFilterValue {
             Self::Name(string_match) => {
                 get_string_match_condition(trust_list_subscription::Column::Name, string_match)
             }
-            Self::TrustCollectionId(trust_collection_id) => get_equals_condition(
-                trust_list_subscription::Column::TrustCollectionId,
-                trust_collection_id,
-            ),
+            Self::TrustCollectionId(trust_collection_id) => {
+                trust_list_subscription::Column::TrustCollectionId
+                    .is_in(trust_collection_id)
+                    .into_condition()
+            }
             Self::Role(roles) => trust_list_subscription::Column::Role
                 .is_in(convert_inner::<_, TrustRoleEnum>(roles))
                 .into_condition(),

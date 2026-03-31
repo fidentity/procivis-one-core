@@ -21,7 +21,7 @@ use crate::provider::caching_loader::etsi_lote::EtsiLoteCache;
 use crate::provider::trust_list_subscriber::error::TrustListSubscriberError;
 use crate::provider::trust_list_subscriber::etsi_lote::model::PreprocessedLote;
 use crate::provider::trust_list_subscriber::{
-    TrustEntityResponse, TrustListSubscriber, TrustListSubscriberCapabilities,
+    Feature, TrustEntityResponse, TrustListSubscriber, TrustListSubscriberCapabilities,
     TrustListValidationSuccess,
 };
 
@@ -90,6 +90,11 @@ impl TrustListSubscriber for EtsiLoteSubscriber {
                 TrustListRoleEnum::WrpRcProvider,
                 TrustListRoleEnum::NationalRegistryRegistrar,
             ],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
         }
     }
 

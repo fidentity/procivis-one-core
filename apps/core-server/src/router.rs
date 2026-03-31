@@ -365,6 +365,10 @@ fn get_management_endpoints(
                 post(identifier::controller::resolve_trust_entity),
             )
             .route(
+                "/api/identifier/v1/resolve-trust-entries",
+                post(identifier::controller::resolve_trust_entries),
+            )
+            .route(
                 "/api/identifier/v1/{id}",
                 get(identifier::controller::get_identifier)
                     .delete(identifier::controller::delete_identifier),

@@ -48,7 +48,7 @@ pub enum SortableTrustListSubscriptionColumn {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TrustListSubscriptionFilterValue {
     Name(StringMatch),
-    TrustCollectionId(TrustCollectionId),
+    TrustCollectionId(Vec<TrustCollectionId>),
     Role(Vec<TrustListRoleEnum>),
     State(Vec<TrustListSubscriptionState>),
     Type(Vec<TrustListSubscriberId>),

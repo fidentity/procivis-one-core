@@ -781,9 +781,12 @@ impl OneCore {
                 data_provider.get_identifier_repository(),
                 data_provider.get_key_repository(),
                 data_provider.get_organisation_repository(),
+                data_provider.get_trust_collection_repository(),
+                data_provider.get_trust_list_subscription_repository(),
                 identifier_creator,
                 config.clone(),
                 session_provider.clone(),
+                trust_list_subscriber_provider.clone(),
             ),
             wallet_unit_service: WalletUnitService::new(
                 data_provider.get_organisation_repository(),

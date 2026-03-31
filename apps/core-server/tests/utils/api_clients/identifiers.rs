@@ -1,10 +1,11 @@
+use core_server::endpoint::trust_list_publication::dto::TrustListRoleRestEnum;
 use serde_json::json;
 use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
 
 use super::{HttpClient, Response};
 
 pub struct IdentifiersApi {
-    client: HttpClient,
+    pub client: HttpClient,
 }
 
 impl IdentifiersApi {
@@ -298,6 +299,27 @@ impl IdentifiersApi {
                     }
                 ),
             )
+            .await
+    }
+
+    pub async fn resolve_trust_entries(
+        &self,
+        identifiers: &[IdentifierId],
+        roles: Option<&[TrustListRoleRestEnum]>,
+        trust_collection_ids: Option<&[shared_types::TrustCollectionId]>,
+    ) -> Response {
+        let mut body = json!({
+            "identifiers": identifiers,
+        });
+        if let Some(roles) = roles {
+            body["roles"] = json!(roles);
+        }
+        if let Some(trust_collection_ids) = trust_collection_ids {
+            body["trustCollectionIds"] = json!(trust_collection_ids);
+        }
+
+        self.client
+            .post("/api/identifier/v1/resolve-trust-entries", body)
             .await
     }
 }

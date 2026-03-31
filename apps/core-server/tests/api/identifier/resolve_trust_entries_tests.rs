@@ -1,0 +1,305 @@
+use one_core::model::certificate::CertificateState;
+use one_core::model::identifier::IdentifierType;
+use one_core::model::remote_entity_cache::{CacheType, RemoteEntityCacheEntry};
+use one_core::model::trust_list_role::TrustListRoleEnum;
+use one_core::model::trust_list_subscription::TrustListSubscriptionState;
+use shared_types::TrustListSubscriberId;
+use similar_asserts::assert_eq;
+use standardized_types::etsi_119_602::{MultiLangString, TrustedEntityInformation};
+use uuid::Uuid;
+
+use crate::fixtures::TestingIdentifierParams;
+use crate::utils::api_clients::Response;
+use crate::utils::context::TestContext;
+use crate::utils::db_clients::certificates::TestingCertificateParams;
+use crate::utils::db_clients::trust_collections::TestTrustCollectionParams;
+
+#[tokio::test]
+async fn test_resolve_trust_entries_unauthorized() {
+    // GIVEN
+    let context = TestContext::new_with_token("", None).await;
+
+    // WHEN
+    let resp: Response = context
+        .api
+        .identifiers
+        .client
+        .post(
+            "/api/identifier/v1/resolve-trust-entries",
+            serde_json::json!({
+                "identifiers": [Uuid::new_v4()]
+            }),
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_success_empty() {
+    // GIVEN
+    let context = TestContext::new(None).await;
+    let identifier_id = Uuid::new_v4().into();
+
+    // WHEN
+    let resp = context
+        .api
+        .identifiers
+        .resolve_trust_entries(&[identifier_id], None, None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.json_value().await;
+    assert!(body.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_success() {
+    // GIVEN
+    let additional_config = r#"
+trustListSubscriber:
+  ETSI-LOTE:
+    type: ETSI_LOTE
+    display:
+      translationId: ETSI LoTE
+    enabled: true
+    params:
+      public:
+        accepts: application/jwt
+        leeway: 0
+    "#;
+    let context = TestContext::new(Some(additional_config.to_string())).await;
+    let organisation = context.db.organisations.create().await;
+    let fingerprint = "test-fingerprint";
+
+    // 1. Prepare PreprocessedLote
+    let trusted_entity = TrustedEntityInformation {
+        te_name: vec![MultiLangString {
+            lang: "en".to_string(),
+            value: "Test Entity".to_string(),
+        }],
+        ..Default::default()
+    };
+
+    let preprocessed_lote = serde_json::json!({
+        "role": "ISSUER",
+        "trusted_entities": [trusted_entity],
+        "certificate_fingerprints": {
+            fingerprint: 0
+        },
+        "subject_key_identifiers": {},
+        "subject_names": {},
+        "public_keys": {}
+    });
+
+    let value = serde_json::to_vec(&preprocessed_lote).unwrap();
+
+    // 2. Mock two trust lists in cache
+    let url1 = "https://list1.com/";
+    let url2 = "https://list2.com/";
+
+    for url in [url1, url2] {
+        context
+            .db
+            .remote_entities
+            .add_entry(RemoteEntityCacheEntry {
+                id: Uuid::new_v4().into(),
+                created_date: one_core::clock::now_utc(),
+                last_modified: one_core::clock::now_utc(),
+                last_used: one_core::clock::now_utc(),
+                expiration_date: None,
+                key: url.to_string(),
+                value: value.clone(),
+                r#type: CacheType::TrustList,
+                media_type: Some("application/jose".to_string()),
+            })
+            .await;
+    }
+
+    // 3. Setup Identifier with certificate
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Certificate),
+                is_remote: Some(true),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    context
+        .db
+        .certificates
+        .create(
+            identifier.id,
+            TestingCertificateParams {
+                fingerprint: Some(fingerprint.to_string()),
+                state: Some(CertificateState::Active),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // 4. Setup two trust collections and subscriptions
+    let subscriber_id = TrustListSubscriberId::from("ETSI-LOTE");
+    for (i, url) in [url1, url2].into_iter().enumerate() {
+        let tc = context
+            .db
+            .trust_collections
+            .create(
+                organisation.clone(),
+                TestTrustCollectionParams {
+                    name: Some(format!("Collection {}", i)),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        context
+            .db
+            .trust_list_subscriptions
+            .create(
+                &format!("Subscription {}", i),
+                TrustListRoleEnum::Issuer,
+                subscriber_id.clone(),
+                url,
+                TrustListSubscriptionState::Active,
+                tc.id,
+            )
+            .await;
+    }
+
+    // WHEN
+    let resp = context
+        .api
+        .identifiers
+        .resolve_trust_entries(&[identifier.id], None, None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.json_value().await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["identifier"]["id"], identifier.id.to_string());
+
+    let trust_entries = body[0]["trustEntries"].as_array().unwrap();
+    assert_eq!(trust_entries.len(), 2);
+
+    let mut collection_names: Vec<_> = trust_entries
+        .iter()
+        .map(|e| {
+            e["source"]["trustCollection"]["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("Missing trust collection name in entry: {:?}", e))
+        })
+        .collect();
+    collection_names.sort();
+    assert_eq!(collection_names, vec!["Collection 0", "Collection 1"]);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_did_identifier() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Did),
+                is_remote: Some(true),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .identifiers
+        .resolve_trust_entries(&[identifier.id], None, None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.json_value().await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["identifier"]["id"], identifier.id.to_string());
+    // DID identifiers should not be sent for resolution, so trustEntries should be empty
+    assert!(body[0]["trustEntries"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_key_identifier() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Key),
+                is_remote: Some(true),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .identifiers
+        .resolve_trust_entries(&[identifier.id], None, None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.json_value().await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["identifier"]["id"], identifier.id.to_string());
+    // Key identifiers should not be sent for resolution, so trustEntries should be empty
+    assert!(body[0]["trustEntries"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_non_remote_identifier() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Certificate),
+                is_remote: Some(false),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .identifiers
+        .resolve_trust_entries(&[identifier.id], None, None)
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.json_value().await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["identifier"]["id"], identifier.id.to_string());
+    // Non-remote identifiers should not be sent for resolution, so trustEntries should be empty
+    assert!(body[0]["trustEntries"].as_array().unwrap().is_empty());
+}

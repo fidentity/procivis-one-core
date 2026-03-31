@@ -1,22 +1,108 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use shared_types::TrustCollectionId;
 use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::identifier::{Identifier, IdentifierListQuery};
+use crate::model::identifier::{Identifier, IdentifierListQuery, IdentifierType};
+use crate::model::trust_collection::{GetTrustCollectionList, TrustCollection};
+use crate::model::trust_list_role::TrustListRoleEnum;
+use crate::model::trust_list_subscription::{
+    GetTrustListSubscriptionList, TrustListSubscription, TrustListSubscriptionState,
+};
 use crate::proto::identifier_creator::MockIdentifierCreator;
 use crate::proto::session_provider::test::StaticSessionProvider;
+use crate::provider::trust_list_subscriber::provider::MockTrustListSubscriberProvider;
+use crate::provider::trust_list_subscriber::{
+    Feature, MockTrustListSubscriber, TrustEntityResponse, TrustListSubscriberCapabilities,
+};
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
+use crate::repository::trust_list_subscription_repository::MockTrustListSubscriptionRepository;
 use crate::service::identifier::IdentifierService;
-use crate::service::identifier::dto::CreateIdentifierRequestDTO;
-use crate::service::test_utilities::{dummy_identifier, dummy_organisation, generic_config};
+use crate::service::identifier::dto::{CreateIdentifierRequestDTO, ResolveTrustEntriesRequestDTO};
+use crate::service::test_utilities::{
+    dummy_identifier, dummy_organisation, generic_config, get_dummy_date,
+};
+
+#[derive(Default)]
+struct Mocks {
+    identifier_repository: MockIdentifierRepository,
+    key_repository: MockKeyRepository,
+    organisation_repository: MockOrganisationRepository,
+    trust_collection_repository: MockTrustCollectionRepository,
+    trust_list_subscription_repository: MockTrustListSubscriptionRepository,
+    identifier_creator: MockIdentifierCreator,
+    session_provider: StaticSessionProvider,
+    trust_list_subscriber_provider: MockTrustListSubscriberProvider,
+}
+
+fn setup_service(mocks: Mocks) -> IdentifierService {
+    IdentifierService {
+        identifier_repository: Arc::new(mocks.identifier_repository),
+        key_repository: Arc::new(mocks.key_repository),
+        organisation_repository: Arc::new(mocks.organisation_repository),
+        trust_collection_repository: Arc::new(mocks.trust_collection_repository),
+        trust_list_subscription_repository: Arc::new(mocks.trust_list_subscription_repository),
+        config: Arc::new(generic_config().core),
+        identifier_creator: Arc::new(mocks.identifier_creator),
+        session_provider: Arc::new(mocks.session_provider),
+        trust_list_subscriber_provider: Arc::new(mocks.trust_list_subscriber_provider),
+    }
+}
+
+fn setup_service_simple(identifier: Option<Identifier>) -> IdentifierService {
+    let mut identifier_repository = MockIdentifierRepository::default();
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(identifier.clone()));
+
+    setup_service(Mocks {
+        identifier_repository,
+        ..Default::default()
+    })
+}
+
+fn dummy_trust_list_subscription(
+    trust_collection_id: TrustCollectionId,
+) -> (TrustListSubscription, TrustCollection) {
+    let now = get_dummy_date();
+    let organisation_id = Uuid::new_v4().into();
+    let trust_collection = TrustCollection {
+        id: trust_collection_id,
+        name: "test trust collection".to_string(),
+        created_date: now,
+        last_modified: now,
+        deactivated_at: None,
+        remote_trust_collection_url: None,
+        organisation_id,
+        organisation: None,
+    };
+    (
+        TrustListSubscription {
+            id: Uuid::new_v4().into(),
+            name: "test trust list subscription".to_string(),
+            created_date: now,
+            last_modified: now,
+            deactivated_at: None,
+            r#type: "test type".to_string().into(),
+            reference: "http://test.com".to_string(),
+            role: TrustListRoleEnum::Issuer,
+            state: TrustListSubscriptionState::Active,
+            trust_collection_id,
+            trust_collection: Some(trust_collection.clone()),
+        },
+        trust_collection,
+    )
+}
 
 #[tokio::test]
 async fn test_get_identifier_list_session_org_mismatch() {
-    let service = setup_service(None);
+    let service = setup_service_simple(None);
 
     let result = service
         .get_identifier_list(
@@ -35,7 +121,7 @@ async fn test_get_identifier_list_session_org_mismatch() {
 
 #[tokio::test]
 async fn test_create_identifier_session_org_mismatch() {
-    let service = setup_service(None);
+    let service = setup_service_simple(None);
 
     let result = service
         .create_identifier(CreateIdentifierRequestDTO {
@@ -56,7 +142,7 @@ async fn test_create_identifier_session_org_mismatch() {
 async fn test_identifier_ops_session_org_mismatch() {
     let mut identifier = dummy_identifier();
     identifier.organisation = Some(dummy_organisation(None));
-    let service = setup_service(Some(identifier));
+    let service = setup_service_simple(Some(identifier));
 
     let result = service.get_identifier(&Uuid::new_v4().into()).await;
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
@@ -65,23 +151,398 @@ async fn test_identifier_ops_session_org_mismatch() {
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }
 
-fn setup_service(identifier: Option<Identifier>) -> IdentifierService {
-    let key_repository = Arc::new(MockKeyRepository::default());
+#[tokio::test]
+async fn test_resolve_trust_entries_success() {
+    // given
     let mut identifier_repository = MockIdentifierRepository::default();
+    let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::default();
+    let mut trust_collection_repository = MockTrustCollectionRepository::default();
+    let mut trust_list_subscriber_provider = MockTrustListSubscriberProvider::default();
+
+    let identifier_id = Uuid::new_v4().into();
+    let mut identifier = dummy_identifier();
+    identifier.id = identifier_id;
+    identifier.is_remote = true;
+    identifier.r#type = IdentifierType::Certificate;
+
     identifier_repository
         .expect_get()
-        .returning(move |_, _| Ok(identifier.clone()));
-    let identifier_repository = Arc::new(identifier_repository);
-    let organisation_repository = Arc::new(MockOrganisationRepository::default());
-    let config = Arc::new(generic_config().core);
-    let session_provider = Arc::new(StaticSessionProvider::new_random());
+        .returning(move |_, _| Ok(Some(identifier.clone())));
 
-    IdentifierService {
+    let trust_collection_id = Uuid::new_v4().into();
+    let (subscription, trust_collection) = dummy_trust_list_subscription(trust_collection_id);
+
+    trust_list_subscription_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustListSubscriptionList {
+                values: vec![subscription.clone()],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
+
+    trust_collection_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustCollectionList {
+                values: vec![trust_collection.clone()],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
+
+    let mut trust_list_subscriber = MockTrustListSubscriber::default();
+    trust_list_subscriber
+        .expect_get_capabilities()
+        .returning(|| TrustListSubscriberCapabilities {
+            roles: vec![],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
+        });
+    trust_list_subscriber
+        .expect_resolve_entries()
+        .returning(move |_, _| {
+            let mut map = HashMap::new();
+            map.insert(identifier_id, TrustEntityResponse::LOTE(Default::default()));
+            Ok(map)
+        });
+
+    let subscriber_arc: Arc<dyn crate::provider::trust_list_subscriber::TrustListSubscriber> =
+        Arc::new(trust_list_subscriber);
+    trust_list_subscriber_provider
+        .expect_get()
+        .returning(move |_| Some(subscriber_arc.clone()));
+
+    let service = setup_service(Mocks {
         identifier_repository,
-        key_repository,
-        organisation_repository,
-        config,
-        identifier_creator: Arc::new(MockIdentifierCreator::default()),
-        session_provider,
-    }
+        trust_list_subscription_repository,
+        trust_collection_repository,
+        trust_list_subscriber_provider,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .resolve_trust_entries(ResolveTrustEntriesRequestDTO {
+            identifiers: vec![identifier_id],
+            roles: None,
+            trust_collection_ids: None,
+        })
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].identifier.id, identifier_id);
+    assert_eq!(result[0].trust_entries.len(), 1);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_filters_local() {
+    // given
+    let mut identifier_repository = MockIdentifierRepository::default();
+    let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::default();
+    let mut trust_collection_repository = MockTrustCollectionRepository::default();
+    let mut trust_list_subscriber_provider = MockTrustListSubscriberProvider::default();
+
+    let identifier_id = Uuid::new_v4().into();
+    let mut identifier = dummy_identifier();
+    identifier.id = identifier_id;
+    identifier.is_remote = false; // Local
+    identifier.r#type = IdentifierType::Certificate;
+
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    trust_list_subscription_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustListSubscriptionList {
+                values: vec![dummy_trust_list_subscription(Uuid::new_v4().into()).0],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
+
+    trust_collection_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustCollectionList {
+                values: vec![],
+                total_items: 0,
+                total_pages: 0,
+            })
+        });
+
+    let mut trust_list_subscriber = MockTrustListSubscriber::default();
+    trust_list_subscriber
+        .expect_get_capabilities()
+        .returning(|| TrustListSubscriberCapabilities {
+            roles: vec![],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
+        });
+    // Should be called with empty identifiers list
+    trust_list_subscriber
+        .expect_resolve_entries()
+        .withf(|_, identifiers| identifiers.is_empty())
+        .returning(move |_, _| Ok(HashMap::new()));
+
+    let subscriber_arc: Arc<dyn crate::provider::trust_list_subscriber::TrustListSubscriber> =
+        Arc::new(trust_list_subscriber);
+    trust_list_subscriber_provider
+        .expect_get()
+        .returning(move |_| Some(subscriber_arc.clone()));
+
+    let service = setup_service(Mocks {
+        identifier_repository,
+        trust_list_subscription_repository,
+        trust_collection_repository,
+        trust_list_subscriber_provider,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .resolve_trust_entries(ResolveTrustEntriesRequestDTO {
+            identifiers: vec![identifier_id],
+            roles: None,
+            trust_collection_ids: None,
+        })
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].identifier.id, identifier_id);
+    assert_eq!(result[0].trust_entries.len(), 0);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_ignores_missing_identifiers() {
+    // given
+    let mut identifier_repository = MockIdentifierRepository::default();
+    let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::default();
+    let mut trust_collection_repository = MockTrustCollectionRepository::default();
+
+    let identifier_id = Uuid::new_v4().into();
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(None));
+
+    trust_list_subscription_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustListSubscriptionList {
+                values: vec![],
+                total_items: 0,
+                total_pages: 0,
+            })
+        });
+
+    trust_collection_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustCollectionList {
+                values: vec![],
+                total_items: 0,
+                total_pages: 0,
+            })
+        });
+
+    let service = setup_service(Mocks {
+        identifier_repository,
+        trust_list_subscription_repository,
+        trust_collection_repository,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .resolve_trust_entries(ResolveTrustEntriesRequestDTO {
+            identifiers: vec![identifier_id],
+            roles: None,
+            trust_collection_ids: None,
+        })
+        .await
+        .unwrap();
+
+    // then
+    // Result should be empty because the identifier was not found in repo
+    assert_eq!(result.len(), 0);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_subscriber_error() {
+    // given
+    let mut identifier_repository = MockIdentifierRepository::default();
+    let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::default();
+    let mut trust_collection_repository = MockTrustCollectionRepository::default();
+    let mut trust_list_subscriber_provider = MockTrustListSubscriberProvider::default();
+
+    let identifier_id = Uuid::new_v4().into();
+    let mut identifier = dummy_identifier();
+    identifier.id = identifier_id;
+    identifier.is_remote = true;
+    identifier.r#type = IdentifierType::Certificate;
+
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    trust_list_subscription_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustListSubscriptionList {
+                values: vec![dummy_trust_list_subscription(Uuid::new_v4().into()).0],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
+
+    trust_collection_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustCollectionList {
+                values: vec![],
+                total_items: 0,
+                total_pages: 0,
+            })
+        });
+
+    let mut trust_list_subscriber = MockTrustListSubscriber::default();
+    trust_list_subscriber
+        .expect_get_capabilities()
+        .returning(|| TrustListSubscriberCapabilities {
+            roles: vec![],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
+        });
+    trust_list_subscriber
+        .expect_resolve_entries()
+        .returning(move |_, _| Err(crate::provider::trust_list_subscriber::error::TrustListSubscriberError::MappingError("error".to_string())));
+
+    let subscriber_arc: Arc<dyn crate::provider::trust_list_subscriber::TrustListSubscriber> =
+        Arc::new(trust_list_subscriber);
+    trust_list_subscriber_provider
+        .expect_get()
+        .returning(move |_| Some(subscriber_arc.clone()));
+
+    let service = setup_service(Mocks {
+        identifier_repository,
+        trust_list_subscription_repository,
+        trust_collection_repository,
+        trust_list_subscriber_provider,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .resolve_trust_entries(ResolveTrustEntriesRequestDTO {
+            identifiers: vec![identifier_id],
+            roles: None,
+            trust_collection_ids: None,
+        })
+        .await;
+
+    // then
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0047);
+}
+
+#[tokio::test]
+async fn test_resolve_trust_entries_filters_key_type() {
+    // given
+    let mut identifier_repository = MockIdentifierRepository::default();
+    let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::default();
+    let mut trust_collection_repository = MockTrustCollectionRepository::default();
+    let mut trust_list_subscriber_provider = MockTrustListSubscriberProvider::default();
+
+    let identifier_id = Uuid::new_v4().into();
+    let mut identifier = dummy_identifier();
+    identifier.id = identifier_id;
+    identifier.is_remote = true;
+    identifier.r#type = IdentifierType::Key;
+
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    trust_list_subscription_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustListSubscriptionList {
+                values: vec![dummy_trust_list_subscription(Uuid::new_v4().into()).0],
+                total_items: 1,
+                total_pages: 1,
+            })
+        });
+
+    trust_collection_repository
+        .expect_list()
+        .returning(move |_| {
+            Ok(GetTrustCollectionList {
+                values: vec![],
+                total_items: 0,
+                total_pages: 0,
+            })
+        });
+
+    let mut trust_list_subscriber = MockTrustListSubscriber::default();
+    trust_list_subscriber
+        .expect_get_capabilities()
+        .returning(|| TrustListSubscriberCapabilities {
+            roles: vec![],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
+        });
+
+    // Should be called with empty identifiers list because Key type is filtered out
+    trust_list_subscriber
+        .expect_resolve_entries()
+        .withf(|_, identifiers| identifiers.is_empty())
+        .returning(move |_, _| Ok(HashMap::new()));
+
+    let subscriber_arc: Arc<dyn crate::provider::trust_list_subscriber::TrustListSubscriber> =
+        Arc::new(trust_list_subscriber);
+    trust_list_subscriber_provider
+        .expect_get()
+        .returning(move |_| Some(subscriber_arc.clone()));
+
+    let service = setup_service(Mocks {
+        identifier_repository,
+        trust_list_subscription_repository,
+        trust_collection_repository,
+        trust_list_subscriber_provider,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .resolve_trust_entries(ResolveTrustEntriesRequestDTO {
+            identifiers: vec![identifier_id],
+            roles: None,
+            trust_collection_ids: None,
+        })
+        .await
+        .unwrap();
+
+    // then
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].identifier.id, identifier_id);
+    assert_eq!(result[0].trust_entries.len(), 0);
 }

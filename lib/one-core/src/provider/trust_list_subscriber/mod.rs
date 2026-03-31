@@ -6,7 +6,7 @@ use shared_types::IdentifierId;
 use standardized_types::etsi_119_602::TrustedEntityInformation;
 use url::Url;
 
-use crate::model::identifier::Identifier;
+use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::trust_list_role::TrustListRoleEnum;
 
 pub mod error;
@@ -40,6 +40,15 @@ pub trait TrustListSubscriber: Send + Sync {
 #[derive(Debug, Serialize)]
 pub struct TrustListSubscriberCapabilities {
     pub roles: Vec<TrustListRoleEnum>,
+    pub resolvable_identifier_types: Vec<IdentifierType>,
+    pub features: Vec<Feature>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Feature {
+    SupportsLocalIdentifiers,
+    SupportsRemoteIdentifiers,
 }
 
 #[derive(Debug, Clone)]

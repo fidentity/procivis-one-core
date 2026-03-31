@@ -3,13 +3,15 @@ use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
 use one_core::error::ContextWithErrorCode;
 use one_core::service::error::ServiceError;
+use one_dto_mapper::convert_inner_of_inner;
 use proc_macros::endpoint;
 use shared_types::{IdentifierId, Permission};
 
 use super::dto::{
     CreateIdentifierRequestRestDTO, GetIdentifierListResponseRestDTO, GetIdentifierQuery,
     GetIdentifierResponseRestDTO, ResolveTrustEntitiesRequestRestDTO,
-    ResolveTrustEntitiesResponseRestDTO,
+    ResolveTrustEntitiesResponseRestDTO, ResolveTrustEntriesRequestRestDTO,
+    ResolvedTrustEntriesResponseRestDTO,
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
@@ -193,4 +195,36 @@ pub(crate) async fn resolve_trust_entity(
         .resolve_identifiers(request.into())
         .await;
     OkOrErrorResponse::from_result(result, state, "resolving trust entities for identifiers")
+}
+
+#[endpoint(
+    permissions = [Permission::IdentifierDetail],
+    post,
+    path = "/api/identifier/v1/resolve-trust-entries",
+    request_body = ResolveTrustEntriesRequestRestDTO,
+    responses(OkOrErrorResponse<Vec<ResolveTrustEntitiesResponseRestDTO>>),
+    tag = "identifier_management",
+    security(
+        ("bearer" = [])
+    ),
+    summary = "Resolve trust entries",
+    description = "",
+)]
+pub(crate) async fn resolve_trust_entries(
+    state: State<AppState>,
+    WithRejection(Json(request), _): WithRejection<
+        Json<ResolveTrustEntriesRequestRestDTO>,
+        ErrorResponseRestDTO,
+    >,
+) -> OkOrErrorResponse<Vec<ResolvedTrustEntriesResponseRestDTO>> {
+    let result = state
+        .core
+        .identifier_service
+        .resolve_trust_entries(request.into())
+        .await;
+    OkOrErrorResponse::from_result(
+        convert_inner_of_inner(result),
+        state,
+        "resolving trust entries for identifiers",
+    )
 }

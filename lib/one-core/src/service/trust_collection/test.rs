@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::common::GetListResponse;
+use crate::model::identifier::IdentifierType;
 use crate::model::organisation::OrganisationRelations;
 use crate::model::trust_collection::{
     TrustCollection, TrustCollectionListQuery, TrustCollectionRelations,
@@ -21,7 +22,7 @@ use crate::proto::clock::MockClock;
 use crate::proto::session_provider::test::StaticSessionProvider;
 use crate::provider::trust_list_subscriber::provider::MockTrustListSubscriberProvider;
 use crate::provider::trust_list_subscriber::{
-    MockTrustListSubscriber, TrustListSubscriberCapabilities, TrustListValidationSuccess,
+    Feature, MockTrustListSubscriber, TrustListSubscriberCapabilities, TrustListValidationSuccess,
 };
 use crate::repository::error::DataLayerError;
 use crate::repository::organisation_repository::MockOrganisationRepository;
@@ -402,6 +403,11 @@ async fn test_create_trust_list_subscription_success() {
         .expect_get_capabilities()
         .returning(|| TrustListSubscriberCapabilities {
             roles: vec![TrustListRoleEnum::Verifier],
+            resolvable_identifier_types: vec![
+                IdentifierType::Certificate,
+                IdentifierType::CertificateAuthority,
+            ],
+            features: vec![Feature::SupportsRemoteIdentifiers],
         });
 
     let trust_list_subscriber_arc: Arc<

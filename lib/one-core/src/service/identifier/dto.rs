@@ -1,13 +1,20 @@
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use shared_types::{IdentifierId, KeyId, OrganisationId};
+use shared_types::{
+    IdentifierId, KeyId, OrganisationId, TrustCollectionId, TrustListSubscriberId,
+    TrustListSubscriptionId,
+};
 use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
 use crate::model::identifier::{IdentifierState, IdentifierType};
+use crate::model::trust_list_role::TrustListRoleEnum;
+use crate::model::trust_list_subscription::TrustListSubscriptionState;
+use crate::provider::trust_list_subscriber::TrustEntityResponse;
 use crate::service::certificate::dto::{CertificateResponseDTO, CreateCertificateRequestDTO};
 use crate::service::did::dto::{CreateDidRequestKeysDTO, DidResponseDTO};
 use crate::service::key::dto::{KeyGenerateCSRRequestSubjectDTO, KeyResponseDTO};
+use crate::service::trust_collection::dto::TrustCollectionListItemResponseDTO;
 
 #[derive(Clone, Debug)]
 pub struct GetIdentifierResponseDTO {
@@ -99,4 +106,36 @@ pub struct CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest {
 pub enum CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType {
     Email,
     Uri,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveTrustEntriesRequestDTO {
+    pub identifiers: Vec<IdentifierId>,
+    pub roles: Option<Vec<TrustListRoleEnum>>,
+    pub trust_collection_ids: Option<Vec<TrustCollectionId>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntriesResponseDTO {
+    pub identifier: GetIdentifierListItemResponseDTO,
+    pub trust_entries: Vec<ResolvedTrustEntryResponseDTO>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntryResponseDTO {
+    pub metadata: Option<TrustEntityResponse>,
+    pub source: ResolvedTrustEntrySourceResponseDTO,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntrySourceResponseDTO {
+    pub id: TrustListSubscriptionId,
+    pub created_date: OffsetDateTime,
+    pub last_modified: OffsetDateTime,
+    pub name: String,
+    pub role: TrustListRoleEnum,
+    pub reference: String,
+    pub r#type: TrustListSubscriberId,
+    pub state: TrustListSubscriptionState,
+    pub trust_collection: TrustCollectionListItemResponseDTO,
 }

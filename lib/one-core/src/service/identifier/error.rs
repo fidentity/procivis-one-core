@@ -1,4 +1,4 @@
-use shared_types::{IdentifierId, KeyId, OrganisationId};
+use shared_types::{IdentifierId, KeyId, OrganisationId, TrustListSubscriberId};
 
 use crate::config::core_config::IdentifierType;
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
@@ -26,6 +26,8 @@ pub enum IdentifierServiceError {
 
     #[error(transparent)]
     Nested(#[from] NestedError),
+    #[error("Missing trust list subscriber `{0}`")]
+    MissingTrustListSubscriber(TrustListSubscriberId),
 }
 
 impl ErrorCodeMixin for IdentifierServiceError {
@@ -39,6 +41,7 @@ impl ErrorCodeMixin for IdentifierServiceError {
             Self::MissingKey(_) => ErrorCode::BR_0037,
             Self::MappingError(_) => ErrorCode::BR_0047,
             Self::Nested(nested) => nested.error_code(),
+            Self::MissingTrustListSubscriber(_) => ErrorCode::BR_0388,
         }
     }
 }

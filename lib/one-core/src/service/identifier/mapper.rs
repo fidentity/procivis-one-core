@@ -3,11 +3,12 @@ use shared_types::OrganisationId;
 
 use super::dto::{
     CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, GetIdentifierListResponseDTO,
-    GetIdentifierResponseDTO,
+    GetIdentifierResponseDTO, ResolvedTrustEntrySourceResponseDTO,
 };
 use super::error::IdentifierServiceError;
 use crate::error::ContextWithErrorCode;
 use crate::model::identifier::{GetIdentifierList, Identifier, IdentifierType};
+use crate::model::trust_list_subscription::TrustListSubscription;
 use crate::service::did::dto::CreateDidRequestDTO;
 
 impl TryFrom<Identifier> for GetIdentifierResponseDTO {
@@ -131,5 +132,25 @@ pub(super) fn to_create_did_request(
         did_method: request.method,
         keys: request.keys,
         params: request.params,
+    }
+}
+
+impl TryFrom<TrustListSubscription> for ResolvedTrustEntrySourceResponseDTO {
+    type Error = IdentifierServiceError;
+
+    fn try_from(value: TrustListSubscription) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id,
+            created_date: value.created_date,
+            last_modified: value.last_modified,
+            name: value.name,
+            role: value.role,
+            reference: value.reference,
+            r#type: value.r#type,
+            state: value.state,
+            trust_collection: value.trust_collection.map(Into::into).ok_or(
+                IdentifierServiceError::MappingError("missing trust collection".to_string()),
+            )?,
+        })
     }
 }

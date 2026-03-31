@@ -1,8 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
+use one_core::error::ContextWithErrorCode;
 use one_core::service::error::ServiceError;
-use proc_macros::require_permissions;
+use proc_macros::endpoint;
 use shared_types::{IdentifierId, Permission};
 
 use super::dto::{
@@ -17,7 +18,8 @@ use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErr
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierCreate],
     post,
     path = "/api/identifier/v1",
     request_body = CreateIdentifierRequestRestDTO,
@@ -62,7 +64,6 @@ use crate::router::AppState;
     used with the DID API for operations like deactivation or resolution.
     "},
 )]
-#[require_permissions(Permission::IdentifierCreate)]
 pub(crate) async fn post_identifier(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -71,17 +72,21 @@ pub(crate) async fn post_identifier(
     >,
 ) -> CreatedOrErrorResponse<EntityResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .identifier_service
-            .create_identifier(request.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .identifier_service
+                .create_identifier(request.try_into()?)
+                .await
+                .error_while("creating identifier")?,
+        )
     }
     .await;
     CreatedOrErrorResponse::from_result(result, state, "creating identifier")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierDetail],
     get,
     path = "/api/identifier/v1/{id}",
     responses(OkOrErrorResponse<GetIdentifierResponseRestDTO>),
@@ -95,7 +100,6 @@ pub(crate) async fn post_identifier(
     summary = "Retrieve an identifier",
     description = "Returns detailed information about an identifier.",
 )]
-#[require_permissions(Permission::IdentifierDetail)]
 pub(crate) async fn get_identifier(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<IdentifierId>, ErrorResponseRestDTO>,
@@ -120,7 +124,8 @@ pub(crate) async fn get_identifier(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierDelete],
     delete,
     path = "/api/identifier/v1/{id}",
     responses(EmptyOrErrorResponse),
@@ -134,7 +139,6 @@ pub(crate) async fn get_identifier(
     summary = "Delete an identifier",
     description = "Deletes an identifier.",
 )]
-#[require_permissions(Permission::IdentifierDelete)]
 pub(crate) async fn delete_identifier(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<IdentifierId>, ErrorResponseRestDTO>,
@@ -144,7 +148,8 @@ pub(crate) async fn delete_identifier(
     EmptyOrErrorResponse::from_result(result, state, "deleting identifier")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::IdentifierList],
     get,
     path = "/api/identifier/v1",
     responses(OkOrErrorResponse<GetIdentifierListResponseRestDTO>),
@@ -156,24 +161,27 @@ pub(crate) async fn delete_identifier(
     summary = "List identifiers",
     description = "Returns a list of identifiers within an organization.",
 )]
-#[require_permissions(Permission::IdentifierList)]
 pub(crate) async fn get_identifier_list(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetIdentifierQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetIdentifierListResponseRestDTO> {
     let result = async {
         let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
-        state
-            .core
-            .identifier_service
-            .get_identifier_list(&organisation_id, query.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .identifier_service
+                .get_identifier_list(&organisation_id, query.try_into()?)
+                .await
+                .error_while("getting identifier list")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "getting identifiers")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::TrustEntityDetail],
     post,
     path = "/api/identifier/v1/resolve-trust-entity",
     request_body = ResolveTrustEntitiesRequestRestDTO,
@@ -194,7 +202,7 @@ pub(crate) async fn get_identifier_list(
     decide how to proceed with any given interaction.
 "},
 )]
-#[require_permissions(Permission::TrustEntityDetail)]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn resolve_trust_entity(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<

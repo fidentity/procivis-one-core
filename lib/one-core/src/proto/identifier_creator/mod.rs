@@ -1,6 +1,7 @@
-use shared_types::DidValue;
+use shared_types::{DidValue, KeyId};
 use strum::Display;
 
+use crate::config::core_config::SignerType;
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
 use crate::model::certificate::Certificate;
 use crate::model::did::Did;
@@ -86,6 +87,12 @@ pub(crate) enum Error {
     CertificateKeyNotMatching,
     #[error("Certificate missing common name")]
     MissingCertificateCommonName,
+    #[error("Invalid signer type: `{0}`")]
+    InvalidSignerType(SignerType),
+    #[error("Invalid key algorithm: {0}")]
+    InvalidKeyAlgorithm(String),
+    #[error("Key `{0}` not found")]
+    KeyNotFound(KeyId),
 
     #[error(transparent)]
     Nested(#[from] NestedError),
@@ -94,15 +101,18 @@ pub(crate) enum Error {
 impl ErrorCodeMixin for Error {
     fn error_code(&self) -> ErrorCode {
         match self {
-            Self::MappingError(_) => ErrorCode::BR_0000,
+            Self::MappingError(_) => ErrorCode::BR_0047,
             Self::CertificateAlreadyExists => ErrorCode::BR_0247,
             Self::IdentifierAlreadyExists => ErrorCode::BR_0240,
             Self::DidMethodIncapableKeyAlgorithm { .. } => ErrorCode::BR_0065,
             Self::DidValueAlreadyExists(_) => ErrorCode::BR_0028,
             Self::KeyMustNotBeRemote(_) => ErrorCode::BR_0076,
+            Self::InvalidKeyAlgorithm(_) => ErrorCode::BR_0043,
             Self::InvalidCertificateAuthorityIdentifierInput => ErrorCode::BR_0331,
+            Self::InvalidSignerType(_) => ErrorCode::BR_0381,
             Self::CertificateKeyNotMatching => ErrorCode::BR_0214,
             Self::MissingCertificateCommonName => ErrorCode::BR_0224,
+            Self::KeyNotFound(_) => ErrorCode::BR_0037,
             Self::Nested(nested) => nested.error_code(),
         }
     }

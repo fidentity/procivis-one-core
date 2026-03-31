@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::State;
 use axum_extra::extract::WithRejection;
-use proc_macros::require_permissions;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
+use proc_macros::endpoint;
 use shared_types::Permission;
 
 use super::dto::{
@@ -20,7 +22,8 @@ use crate::endpoint::interaction::dto::{
 };
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance, Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/handle-invitation",
     request_body = HandleInvitationRequestRestDTO,
@@ -39,7 +42,6 @@ use crate::router::AppState;
         use the [initiate-issuance](/reference/core/initiate-issuance) endpoint.
     "},
 )]
-#[require_permissions(Permission::InteractionIssuance, Permission::InteractionProof)]
 pub(crate) async fn handle_invitation(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -48,22 +50,26 @@ pub(crate) async fn handle_invitation(
     >,
 ) -> CreatedOrErrorResponse<HandleInvitationResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .ssi_holder_service
-            .handle_invitation(
-                request.url,
-                fallback_organisation_id_from_session(request.organisation_id)?,
-                request.transport,
-                request.redirect_uri,
-            )
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .ssi_holder_service
+                .handle_invitation(
+                    request.url,
+                    fallback_organisation_id_from_session(request.organisation_id)?,
+                    request.transport,
+                    request.redirect_uri,
+                )
+                .await
+                .error_while("handling invitation")?,
+        )
     }
     .await;
     CreatedOrErrorResponse::from_result(result, state, "handling invitation")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/issuance-accept",
     request_body = IssuanceAcceptRequestRestDTO,
@@ -81,7 +87,6 @@ pub(crate) async fn handle_invitation(
         `didId` is deprecated.
     "},
 )]
-#[require_permissions(Permission::InteractionIssuance)]
 pub(crate) async fn issuance_accept(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -104,7 +109,8 @@ pub(crate) async fn issuance_accept(
     OkOrErrorResponse::from_result(result, state, "accepting credential")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/issuance-reject",
     request_body = IssuanceRejectRequestRestDTO,
@@ -116,7 +122,6 @@ pub(crate) async fn issuance_accept(
     summary = "Reject issuance",
     description = "Rejects an offered credential.",
 )]
-#[require_permissions(Permission::InteractionIssuance)]
 pub(crate) async fn issuance_reject(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -132,7 +137,8 @@ pub(crate) async fn issuance_reject(
     EmptyOrErrorResponse::from_result(result, state, "rejecting credential")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/presentation-reject",
     request_body = PresentationRejectRequestRestDTO,
@@ -144,7 +150,6 @@ pub(crate) async fn issuance_reject(
     summary = "Reject presentation",
     description = "Rejects a request to submit credentials.",
 )]
-#[require_permissions(Permission::InteractionProof)]
 pub(crate) async fn presentation_reject(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -160,7 +165,8 @@ pub(crate) async fn presentation_reject(
     EmptyOrErrorResponse::from_result(result, state, "rejecting proof request")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/presentation-submit",
     request_body = PresentationSubmitRequestRestDTO,
@@ -179,7 +185,6 @@ pub(crate) async fn presentation_reject(
         `didId` is deprecated.
     "},
 )]
-#[require_permissions(Permission::InteractionProof)]
 pub(crate) async fn presentation_submit(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -195,7 +200,8 @@ pub(crate) async fn presentation_submit(
     EmptyOrErrorResponse::from_result(result, state, "submitting proof")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v2/presentation-submit",
     request_body = PresentationSubmitV2RequestRestDTO,
@@ -210,7 +216,6 @@ pub(crate) async fn presentation_submit(
         as a query language and should be used after \"Presentation Definition (V2)\".
     "},
 )]
-#[require_permissions(Permission::InteractionProof)]
 pub(crate) async fn presentation_submit_v2(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -226,7 +231,8 @@ pub(crate) async fn presentation_submit_v2(
     EmptyOrErrorResponse::from_result(result, state, "submitting proof v2")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionProof],
     post,
     path = "/api/interaction/v1/propose-proof",
     request_body = ProposeProofRequestRestDTO,
@@ -241,7 +247,6 @@ pub(crate) async fn presentation_submit_v2(
         device engagement for offline flows. See the SDK.
     "},
 )]
-#[require_permissions(Permission::InteractionProof)]
 pub(crate) async fn propose_proof(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -250,17 +255,21 @@ pub(crate) async fn propose_proof(
     >,
 ) -> CreatedOrErrorResponse<ProposeProofResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .proof_service
-            .propose_proof(request.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .proof_service
+                .propose_proof(request.try_into()?)
+                .await
+                .error_while("proposing proof")?,
+        )
     }
     .await;
     CreatedOrErrorResponse::from_result(result, state, "proposing proof")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/initiate-issuance",
     request_body = InitiateIssuanceRequestRestDTO,
@@ -274,7 +283,6 @@ pub(crate) async fn propose_proof(
         For wallets, starts the OpenID4VCI Authorization Code Flow.
     "},
 )]
-#[require_permissions(Permission::InteractionIssuance)]
 pub(crate) async fn initiate_issuance(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -283,17 +291,21 @@ pub(crate) async fn initiate_issuance(
     >,
 ) -> OkOrErrorResponse<InitiateIssuanceResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .ssi_holder_service
-            .initiate_issuance(request.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .ssi_holder_service
+                .initiate_issuance(request.try_into()?)
+                .await
+                .error_while("initiating issuance")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "initiating issuance")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::InteractionIssuance],
     post,
     path = "/api/interaction/v1/continue-issuance",
     request_body = ContinueIssuanceRequestRestDTO,
@@ -308,7 +320,6 @@ pub(crate) async fn initiate_issuance(
         completing authorization.
     "},
 )]
-#[require_permissions(Permission::InteractionIssuance)]
 pub(crate) async fn continue_issuance(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<

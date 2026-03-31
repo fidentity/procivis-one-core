@@ -7,10 +7,15 @@ use axum_extra::typed_header::TypedHeader;
 use headers::Authorization;
 use headers::authorization::Bearer;
 use one_core::error::{ErrorCode, ErrorCodeMixin};
-use one_core::service::error::{BusinessLogicError, EntityNotFoundError, ServiceError};
+use one_core::service::certificate::error::CertificateServiceError;
+use one_core::service::did::error::DidServiceError;
+use one_core::service::revocation_list::error::RevocationServiceError;
+use one_core::service::ssi_issuer::error::IssuerServiceError;
+use one_core::service::trust_list_publication::error::TrustListPublicationServiceError;
+use proc_macros::endpoint;
 use shared_types::{
     CertificateId, CredentialSchemaId, DidId, DidValue, OrganisationId, ProofSchemaId,
-    RevocationListId, TrustAnchorId,
+    RevocationListId, TrustAnchorId, TrustListPublicationId,
 };
 
 use super::dto::{
@@ -26,7 +31,8 @@ use crate::endpoint::proof_schema::dto::GetProofSchemaResponseRestDTO;
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/did-web/v1/{id}/did.json",
     params(
@@ -47,7 +53,8 @@ pub(crate) async fn get_did_web_document(
     OkOrErrorResponse::from_result(result, state, "getting did:web document")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/did-webvh/v1/{id}/did.jsonl",
     params(
@@ -73,11 +80,11 @@ pub(crate) async fn get_did_webvh_log(
 
     match result {
         Ok(log) => (StatusCode::OK, [(header::CONTENT_TYPE, "text/jsonl")], log).into_response(),
-        Err(ServiceError::EntityNotFound(_)) => {
+        Err(DidServiceError::NotFound(_)) => {
             tracing::error!("did:webvh not found");
             (StatusCode::NOT_FOUND, "Did not found").into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::InvalidDidMethod { method })) => {
+        Err(DidServiceError::InvalidMethod { method }) => {
             tracing::error!("Expected did:webvh found {method}");
             (StatusCode::BAD_REQUEST, "Invalid did method").into_response()
         }
@@ -88,7 +95,8 @@ pub(crate) async fn get_did_webvh_log(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/revocation/v1/list/{id}",
     params(
@@ -149,7 +157,7 @@ pub(crate) async fn get_revocation_list_by_id(
             tracing::error!("Config validation error: {}", error);
             StatusCode::BAD_REQUEST.into_response()
         }
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::RevocationList(_))) => {
+        Err(RevocationServiceError::NotFound(_)) => {
             tracing::error!("Missing revocation list");
             (StatusCode::NOT_FOUND, "Missing revocation list").into_response()
         }
@@ -160,7 +168,8 @@ pub(crate) async fn get_revocation_list_by_id(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/revocation/v1/crl/{id}",
     params(
@@ -190,7 +199,7 @@ pub(crate) async fn get_crl_by_id(
             result,
         )
             .into_response(),
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::RevocationList(_))) => {
+        Err(RevocationServiceError::NotFound(_)) => {
             tracing::error!("Missing CRL");
             (StatusCode::NOT_FOUND, "Missing CRL").into_response()
         }
@@ -201,7 +210,8 @@ pub(crate) async fn get_crl_by_id(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/context/v1/{id}",
     params(
@@ -232,11 +242,11 @@ pub(crate) async fn get_json_ld_context(
             Json(JsonLDContextResponseRestDTO::from(value)),
         )
             .into_response(),
-        Err(ServiceError::EntityNotFound(EntityNotFoundError::CredentialSchema(_))) => {
+        Err(IssuerServiceError::MissingCredentialSchema(_)) => {
             tracing::error!("Missing credential schema");
             (StatusCode::NOT_FOUND, "Missing credential schema").into_response()
         }
-        Err(ServiceError::ValidationError(e)) => {
+        Err(e @ (IssuerServiceError::InvalidInput | IssuerServiceError::InvalidFormat)) => {
             tracing::error!("Validation error: {e}");
             StatusCode::BAD_REQUEST.into_response()
         }
@@ -247,7 +257,8 @@ pub(crate) async fn get_json_ld_context(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/trust/v1/{trustAnchorId}",
     params(
@@ -265,6 +276,7 @@ pub(crate) async fn get_json_ld_context(
         Retrieve a trust list by the UUID of the trust anchor.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_list(
     state: State<AppState>,
     WithRejection(Path(trust_anchor_id), _): WithRejection<
@@ -281,7 +293,8 @@ pub(crate) async fn ssi_get_trust_list(
     OkOrErrorResponse::from_result(result, state, "getting trust list")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/trust-entity/v1/{didValue}",
     params(
@@ -297,6 +310,7 @@ pub(crate) async fn ssi_get_trust_list(
         Retrieve a trust entity by the value of the DID.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_entity(
     state: State<AppState>,
     WithRejection(Path(did_value), _): WithRejection<Path<DidValue>, ErrorResponseRestDTO>,
@@ -311,7 +325,8 @@ pub(crate) async fn ssi_get_trust_entity(
     OkOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     patch,
     path = "/ssi/trust-entity/v1/{didValue}",
     params(
@@ -328,6 +343,7 @@ pub(crate) async fn ssi_get_trust_entity(
         Update a trust entity by its DID value.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_patch_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -352,7 +368,8 @@ pub(crate) async fn ssi_patch_trust_entity(
     EmptyOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     post,
     path = "/ssi/trust-entity/v1",
     request_body = SSIPostTrustEntityRequestRestDTO,
@@ -366,6 +383,7 @@ pub(crate) async fn ssi_patch_trust_entity(
         Add a trust entity to a trust anchor.
     "},
 )]
+#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_post_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -392,7 +410,8 @@ pub(crate) async fn ssi_post_trust_entity(
     CreatedOrErrorResponse::from_result(result, state, "getting trust entity")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/schema/v1/{id}",
     params(
@@ -422,7 +441,8 @@ pub(crate) async fn ssi_get_credential_schema(
     OkOrErrorResponse::from_result(result, state, "getting credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/proof-schema/v1/{id}",
     params(
@@ -447,7 +467,8 @@ pub(crate) async fn ssi_get_proof_schema(
     OkOrErrorResponse::from_result(result, state, "getting proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/vct/v1/{organisationId}/{vctType}",
     params(
@@ -480,7 +501,8 @@ pub(crate) async fn ssi_get_sd_jwt_vc_type_metadata(
     OkOrErrorResponse::from_result(result, state, "getting SD-JWT VC type metadata")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/ca/{id}",
     params(
@@ -514,8 +536,54 @@ pub(crate) async fn ssi_get_certificate_authority(
             result,
         )
             .into_response(),
-        Err(ServiceError::EntityNotFound(_)) => {
+        Err(CertificateServiceError::NotFound(_)) => {
             tracing::warn!("Missing CA");
+            StatusCode::NOT_FOUND.into_response()
+        }
+        Err(e) => {
+            tracing::error!("Error: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/trust-list/v1/{id}",
+    params(
+        ("id" = TrustListPublicationId, Path, description = "Trust list publication id")
+    ),
+    responses(
+        (status = 200, description = "OK", content_type = "application/jwt"),
+        (status = 404, description = "Trust list publication not found"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "ssi",
+    summary = "Retrieve Trust list publication",
+    description = indoc::formatdoc! {"
+        Retrieve a Trust list publication by its UUID.
+    "},
+)]
+pub(crate) async fn ssi_get_trust_list_publication(
+    state: State<AppState>,
+    WithRejection(Path(id), _): WithRejection<Path<TrustListPublicationId>, ErrorResponseRestDTO>,
+) -> Response {
+    let result = state
+        .core
+        .trust_list_publication_service
+        .get_trust_list_publication_content(id)
+        .await;
+
+    match result {
+        Ok(result) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/jwt")],
+            result,
+        )
+            .into_response(),
+        Err(TrustListPublicationServiceError::TrustListPublicationNotFound(_)) => {
+            tracing::warn!("Missing trust list publication");
             StatusCode::NOT_FOUND.into_response()
         }
         Err(e) => {

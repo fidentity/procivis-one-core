@@ -59,6 +59,7 @@ use crate::provider::revocation::token_status_list::credential_status_from_sdjwt
 use crate::service::credential_schema::dto::CreateCredentialSchemaRequestDTO;
 
 const JPEG_DATA_URI_PREFIX: &str = "data:image/jpeg;base64,";
+const PNG_DATA_URI_PREFIX: &str = "data:image/png;base64,";
 
 pub struct SDJWTVCFormatter {
     crypto: Arc<dyn CryptoProvider>,
@@ -360,7 +361,7 @@ impl CredentialFormatter for SDJWTVCFormatter {
 
         if self.params.swiyu_mode {
             datatypes.push("SWIYU_PICTURE".to_string());
-            issuance_exchange_protocols.push(IssuanceProtocolType::OpenId4VciDraft13Swiyu);
+            issuance_exchange_protocols.push(IssuanceProtocolType::OpenId4vciFinal1_0Swiyu);
             proof_exchange_protocols.push(VerificationProtocolType::OpenId4VpDraft20Swiyu)
         } else {
             datatypes.extend_from_slice(&[
@@ -391,7 +392,7 @@ impl CredentialFormatter for SDJWTVCFormatter {
             issuance_did_methods,
             issuance_exchange_protocols,
             proof_exchange_protocols,
-            revocation_methods: vec![RevocationType::None, RevocationType::TokenStatusList],
+            revocation_methods: vec![RevocationType::TokenStatusList],
             verification_key_algorithms: signing_algorithms.clone(),
             verification_key_storages: vec![
                 KeyStorageType::Internal,
@@ -512,7 +513,12 @@ impl SDJWTVCFormatter {
                 if fields.r#type == DatatypeType::SwiyuPicture {
                     let path = claim_schema.key.split(NESTED_CLAIM_MARKER).collect();
                     post_process_claims(path, &mut jwt.payload.custom.public_claims, |value| {
-                        format!("{JPEG_DATA_URI_PREFIX}{value}")
+                        // PNG magic bytes base64 (aligned to not be affected by padding)
+                        if value.starts_with("iVBORw0K") {
+                            format!("{PNG_DATA_URI_PREFIX}{value}")
+                        } else {
+                            format!("{JPEG_DATA_URI_PREFIX}{value}")
+                        }
                     })
                 }
             }
@@ -523,12 +529,8 @@ impl SDJWTVCFormatter {
             .error_while("getting metadata claims")?;
         let subject = jwt
             .payload
-            .subject
-            .map(|did| DidValue::from_str(&did))
-            .transpose()
-            .map_err(DidMethodError::DidValueError)
-            .error_while("parsing subject DID")?
-            .map(IdentifierDetails::Did);
+            .proof_of_possession_key
+            .map(|holder_key| IdentifierDetails::Key(holder_key.jwk.jwk().clone()));
 
         let mut claims = CredentialSubject {
             claims: jwt.payload.custom.public_claims,
@@ -580,7 +582,10 @@ impl SDJWTVCFormatter {
             }) {
                 let path = published_claim.key.split(NESTED_CLAIM_MARKER).collect();
                 post_process_claims(path, &mut claims, |value| {
-                    value.trim_start_matches(JPEG_DATA_URI_PREFIX).to_string()
+                    value
+                        .trim_start_matches(JPEG_DATA_URI_PREFIX)
+                        .trim_start_matches(PNG_DATA_URI_PREFIX)
+                        .to_string()
                 });
             }
         }

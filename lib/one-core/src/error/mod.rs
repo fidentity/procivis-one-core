@@ -109,12 +109,6 @@ pub enum ErrorCode {
     #[strum(message = "Revocation list not found")]
     BR_0034,
 
-    #[strum(message = "Missing revocation list for provided DID")]
-    BR_0035,
-
-    #[strum(message = "Missing credential index on revocation list")]
-    BR_0036,
-
     #[strum(message = "Key not found")]
     BR_0037,
 
@@ -163,14 +157,8 @@ pub enum ErrorCode {
     #[strum(message = "Invalid exchange type")]
     BR_0052,
 
-    #[strum(message = "Unsupported key type")]
-    BR_0053,
-
     #[strum(message = "Database error")]
     BR_0054,
-
-    #[strum(message = "Invalid formatter type")]
-    BR_0056,
 
     #[strum(message = "Formatter provider error")]
     BR_0057,
@@ -240,9 +228,6 @@ pub enum ErrorCode {
 
     #[strum(message = "Invalid key")]
     BR_0096,
-
-    #[strum(message = "Requested wallet storage type cannot be fulfilled")]
-    BR_0097,
 
     #[strum(message = "Operation not supported by revocation method")]
     BR_0098,
@@ -454,9 +439,6 @@ pub enum ErrorCode {
     #[strum(message = "Invalid proof role")]
     BR_0198,
 
-    #[strum(message = "Invalid exchange type for retract proof")]
-    BR_0199,
-
     #[strum(message = "Key handle error")]
     BR_0201,
 
@@ -587,9 +569,6 @@ pub enum ErrorCode {
 
     #[strum(message = "Wallet unit revoked")]
     BR_0261,
-
-    #[strum(message = "No wallet unit registration")]
-    BR_0262,
 
     #[strum(message = "Cannot fetch wallet unit attestation")]
     BR_0264,
@@ -801,6 +780,39 @@ pub enum ErrorCode {
 
     #[strum(message = "Notification not found")]
     BR_0377,
+
+    #[strum(message = "Verifier provider not found")]
+    BR_0380,
+
+    #[strum(message = "Invalid signer")]
+    BR_0381,
+
+    #[strum(message = "Invalid trust list identifier")]
+    BR_0382,
+
+    #[strum(message = "Trust list publication not found")]
+    BR_0383,
+
+    #[strum(message = "Trust list publisher internal error")]
+    BR_0384,
+
+    #[strum(message = "Invalid trust list params")]
+    BR_0385,
+
+    #[strum(message = "Unsupported trust list role")]
+    BR_0386,
+
+    #[strum(message = "Trust entry not found")]
+    BR_0387,
+
+    #[strum(message = "Missing trust list provider")]
+    BR_0388,
+
+    #[strum(message = "Unsupported trust list key type")]
+    BR_0389,
+
+    #[strum(message = "Trust entry doesn't belong to specified trust list")]
+    BR_0390,
 }
 
 pub trait ErrorCodeMixin: Error + Send + Sync + 'static {

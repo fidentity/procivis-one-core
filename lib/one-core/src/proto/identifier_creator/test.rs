@@ -18,7 +18,6 @@ use crate::model::certificate::{Certificate, CertificateState, GetCertificateLis
 use crate::model::identifier::{GetIdentifierList, Identifier};
 use crate::model::key::{GetKeyList, Key};
 use crate::proto::certificate_validator::{MockCertificateValidator, ParsedCertificate};
-use crate::proto::csr_creator::MockCsrCreator;
 use crate::proto::transaction_manager::NoTransactionManager;
 use crate::provider::credential_formatter::model::{CertificateDetails, IdentifierDetails};
 use crate::provider::did_method::model::{DidCapabilities, Operation};
@@ -52,7 +51,6 @@ struct Mocks {
     key_provider: MockKeyProvider,
     key_algorithm_provider: MockKeyAlgorithmProvider,
     identifier_repository: MockIdentifierRepository,
-    csr_creator: MockCsrCreator,
     signer_provider: MockSignerProvider,
     config: CoreConfig,
 }
@@ -67,7 +65,6 @@ fn setup_creator(mocks: Mocks) -> Box<dyn IdentifierCreator> {
         Arc::new(mocks.key_provider),
         Arc::new(mocks.key_algorithm_provider),
         Arc::new(mocks.identifier_repository),
-        Arc::new(mocks.csr_creator),
         Arc::new(mocks.signer_provider),
         Arc::new(mocks.config),
         Arc::new(NoTransactionManager),
@@ -236,12 +233,13 @@ async fn test_get_or_create_remote_identifier_key_existing() {
         });
 
     let key = dummy_key();
+    let key_clone = key.clone();
     let key_id = key.id;
     let mut key_repository = MockKeyRepository::new();
     key_repository.expect_get_key_list().once().return_once({
         move |_| {
             Ok(GetKeyList {
-                values: vec![key],
+                values: vec![key_clone],
                 total_pages: 1,
                 total_items: 1,
             })
@@ -288,6 +286,7 @@ async fn test_get_or_create_remote_identifier_key_existing() {
         .unwrap();
 
     assert_eq!(identifier.id, identifier_id);
+    assert_eq!(identifier.key, Some(key));
     let_assert!(RemoteIdentifierRelation::Key(key) = relation);
     assert_eq!(key.id, key_id);
 }

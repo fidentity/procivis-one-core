@@ -3,16 +3,21 @@ use std::sync::Arc;
 use mockall::PredicateBooleanExt;
 use mockall::predicate::*;
 use serde_json::json;
-use shared_types::{
-    CredentialFormat, CredentialSchemaId, OrganisationId, ProofSchemaId, RevocationMethodId,
-};
+use shared_types::{CredentialFormat, CredentialSchemaId, OrganisationId, ProofSchemaId};
 use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::ProofSchemaService;
+use super::dto::{
+    CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, GetProofSchemaQueryDTO,
+    ImportProofSchemaClaimSchemaDTO, ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO,
+    ImportProofSchemaInputSchemaDTO, ImportProofSchemaRequestDTO, ProofInputSchemaRequestDTO,
+    ProofSchemaFilterValue,
+};
+use super::error::ProofSchemaServiceError;
 use crate::config::core_config::{
-    ConfigEntryDisplay, CoreConfig, KeySecurityLevelFields, KeySecurityLevelType, RevocationType,
+    ConfigEntryDisplay, CoreConfig, KeySecurityLevelFields, KeySecurityLevelType,
 };
 use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
@@ -44,23 +49,11 @@ use crate::provider::credential_formatter::model::{
     Features, FormatterCapabilities, SelectiveDisclosure,
 };
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
-use crate::provider::revocation::MockRevocationMethod;
-use crate::provider::revocation::model::RevocationMethodCapabilities;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::error::DataLayerError;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::proof_schema_repository::MockProofSchemaRepository;
-use crate::service::error::{
-    BusinessLogicError, EntityNotFoundError, ServiceError, ValidationError,
-};
-use crate::service::proof_schema::ProofSchemaImportError;
-use crate::service::proof_schema::dto::{
-    CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, GetProofSchemaQueryDTO,
-    ImportProofSchemaClaimSchemaDTO, ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO,
-    ImportProofSchemaInputSchemaDTO, ImportProofSchemaRequestDTO, ProofInputSchemaRequestDTO,
-    ProofSchemaFilterValue,
-};
 use crate::service::test_utilities::{
     dummy_credential_schema, dummy_organisation, dummy_proof_schema, generic_config,
     generic_formatter_capabilities, get_dummy_date,
@@ -149,10 +142,7 @@ async fn test_get_proof_schema_deleted() {
 
     let result = service.get_proof_schema(&proof_schema.id).await;
 
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::EntityNotFound(EntityNotFoundError::ProofSchema(_))
-    )));
+    assert!(result.is_err_and(|e| matches!(e, ProofSchemaServiceError::NotFound(_))));
 }
 
 #[tokio::test]
@@ -169,10 +159,7 @@ async fn test_get_proof_schema_missing() {
     });
 
     let result = service.get_proof_schema(&Uuid::new_v4().into()).await;
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::EntityNotFound(EntityNotFoundError::ProofSchema(_))
-    )));
+    assert!(result.is_err_and(|e| matches!(e, ProofSchemaServiceError::NotFound(_))));
 }
 
 #[tokio::test]
@@ -329,12 +316,7 @@ async fn test_delete_proof_schema_failure() {
     });
 
     let result = service.delete_proof_schema(&Uuid::new_v4().into()).await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::MissingProofSchema { .. }
-        ))
-    ));
+    assert!(matches!(result, Err(ProofSchemaServiceError::NotFound(_))));
 }
 
 #[tokio::test]
@@ -699,12 +681,7 @@ async fn test_create_proof_schema_fail_unsupported_wallet_storage_type() {
     });
 
     let result = service.create_proof_schema(create_request).await;
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::Validation(ValidationError::KeyStorageSecurityDisabled(
-            KeyStorageSecurity::EnhancedBasic
-        ))
-    )));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0309);
 }
 
 #[tokio::test]
@@ -853,10 +830,9 @@ async fn test_create_proof_schema_array_object_fail() {
     });
 
     let result = service.create_proof_schema(create_request).await;
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::Validation(ValidationError::NestedClaimInArrayRequested)
-    )));
+    assert!(
+        result.is_err_and(|e| matches!(e, ProofSchemaServiceError::NestedClaimInArrayRequested))
+    );
 }
 
 #[tokio::test]
@@ -1066,10 +1042,7 @@ async fn test_create_proof_schema_unique_name_error() {
     });
 
     let result = service.create_proof_schema(create_request).await;
-    assert!(result.is_err_and(|e| matches!(
-        e,
-        ServiceError::BusinessLogic(BusinessLogicError::ProofSchemaAlreadyExists)
-    )));
+    assert!(result.is_err_and(|e| matches!(e, ProofSchemaServiceError::AlreadyExists)));
 }
 
 #[tokio::test]
@@ -1172,9 +1145,7 @@ async fn test_create_proof_schema_claims_dont_exist() {
 
     assert!(matches!(
         result,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::MissingClaimSchema { .. }
-        ))
+        Err(ProofSchemaServiceError::MissingClaimSchema { .. })
     ));
 }
 
@@ -1196,9 +1167,7 @@ async fn test_create_proof_schema_no_claims() {
         .await;
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(
-            ValidationError::ProofSchemaMissingClaims
-        ))
+        Err(ProofSchemaServiceError::MissingClaims)
     ));
 }
 
@@ -1223,9 +1192,7 @@ async fn test_create_proof_schema_no_required_claims() {
         .await;
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(
-            ValidationError::ProofSchemaNoRequiredClaim
-        ))
+        Err(ProofSchemaServiceError::NoRequiredClaim)
     ));
 }
 
@@ -1251,9 +1218,7 @@ async fn test_create_proof_schema_duplicit_claims() {
         .await;
     assert!(matches!(
         result,
-        Err(ServiceError::Validation(
-            ValidationError::ProofSchemaDuplicitClaim
-        ))
+        Err(ProofSchemaServiceError::DuplicitClaim)
     ));
 }
 
@@ -1403,7 +1368,7 @@ async fn test_import_proof_schema_ok_for_new_credential_schema() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
             datatypes: vec!["STRING".into(), "OBJECT".into()],
             ..Default::default()
         });
@@ -1416,19 +1381,8 @@ async fn test_import_proof_schema_ok_for_new_credential_schema() {
         .with(eq(CredentialFormat::from("JWT")))
         .returning(move |_| Some(formatter.clone()));
 
-    let mut revocation_method = MockRevocationMethod::new();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities { operations: vec![] });
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .with(eq::<RevocationMethodId>("NONE".into()))
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let formatter_provider = Arc::new(formatter_provider);
     let credential_schema_repository = Arc::new(credential_schema_repository);
-    let revocation_method_provider = Arc::new(revocation_method_provider);
     let config = Arc::new(generic_config().core);
 
     let service = ProofSchemaService {
@@ -1443,7 +1397,7 @@ async fn test_import_proof_schema_ok_for_new_credential_schema() {
         credential_schema_import_parser: Arc::new(CredentialSchemaImportParserImpl::new(
             config.clone(),
             formatter_provider.clone(),
-            revocation_method_provider.clone(),
+            Arc::new(MockRevocationMethodProvider::default()),
         )),
         credential_schema_importer: Arc::new(CredentialSchemaImporterProto::new(
             formatter_provider,
@@ -1611,7 +1565,7 @@ async fn test_import_proof_ok_existing_but_deleted_credential_schema() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
             datatypes: vec!["STRING".into(), "OBJECT".into()],
             ..Default::default()
         });
@@ -1624,19 +1578,8 @@ async fn test_import_proof_ok_existing_but_deleted_credential_schema() {
         .with(eq(CredentialFormat::from("JWT")))
         .returning(move |_| Some(formatter.clone()));
 
-    let mut revocation_method = MockRevocationMethod::new();
-    revocation_method
-        .expect_get_capabilities()
-        .returning(|| RevocationMethodCapabilities { operations: vec![] });
-    let mut revocation_method_provider = MockRevocationMethodProvider::new();
-    revocation_method_provider
-        .expect_get_revocation_method()
-        .with(eq::<RevocationMethodId>("NONE".into()))
-        .return_once(move |_| Some(Arc::new(revocation_method)));
-
     let formatter_provider = Arc::new(formatter_provider);
     let credential_schema_repository = Arc::new(credential_schema_repository);
-    let revocation_method_provider = Arc::new(revocation_method_provider);
     let config = Arc::new(generic_config().core);
 
     let service = ProofSchemaService {
@@ -1651,7 +1594,7 @@ async fn test_import_proof_ok_existing_but_deleted_credential_schema() {
         credential_schema_import_parser: Arc::new(CredentialSchemaImportParserImpl::new(
             config.clone(),
             formatter_provider.clone(),
-            revocation_method_provider.clone(),
+            Arc::new(MockRevocationMethodProvider::default()),
         )),
         credential_schema_importer: Arc::new(CredentialSchemaImporterProto::new(
             formatter_provider,
@@ -1786,7 +1729,7 @@ async fn test_import_proof_ok_existing_credential_schema_all_claims_present() {
     formatter
         .expect_get_capabilities()
         .returning(|| FormatterCapabilities {
-            revocation_methods: vec![RevocationType::None],
+            revocation_methods: vec![],
             features: vec![Features::SelectiveDisclosure],
             selective_disclosure: vec![SelectiveDisclosure::SecondLevel],
             ..Default::default()
@@ -1913,9 +1856,7 @@ async fn test_import_proof_failed_existing_proof_schema() {
         .await;
     assert!(matches!(
         result,
-        Err(ServiceError::BusinessLogic(
-            BusinessLogicError::ProofSchemaAlreadyExists
-        ))
+        Err(ProofSchemaServiceError::AlreadyExists)
     ));
 }
 
@@ -1981,9 +1922,7 @@ async fn test_import_proof_schema_fails_validation_for_unsupported_datatype() {
 
     assert!(matches!(
         err,
-        ServiceError::BusinessLogic(BusinessLogicError::ProofSchemaImport(
-            ProofSchemaImportError::UnsupportedDatatype(_)
-        ))
+        ProofSchemaServiceError::UnsupportedDatatype(_)
     ))
 }
 
@@ -2047,12 +1986,7 @@ async fn test_import_proof_schema_fails_validation_for_unsupported_format() {
         .await
         .unwrap_err();
 
-    assert!(matches!(
-        err,
-        ServiceError::BusinessLogic(BusinessLogicError::ProofSchemaImport(
-            ProofSchemaImportError::UnsupportedFormat(_)
-        ))
-    ))
+    assert!(matches!(err, ProofSchemaServiceError::UnsupportedFormat(_)))
 }
 
 fn generic_proof_schema() -> ProofSchema {
@@ -2409,10 +2343,7 @@ async fn test_create_proof_schema_failure_session_org_mismatch() {
             proof_input_schemas: vec![],
         })
         .await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 
     let result = service
         .import_proof_schema(ImportProofSchemaRequestDTO {
@@ -2429,10 +2360,7 @@ async fn test_create_proof_schema_failure_session_org_mismatch() {
             organisation_id: Uuid::new_v4().into(),
         })
         .await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }
 
 #[tokio::test]
@@ -2453,10 +2381,7 @@ async fn test_list_proof_schema_failure_session_org_mismatch() {
             },
         )
         .await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }
 
 #[tokio::test]
@@ -2475,29 +2400,20 @@ async fn test_proof_schema_ops_failure_session_org_mismatch() {
     });
 
     let result = service.get_proof_schema(&schema_id).await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 
     let result = service.delete_proof_schema(&schema_id).await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 
     let result = service.share_proof_schema(schema_id).await;
-    assert!(matches!(
-        result,
-        Err(ServiceError::Validation(ValidationError::Forbidden))
-    ));
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }
 
 async fn test_create_proof_schema_verify_nested_generic(
     keys: &[&str],
     features: &[Features],
     disclosure_features: &[SelectiveDisclosure],
-) -> Result<ProofSchemaId, ServiceError> {
+) -> Result<ProofSchemaId, ProofSchemaServiceError> {
     let claim_schemas: Vec<_> = keys
         .iter()
         .map(|key| ClaimSchema {

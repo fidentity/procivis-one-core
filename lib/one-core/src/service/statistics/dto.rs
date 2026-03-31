@@ -1,11 +1,15 @@
 use one_dto_mapper::{From, convert_inner};
-use shared_types::OrganisationId;
+use shared_types::{CredentialSchemaId, OrganisationId, ProofSchemaId};
 use time::OffsetDateTime;
 
+use crate::model::common::GetListResponse;
 use crate::model::history::{
-    IssuerTimelines, OrganisationOperationsCount, OrganisationStats, OrganisationSummaryStats,
-    OrganisationTimelines, SystemOperationsCount, TimeSeriesPoint, VerifierTimelines,
+    IssuerSchemaStats, IssuerStats, IssuerTimelines, OrganisationOperationsCount,
+    OrganisationStats, OrganisationSummaryStats, OrganisationTimelines, SystemInteractionCounts,
+    SystemManagementCounts, SystemOperationsCount, TimeSeriesPoint, VerifierSchemaStats,
+    VerifierStats, VerifierTimelines,
 };
+
 pub struct OrganisationStatsRequestDTO {
     pub from: Option<OffsetDateTime>,
     pub to: OffsetDateTime,
@@ -75,6 +79,48 @@ pub struct TimeSeriesPointDTO {
     pub count: usize,
 }
 
+pub type GetIssuerStatsResponseDTO = GetListResponse<IssuerSchemaStatsResponseDTO>;
+
+#[derive(Clone, Debug, Eq, PartialEq, From)]
+#[from(IssuerSchemaStats)]
+pub struct IssuerSchemaStatsResponseDTO {
+    pub credential_schema_id: CredentialSchemaId,
+    pub credential_schema_name: String,
+    pub current: IssuerStatsDTO,
+    #[from(with_fn = convert_inner)]
+    pub previous: Option<IssuerStatsDTO>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, From)]
+#[from(IssuerStats)]
+pub struct IssuerStatsDTO {
+    pub issued_count: usize,
+    pub suspended_count: usize,
+    pub reactivated_count: usize,
+    pub revoked_count: usize,
+    pub error_count: usize,
+}
+
+pub type GetVerifierStatsResponseDTO = GetListResponse<VerifierSchemaStatsResponseDTO>;
+
+#[derive(Clone, Debug, Eq, PartialEq, From)]
+#[from(VerifierSchemaStats)]
+pub struct VerifierSchemaStatsResponseDTO {
+    pub proof_schema_id: ProofSchemaId,
+    pub proof_schema_name: String,
+    pub current: VerifierStatsDTO,
+    #[from(with_fn = convert_inner)]
+    pub previous: Option<VerifierStatsDTO>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, From)]
+#[from(VerifierStats)]
+pub struct VerifierStatsDTO {
+    pub accepted_count: usize,
+    pub rejected_count: usize,
+    pub error_count: usize,
+}
+
 pub struct SystemStatsRequestDTO {
     pub from: Option<OffsetDateTime>,
     pub to: OffsetDateTime,
@@ -113,4 +159,34 @@ pub struct SystemOperationsCountDTO {
 pub struct NewOrganisationEntryDTO {
     pub organisation: OrganisationId,
     pub created_date: OffsetDateTime,
+}
+
+pub type GetSystemInteractionStatsResponseDTO =
+    GetListResponse<SystemOrgStatsResponseDTO<SystemInteractionCountsDTO>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemOrgStatsResponseDTO<T> {
+    pub organisation_id: OrganisationId,
+    pub current: T,
+    pub previous: Option<T>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default, From)]
+#[from(SystemInteractionCounts)]
+pub struct SystemInteractionCountsDTO {
+    pub issued_count: usize,
+    pub verified_count: usize,
+    pub credential_lifecycle_operation_count: usize,
+    pub error_count: usize,
+}
+
+pub type GetSystemManagementStatsResponseDTO =
+    GetListResponse<SystemOrgStatsResponseDTO<SystemManagementCountsDTO>>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Default, From)]
+#[from(SystemManagementCounts)]
+pub struct SystemManagementCountsDTO {
+    pub credential_schema_created_count: usize,
+    pub proof_schema_created_count: usize,
+    pub identifier_created_count: usize,
 }

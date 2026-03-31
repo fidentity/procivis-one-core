@@ -40,9 +40,9 @@ use crate::provider::verification_protocol::{
 use crate::service::proof::dto::ShareProofRequestParamsDTO;
 
 pub(crate) struct OpenID4VP20Swiyu {
-    allow_insecure_http_transport: bool,
     inner: OpenID4VP20HTTP,
     client: Arc<dyn HttpClient>,
+    allow_insecure_http_transport: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,7 +74,7 @@ impl From<OpenID4Vp20SwiyuParams> for OpenID4Vp20Params {
             presentation_definition_by_value: false,
             allow_insecure_http_transport: value.allow_insecure_http_transport,
             use_request_uri: true,
-            url_scheme: "openid4vp".to_string(),
+            url_scheme: "swiyu-verify".to_string(),
             holder: OpenID4VCPresentationHolderParams {
                 supported_client_id_schemes: vec![ClientIdScheme::Did],
                 dcql_vp_token_single_presentation: false,
@@ -122,8 +122,10 @@ impl VerificationProtocol for OpenID4VP20Swiyu {
         Ok(())
     }
     fn holder_can_handle(&self, url: &Url) -> bool {
-        (url.scheme() == "https" || self.allow_insecure_http_transport && url.scheme() == "http")
-            && url.query().is_none() // SWIYU invite links have no query param
+        self.inner.holder_can_handle(url)
+            || (url.scheme() == "https"
+                || self.allow_insecure_http_transport && url.scheme() == "http")
+                && url.query().is_none() // SWIYU invite links have no query param
     }
 
     async fn holder_get_presentation_definition(
@@ -171,6 +173,14 @@ impl VerificationProtocol for OpenID4VP20Swiyu {
             ));
         }
 
+        if url.scheme() == "swiyu-verify" {
+            return self
+                .inner
+                .holder_handle_invitation(url, organisation, storage_access, transport)
+                .await;
+        }
+
+        // https url case
         let response = async {
             self.client
                 .get(url.as_str())
@@ -192,7 +202,7 @@ impl VerificationProtocol for OpenID4VP20Swiyu {
             ..Default::default()
         };
         let expected_url: Url = format!(
-            "openid4vp://?{}",
+            "swiyu-verify://?{}",
             serde_qs::to_string(&request_params).map_err(|e| VerificationProtocolError::Failed(
                 format!("Failed to serialize query params: {e}")
             ))?
@@ -259,18 +269,7 @@ impl VerificationProtocol for OpenID4VP20Swiyu {
         ));
         interaction_data.response_uri = Some(response_url.to_string());
 
-        let url = response.url.parse::<Url>().map_err(|e| {
-            VerificationProtocolError::Failed(format!("failed to transform response URL: {e}"))
-        })?;
-
         response.interaction_data = Some(serialize_interaction_data(&interaction_data)?);
-        response.url = url
-            .query_pairs()
-            .find(|(k, _)| k == "request_uri")
-            .map(|(_, v)| v.to_string())
-            .ok_or(VerificationProtocolError::Failed(
-                "failed to find request_uri in response URL".to_string(),
-            ))?;
         Ok(response)
     }
 

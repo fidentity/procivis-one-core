@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use proc_macros::require_permissions;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
+use proc_macros::endpoint;
 use shared_types::{CredentialSchemaId, Permission};
 
 use super::dto::{
@@ -16,7 +18,8 @@ use crate::endpoint::credential_schema::dto::CreateCredentialSchemaRequestRestDT
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaDelete],
     delete,
     path = "/api/credential-schema/v1/{id}",
     responses(EmptyOrErrorResponse),
@@ -30,7 +33,6 @@ use crate::router::AppState;
     summary = "Delete a credential schema",
     description = "Deletes a credential schema.",
 )]
-#[require_permissions(Permission::CredentialSchemaDelete)]
 pub(crate) async fn delete_credential_schema(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<CredentialSchemaId>, ErrorResponseRestDTO>,
@@ -43,7 +45,8 @@ pub(crate) async fn delete_credential_schema(
     EmptyOrErrorResponse::from_result(result, state, "deleting credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaDetail],
     get,
     path = "/api/credential-schema/v1/{id}",
     responses(OkOrErrorResponse<CredentialSchemaResponseRestDTO>),
@@ -57,7 +60,6 @@ pub(crate) async fn delete_credential_schema(
     summary = "Retrieve credential schema",
     description = "Retrieves detailed information about a credential schema.",
 )]
-#[require_permissions(Permission::CredentialSchemaDetail)]
 pub(crate) async fn get_credential_schema(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<CredentialSchemaId>, ErrorResponseRestDTO>,
@@ -70,7 +72,8 @@ pub(crate) async fn get_credential_schema(
     OkOrErrorResponse::from_result(result, state, "getting credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaList],
     get,
     path = "/api/credential-schema/v1",
     responses(OkOrErrorResponse<GetCredentialSchemasResponseDTO>),
@@ -82,24 +85,27 @@ pub(crate) async fn get_credential_schema(
     summary = "List credential schemas",
     description = "Returns a list of credential schemas in an organization.",
 )]
-#[require_permissions(Permission::CredentialSchemaList)]
 pub(crate) async fn get_credential_schema_list(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetCredentialSchemaQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetCredentialSchemasResponseDTO> {
     let result = async {
         let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
-        state
-            .core
-            .credential_schema_service
-            .get_credential_schema_list(&organisation_id, query.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .credential_schema_service
+                .get_credential_schema_list(&organisation_id, query.try_into()?)
+                .await
+                .error_while("getting credential schema list")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "getting credential schemas")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaCreate],
     post,
     path = "/api/credential-schema/v1/import",
     request_body = ImportCredentialSchemaRequestRestDTO,
@@ -119,7 +125,6 @@ pub(crate) async fn get_credential_schema_list(
         to import the credential schema.
     "},
 )]
-#[require_permissions(Permission::CredentialSchemaCreate)]
 pub(crate) async fn import_credential_schema(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -144,7 +149,8 @@ pub(crate) async fn import_credential_schema(
     CreatedOrErrorResponse::from_result(result, state, "importing credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaCreate],
     post,
     path = "/api/credential-schema/v1",
     request_body = CreateCredentialSchemaRequestRestDTO,
@@ -165,7 +171,6 @@ pub(crate) async fn import_credential_schema(
         Related guide: [Credential schemas](/credential-schemas)
     "},
 )]
-#[require_permissions(Permission::CredentialSchemaCreate)]
 pub(crate) async fn post_credential_schema(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -190,7 +195,8 @@ pub(crate) async fn post_credential_schema(
     CreatedOrErrorResponse::from_result(result, state, "creating credential schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::CredentialSchemaShare],
     post,
     path = "/api/credential-schema/v1/{id}/share",
     responses(CreatedOrErrorResponse<CredentialSchemaShareResponseRestDTO>),
@@ -208,7 +214,6 @@ pub(crate) async fn post_credential_schema(
         schema and [import](../core/import-credential-schema.api.mdx) it to use it in proof schema creation.
     "},
 )]
-#[require_permissions(Permission::CredentialSchemaShare)]
 pub(crate) async fn share_credential_schema(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<CredentialSchemaId>, ErrorResponseRestDTO>,

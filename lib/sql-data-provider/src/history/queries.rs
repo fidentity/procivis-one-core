@@ -1,14 +1,20 @@
-use one_core::model::history::{HistoryFilterValue, HistorySearchEnum, SortableHistoryColumn};
+use one_core::model::history::{
+    HistoryFilterValue, HistorySearchEnum, IssuerStatsQuery, SortableHistoryColumn,
+    SortableIssuerStatisticsColumn, SortableSystemInteractionStatisticsColumn,
+    SortableSystemManagementStatisticsColumn, SortableVerifierStatisticsColumn,
+    StatsBySchemaFilterValue, SystemInteractionStatsQuery, SystemManagementStatsQuery,
+    SystemStatsFilterValue, VerifierStatsQuery,
+};
 use one_core::model::list_filter::ListFilterCondition;
 use one_core::repository::error::DataLayerError;
 use one_dto_mapper::convert_inner;
 use sea_orm::sea_query::{
-    Alias, ColumnRef, Condition, Expr, Func, IntoColumnRef, IntoCondition, IntoIden, IntoTableRef,
-    Query, SelectStatement, SimpleExpr,
+    Alias, CaseStatement, ColumnRef, Condition, Expr, Func, IntoColumnRef, IntoCondition, IntoIden,
+    IntoTableRef, Query, SelectStatement, SimpleExpr,
 };
 use sea_orm::{
-    ColumnTrait, DbBackend, EntityTrait, IntoSimpleExpr, JoinType, Order, QueryFilter, QuerySelect,
-    QueryTrait, RelationTrait,
+    ActiveEnum, ColumnTrait, DbBackend, EntityTrait, IntoSimpleExpr, JoinType, Order, QueryFilter,
+    QuerySelect, QueryTrait, RelationTrait,
 };
 use shared_types::OrganisationId;
 use time::OffsetDateTime;
@@ -20,7 +26,7 @@ use crate::entity::{
 use crate::history::mapper::{ceil, floor};
 use crate::history::model::TimeResolution;
 use crate::list_query_generic::{
-    IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation,
+    IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation, SelectWithListQuery,
     get_comparison_condition,
 };
 
@@ -39,7 +45,7 @@ impl IntoSortingColumn for SortableHistoryColumn {
 }
 
 impl IntoFilterCondition for HistoryFilterValue {
-    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> sea_orm::Condition {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> Condition {
         match self {
             Self::EntityTypes(entity_types) => history::Column::EntityType
                 .is_in(
@@ -624,4 +630,263 @@ impl TimeResolution {
         };
         Ok(expr)
     }
+}
+
+impl IntoFilterCondition for StatsBySchemaFilterValue {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> Condition {
+        match self {
+            Self::From(date) => get_comparison_condition(history::Column::CreatedDate, date),
+            Self::To(date) => get_comparison_condition(history::Column::CreatedDate, date),
+            Self::OrganisationId(organisation_id) => history::Column::OrganisationId
+                .eq(organisation_id)
+                .into_condition(),
+        }
+    }
+}
+
+impl IntoFilterCondition for SystemStatsFilterValue {
+    fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> Condition {
+        match self {
+            Self::From(date) => get_comparison_condition(history::Column::CreatedDate, date),
+            Self::To(date) => get_comparison_condition(history::Column::CreatedDate, date),
+        }
+    }
+}
+
+impl IntoSortingColumn for SortableIssuerStatisticsColumn {
+    fn get_column(&self) -> SimpleExpr {
+        let col = match self {
+            Self::Issued => Alias::new(history::HistoryAction::Issued.to_value()).into_column_ref(),
+            Self::Revoked => {
+                Alias::new(history::HistoryAction::Revoked.to_value()).into_column_ref()
+            }
+            Self::Suspended => {
+                Alias::new(history::HistoryAction::Suspended.to_value()).into_column_ref()
+            }
+            Self::Reactivated => {
+                Alias::new(history::HistoryAction::Reactivated.to_value()).into_column_ref()
+            }
+            Self::Error => Alias::new(history::HistoryAction::Errored.to_value()).into_column_ref(),
+        };
+        SimpleExpr::Column(col)
+    }
+}
+
+impl IntoSortingColumn for SortableVerifierStatisticsColumn {
+    fn get_column(&self) -> SimpleExpr {
+        let col = match self {
+            Self::Accepted => {
+                Alias::new(history::HistoryAction::Accepted.to_value()).into_column_ref()
+            }
+            Self::Rejected => {
+                Alias::new(history::HistoryAction::Rejected.to_value()).into_column_ref()
+            }
+            Self::Error => Alias::new(history::HistoryAction::Errored.to_value()).into_column_ref(),
+        };
+        SimpleExpr::Column(col)
+    }
+}
+
+const CLO_COLUMN: &str = "credential_lifecycle_operation";
+
+impl IntoSortingColumn for SortableSystemInteractionStatisticsColumn {
+    fn get_column(&self) -> SimpleExpr {
+        let col = match self {
+            Self::Issued => Alias::new(history::HistoryAction::Issued.to_value()).into_column_ref(),
+            Self::Verified => {
+                Alias::new(history::HistoryAction::Accepted.to_value()).into_column_ref()
+            }
+            Self::CredentialLifecycleOperation => Alias::new(CLO_COLUMN).into_column_ref(),
+            Self::Error => Alias::new(history::HistoryAction::Errored.to_value()).into_column_ref(),
+        };
+        SimpleExpr::Column(col)
+    }
+}
+
+impl IntoSortingColumn for SortableSystemManagementStatisticsColumn {
+    fn get_column(&self) -> SimpleExpr {
+        let col = match self {
+            Self::CredentialSchema => {
+                Alias::new(history::HistoryEntityType::CredentialSchema.to_value())
+                    .into_column_ref()
+            }
+            Self::ProofSchema => {
+                Alias::new(history::HistoryEntityType::ProofSchema.to_value()).into_column_ref()
+            }
+            Self::Identifier => {
+                Alias::new(history::HistoryEntityType::Identifier.to_value()).into_column_ref()
+            }
+        };
+        SimpleExpr::Column(col)
+    }
+}
+
+const ISSUER_ACTIONS: [history::HistoryAction; 5] = [
+    history::HistoryAction::Issued,
+    history::HistoryAction::Suspended,
+    history::HistoryAction::Reactivated,
+    history::HistoryAction::Revoked,
+    history::HistoryAction::Errored,
+];
+pub(super) fn issuer_stats_query(query: &IssuerStatsQuery) -> SelectStatement {
+    let mut stmt = history::Entity::find().with_list_query(query).into_query();
+    let group_columns = [
+        history::Column::Name.into_column_ref(),
+        credential::Column::CredentialSchemaId.into_column_ref(),
+    ];
+    stmt.clear_selects()
+        .columns(group_columns.clone())
+        .group_by_columns(group_columns)
+        .inner_join(
+            credential::Entity,
+            Expr::col(history::Column::EntityId)
+                .eq(Expr::col((credential::Entity, credential::Column::Id))),
+        )
+        // Only issuer actions are relevant
+        .and_where(credential::Column::Role.eq(credential::CredentialRole::Issuer))
+        .and_where(history::Column::Action.is_in(ISSUER_ACTIONS));
+
+    for action in ISSUER_ACTIONS {
+        stmt.expr_as(
+            // Each history event is counted once (the other cases are `null`, which do _not_ count)
+            Func::count(CaseStatement::new().case(history::Column::Action.eq(action), 1)),
+            Alias::new(action.to_value()),
+        );
+    }
+    stmt
+}
+
+const VERIFIER_ACTIONS: [history::HistoryAction; 3] = [
+    history::HistoryAction::Accepted,
+    history::HistoryAction::Rejected,
+    history::HistoryAction::Errored,
+];
+pub(super) fn verifier_stats_query(query: &VerifierStatsQuery) -> SelectStatement {
+    let mut stmt = history::Entity::find().with_list_query(query).into_query();
+    let group_columns = [
+        history::Column::Name.into_column_ref(),
+        proof::Column::ProofSchemaId.into_column_ref(),
+    ];
+    stmt.clear_selects()
+        .columns(group_columns.clone())
+        .group_by_columns(group_columns)
+        .inner_join(
+            proof::Entity,
+            Expr::col(history::Column::EntityId).eq(Expr::col((proof::Entity, proof::Column::Id))),
+        )
+        // Only verifier actions are relevant
+        .and_where(proof::Column::Role.eq(proof::ProofRole::Verifier))
+        .and_where(history::Column::Action.is_in(VERIFIER_ACTIONS));
+
+    for action in VERIFIER_ACTIONS {
+        stmt.expr_as(
+            // Each history event is counted once (the other cases are `null`, which do _not_ count)
+            Func::count(CaseStatement::new().case(history::Column::Action.eq(action), 1)),
+            Alias::new(action.to_value()),
+        );
+    }
+    stmt
+}
+
+pub(super) fn system_interaction_stats_query(
+    query: &SystemInteractionStatsQuery,
+) -> SelectStatement {
+    let mut stmt = history::Entity::find().with_list_query(query).into_query();
+    stmt.clear_selects()
+        .column(history::Column::OrganisationId)
+        .group_by_col(history::Column::OrganisationId)
+        .left_join(
+            credential::Entity,
+            Expr::col(history::Column::EntityId)
+                .eq(Expr::col((credential::Entity, credential::Column::Id))),
+        )
+        .left_join(
+            proof::Entity,
+            Expr::col(history::Column::EntityId).eq(Expr::col((proof::Entity, proof::Column::Id))),
+        )
+        .and_where(
+            Expr::col(history::Column::EntityType)
+                .eq(history::HistoryEntityType::Credential)
+                .and(Expr::col(history::Column::Action).is_in([
+                    history::HistoryAction::Issued,
+                    history::HistoryAction::Suspended,
+                    history::HistoryAction::Reactivated,
+                    history::HistoryAction::Revoked,
+                    history::HistoryAction::Errored,
+                ]))
+                .and(
+                    Expr::col((credential::Entity, credential::Column::Role))
+                        .eq(credential::CredentialRole::Issuer),
+                )
+                .or(Expr::col(history::Column::EntityType)
+                    .eq(history::HistoryEntityType::Proof)
+                    .and(Expr::col(history::Column::Action).is_in([
+                        history::HistoryAction::Accepted,
+                        history::HistoryAction::Errored,
+                    ]))
+                    .and(
+                        Expr::col((proof::Entity, proof::Column::Role))
+                            .eq(proof::ProofRole::Verifier),
+                    )),
+        );
+    for action in [
+        history::HistoryAction::Issued,
+        history::HistoryAction::Accepted,
+        history::HistoryAction::Errored,
+    ] {
+        stmt.expr_as(
+            // Each history event is counted once (the other cases are `null`, which do _not_ count)
+            Func::count(CaseStatement::new().case(history::Column::Action.eq(action), 1)),
+            Alias::new(action.to_value()),
+        );
+    }
+    stmt.expr_as(
+        // Each history event is counted once (the other cases are `null`, which do _not_ count)
+        Func::count(CaseStatement::new().case(
+            history::Column::Action.is_in([
+                history::HistoryAction::Suspended,
+                history::HistoryAction::Reactivated,
+                history::HistoryAction::Revoked,
+            ]),
+            1,
+        )),
+        Alias::new(CLO_COLUMN),
+    );
+    stmt
+}
+
+pub(super) fn system_management_stats_query(query: &SystemManagementStatsQuery) -> SelectStatement {
+    let mut stmt = history::Entity::find().with_list_query(query).into_query();
+    stmt.clear_selects()
+        .column((history::Entity, history::Column::OrganisationId))
+        .group_by_col((history::Entity, history::Column::OrganisationId))
+        .left_join(
+            identifier::Entity,
+            Expr::col(history::Column::EntityId)
+                .eq(Expr::col((identifier::Entity, identifier::Column::Id))),
+        )
+        .and_where(
+            Expr::col(history::Column::EntityType)
+                .eq(history::HistoryEntityType::Identifier)
+                .and(Expr::col(history::Column::Action).eq(history::HistoryAction::Created))
+                .and(Expr::col((identifier::Entity, identifier::Column::IsRemote)).eq(false))
+                .or(Expr::col(history::Column::EntityType)
+                    .is_in([
+                        history::HistoryEntityType::CredentialSchema,
+                        history::HistoryEntityType::ProofSchema,
+                    ])
+                    .and(Expr::col(history::Column::Action).eq(history::HistoryAction::Created))),
+        );
+    for entity_type in [
+        history::HistoryEntityType::CredentialSchema,
+        history::HistoryEntityType::ProofSchema,
+        history::HistoryEntityType::Identifier,
+    ] {
+        stmt.expr_as(
+            // Each history event is counted once (the other cases are `null`, which do _not_ count)
+            Func::count(CaseStatement::new().case(history::Column::EntityType.eq(entity_type), 1)),
+            Alias::new(entity_type.to_value()),
+        );
+    }
+    stmt
 }

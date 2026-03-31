@@ -48,8 +48,10 @@ use crate::provider::presentation_formatter::provider::get_presentation_formatte
 use crate::provider::revocation::provider::revocation_method_provider_from_config;
 use crate::provider::signer::provider::signer_provider_from_config;
 use crate::provider::task::provider::task_provider_from_config;
+use crate::provider::trust_list_publisher::provider::trust_list_publisher_provider_from_config;
 use crate::provider::trust_management::provider::trust_management_provider_from_config;
 use crate::provider::verification_protocol::provider::verification_protocol_provider_from_config;
+use crate::provider::verifier::provider::verifier_provider_from_config;
 use crate::provider::wallet_provider_client::http_client::HTTPWalletProviderClient;
 use crate::repository::DataRepository;
 use crate::service::backup::BackupService;
@@ -65,8 +67,8 @@ use crate::service::jsonld::JsonLdService;
 use crate::service::key::KeyService;
 use crate::service::nfc::NfcService;
 use crate::service::oid4vci_draft13::OID4VCIDraft13Service;
-use crate::service::oid4vci_draft13_swiyu::OID4VCIDraft13SwiyuService;
 use crate::service::oid4vci_final1_0::OID4VCIFinal1_0Service;
+use crate::service::oid4vci_final1_0_swiyu::OID4VCIFinal1_0SwiyuService;
 use crate::service::oid4vp_draft20::OID4VPDraft20Service;
 use crate::service::oid4vp_draft25::OID4VPDraft25Service;
 use crate::service::oid4vp_final1_0::OID4VPFinal1_0Service;
@@ -81,7 +83,9 @@ use crate::service::statistics::StatisticsService;
 use crate::service::task::TaskService;
 use crate::service::trust_anchor::TrustAnchorService;
 use crate::service::trust_entity::TrustEntityService;
+use crate::service::trust_list_publication::TrustListPublicationService;
 use crate::service::vc_api::VCAPIService;
+use crate::service::verifier_provider::VerifierProviderService;
 use crate::service::wallet_provider::WalletProviderService;
 use crate::service::wallet_unit::WalletUnitService;
 
@@ -113,7 +117,7 @@ pub struct OneCore {
     pub config_service: ConfigService,
     pub revocation_list_service: RevocationListService,
     pub oid4vci_draft13_service: OID4VCIDraft13Service,
-    pub oid4vci_draft13_swiyu_service: OID4VCIDraft13SwiyuService,
+    pub oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService,
     pub oid4vci_final1_0_service: OID4VCIFinal1_0Service,
     pub oid4vp_draft20_service: OID4VPDraft20Service,
     pub oid4vp_draft25_service: OID4VPDraft25Service,
@@ -130,6 +134,8 @@ pub struct OneCore {
     pub signature_service: SignatureService,
     pub nfc_service: NfcService,
     pub statistics_service: StatisticsService,
+    pub verifier_provider_service: VerifierProviderService,
+    pub trust_list_publication_service: TrustListPublicationService,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -306,6 +312,8 @@ impl OneCore {
             session_provider.clone(),
         )?;
 
+        let verifier_provider = verifier_provider_from_config(&config)?;
+
         let identifier_creator = Arc::new(IdentifierCreatorProto::new(
             did_method_provider.clone(),
             data_provider.get_did_repository(),
@@ -315,7 +323,6 @@ impl OneCore {
             key_provider.clone(),
             key_algorithm_provider.clone(),
             data_provider.get_identifier_repository(),
-            csr_creator.clone(),
             signer_provider.clone(),
             Arc::new(config.clone()),
             data_provider.get_tx_manager(),
@@ -334,6 +341,16 @@ impl OneCore {
             &mut config,
             client.clone(),
             data_provider.get_remote_entity_cache_repository(),
+        )?;
+
+        let trust_list_publisher_provider = trust_list_publisher_provider_from_config(
+            &mut config,
+            clock.clone(),
+            key_provider.clone(),
+            key_algorithm_provider.clone(),
+            data_provider.get_trust_list_publication_repository(),
+            data_provider.get_trust_entry_repository(),
+            data_provider.get_identifier_repository(),
         )?;
 
         let blob_storage_provider = blob_storage_provider_from_config(
@@ -534,7 +551,7 @@ impl OneCore {
                 wallet_unit_proto.clone(),
                 identifier_creator.clone(),
             ),
-            oid4vci_draft13_swiyu_service: OID4VCIDraft13SwiyuService::new(
+            oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService::new(
                 core_base_url.clone(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_credential_repository(),
@@ -548,6 +565,8 @@ impl OneCore {
                 certificate_validator.clone(),
                 identifier_creator.clone(),
                 data_provider.get_tx_manager(),
+                blob_storage_provider.clone(),
+                wallet_unit_proto.clone(),
             ),
             oid4vp_draft20_service: OID4VPDraft20Service::new(
                 data_provider.get_credential_repository(),
@@ -742,7 +761,15 @@ impl OneCore {
             statistics_service: StatisticsService::new(
                 data_provider.get_history_repository(),
                 data_provider.get_organisation_repository(),
+                session_provider.clone(),
+            ),
+            verifier_provider_service: VerifierProviderService::new(verifier_provider),
+            trust_list_publication_service: TrustListPublicationService::new(
+                data_provider.get_identifier_repository(),
+                data_provider.get_trust_list_publication_repository(),
+                data_provider.get_trust_entry_repository(),
                 session_provider,
+                trust_list_publisher_provider,
             ),
         })
     }

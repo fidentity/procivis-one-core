@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use one_core::mapper::{opt_secret_string, secret_string};
+use one_core::mapper::opt_secret_string;
 use one_core::provider::credential_formatter::vcdm::ContextType;
 use one_core::provider::issuance_protocol::error::OpenID4VCIError;
 use one_core::provider::issuance_protocol::model::{
@@ -26,6 +26,7 @@ use one_dto_mapper::{From, Into, convert_inner, convert_inner_of_inner};
 use proc_macros::options_not_nullable;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use standardized_types::mapper::secret_string;
 use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
 use utoipa::ToSchema;
 
@@ -109,6 +110,7 @@ pub(crate) struct OpenID4VCICredentialMetadataClaimResponseRestDTO {
     #[from(with_fn = convert_inner_of_inner)]
     pub display: Option<Vec<OpenID4VCIIssuerMetadataClaimDisplayRestDTO>>,
     pub mandatory: Option<bool>,
+    #[serde(flatten)]
     pub additional_values: Option<IndexMap<String, serde_json::Value>>,
 }
 

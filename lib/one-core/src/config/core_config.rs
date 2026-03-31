@@ -58,6 +58,7 @@ pub struct CoreConfig {
     pub key_security_level: KeySecurityLevelConfig,
     pub task: TaskConfig,
     pub trust_management: TrustManagementConfig,
+    pub trust_list_publisher: TrustListPublisherConfig,
     pub blob_storage: BlobStorageConfig,
     pub cache_entities: CacheEntitiesConfig,
     pub wallet_provider: WalletProviderConfig,
@@ -65,6 +66,7 @@ pub struct CoreConfig {
     pub verification_engagement: VerificationEngagementConfig,
     pub certificate_validation: CertificateValidationConfig,
     pub signer: SignerConfig,
+    pub verifier_provider: VerifierProviderConfig,
 }
 
 impl CoreConfig {
@@ -316,9 +318,9 @@ pub enum IssuanceProtocolType {
     #[serde(rename = "OPENID4VCI_DRAFT13")]
     #[strum(serialize = "OPENID4VCI_DRAFT13")]
     OpenId4VciDraft13,
-    #[serde(rename = "OPENID4VCI_DRAFT13_SWIYU")]
-    #[strum(serialize = "OPENID4VCI_DRAFT13_SWIYU")]
-    OpenId4VciDraft13Swiyu,
+    #[serde(rename = "OPENID4VCI_FINAL1_SWIYU")]
+    #[strum(serialize = "OPENID4VCI_FINAL1_SWIYU")]
+    OpenId4vciFinal1_0Swiyu,
     #[serde(rename = "OPENID4VCI_FINAL1")]
     #[strum(serialize = "OPENID4VCI_FINAL1")]
     OpenId4VciFinal1_0,
@@ -367,9 +369,6 @@ pub type RevocationConfig = ConfigBlock<RevocationMethodId, RevocationType>;
     Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
 pub enum RevocationType {
-    #[serde(rename = "NONE")]
-    #[strum(serialize = "NONE")]
-    None,
     #[serde(rename = "MDOC_MSO_UPDATE_SUSPENSION")]
     #[strum(serialize = "MDOC_MSO_UPDATE_SUSPENSION")]
     MdocMsoUpdateSuspension,
@@ -678,6 +677,17 @@ pub enum TrustManagementType {
     SimpleTrustList,
 }
 
+pub type TrustListPublisherConfig = ConfigBlock<String, TrustListPublisherType>;
+
+#[derive(
+    Debug, Copy, Clone, Display, EnumString, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
+pub enum TrustListPublisherType {
+    #[serde(rename = "ETSI_LOTE")]
+    #[strum(serialize = "ETSI_LOTE")]
+    EtsiLote,
+}
+
 pub type BlobStorageConfig = Dict<BlobStorageType, BlobStorageFields>;
 
 #[derive(
@@ -815,6 +825,13 @@ pub enum SignerType {
     #[serde(rename = "X509_CERTIFICATE")]
     #[strum(serialize = "X509_CERTIFICATE")]
     X509Certificate,
+}
+
+pub type VerifierProviderConfig = Dict<String, VerifierProviderFields>;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerifierProviderFields {
+    pub params: Params,
 }
 
 // Alias for the collection of traits we want config keys to implement.

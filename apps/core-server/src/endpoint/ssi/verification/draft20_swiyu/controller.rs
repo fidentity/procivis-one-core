@@ -6,7 +6,8 @@ use axum_extra::extract::WithRejection;
 use one_core::error::{ErrorCode, ErrorCodeMixin};
 use one_core::provider::verification_protocol::openid4vp::error::OpenID4VCError;
 use one_core::provider::verification_protocol::openid4vp::model::OpenID4VPDirectPostRequestDTO;
-use one_core::service::error::{BusinessLogicError, ServiceError};
+use one_core::service::oid4vp_draft20::error::OID4VPDraft20ServiceError;
+use proc_macros::endpoint;
 use shared_types::InteractionId;
 
 use super::super::super::dto::{OpenID4VCIErrorResponseRestDTO, OpenID4VCIErrorRestEnum};
@@ -14,7 +15,8 @@ use super::super::dto::{OpenID4VPDirectPostRequestRestDTO, OpenID4VPDirectPostRe
 use crate::dto::error::ErrorResponseRestDTO;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     post,
     path = "/ssi/openid4vp/draft-20-swiyu/response/{id}",
     request_body(content = OpenID4VPDirectPostRequestRestDTO, description = "Verifier request", content_type = "application/x-www-form-urlencoded"
@@ -53,7 +55,7 @@ pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
             Json(OpenID4VPDirectPostResponseRestDTO::from(value)),
         )
             .into_response(),
-        Err(ServiceError::OpenID4VCError(OpenID4VCError::ValidationError(error))) => {
+        Err(OID4VPDraft20ServiceError::OpenID4VCError(OpenID4VCError::ValidationError(error))) => {
             tracing::error!("OpenID4VC validation error: {:?}", error);
             (
                 StatusCode::BAD_REQUEST,
@@ -63,7 +65,7 @@ pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
             )
                 .into_response()
         }
-        Err(ServiceError::OpenID4VCError(OpenID4VCError::InvalidRequest)) => {
+        Err(OID4VPDraft20ServiceError::OpenID4VCError(OpenID4VCError::InvalidRequest)) => {
             tracing::error!("OpenID4VC invalid request");
             (
                 StatusCode::BAD_REQUEST,
@@ -77,7 +79,7 @@ pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
             tracing::error!("Config validation error: {error}");
             StatusCode::NOT_FOUND.into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::CredentialIsRevokedOrSuspended)) => {
+        Err(error) if error.error_code() == ErrorCode::BR_0099 => {
             tracing::error!("Credential is revoked or suspended");
             (
                 StatusCode::BAD_REQUEST,
@@ -85,7 +87,7 @@ pub(crate) async fn oid4vp_draft20_swiyu_direct_post(
             )
                 .into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::MissingProofForInteraction(_))) => {
+        Err(OID4VPDraft20ServiceError::MissingProofForInteraction(_)) => {
             tracing::error!("Missing interaction or proof");
             (StatusCode::BAD_REQUEST, "Missing interaction of proof").into_response()
         }

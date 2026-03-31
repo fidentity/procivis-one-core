@@ -1,16 +1,26 @@
+use std::collections::HashMap;
+use std::hash::Hash;
+
+use one_core::model::common::GetListResponse;
 use one_core::model::history::{
-    GetHistoryList, History, IssuerTimelines, OrganisationOperationsCount, OrganisationTimelines,
-    TimeSeriesPoint, VerifierTimelines,
+    GetHistoryList, History, IssuerSchemaStats, IssuerStats, IssuerTimelines,
+    OrganisationOperationsCount, OrganisationTimelines, SystemInteractionCounts,
+    SystemManagementCounts, SystemOrgStats, TimeSeriesPoint, VerifierSchemaStats, VerifierStats,
+    VerifierTimelines,
 };
 use one_core::repository::error::DataLayerError;
 use one_dto_mapper::try_convert_inner;
 use sea_orm::ActiveValue::Set;
+use shared_types::{CredentialSchemaId, OrganisationId, ProofSchemaId};
 use time::{Duration, Month, OffsetDateTime};
 
 use crate::common::calculate_pages_count;
 use crate::entity::history;
 use crate::entity::history::{HistoryAction, HistoryEntityType};
-use crate::history::model::{OrganisationOpsCount, TimeResolution, TimeSeriesRow};
+use crate::history::model::{
+    IssuerStatsRow, OrganisationOpsCount, PaginatedStats, SystemInteractionStatsRow,
+    SystemManagementsStatsRow, TimeResolution, TimeSeriesRow, VerifierStatsRow,
+};
 
 impl TryFrom<history::Model> for History {
     type Error = DataLayerError;
@@ -331,4 +341,191 @@ pub(super) fn to_ops_org_count(
         })
         .collect();
     Ok(result)
+}
+
+pub(super) trait PaginatedStatsRow<ID: Eq + Hash>: Clone {
+    fn id(&self) -> ID;
+
+    fn clone_zeroed(&self) -> Self;
+}
+
+pub(super) trait FromPrevAndCurrentStats<T> {
+    fn from_prev_and_current(prev: Option<T>, current: T) -> Self;
+}
+impl PaginatedStatsRow<CredentialSchemaId> for IssuerStatsRow {
+    fn id(&self) -> CredentialSchemaId {
+        self.credential_schema_id
+    }
+
+    fn clone_zeroed(&self) -> Self {
+        Self {
+            credential_schema_id: self.credential_schema_id,
+            name: self.name.clone(),
+            issued: 0,
+            suspended: 0,
+            reactivated: 0,
+            revoked: 0,
+            error: 0,
+        }
+    }
+}
+
+impl FromPrevAndCurrentStats<IssuerStatsRow> for IssuerSchemaStats {
+    fn from_prev_and_current(prev: Option<IssuerStatsRow>, current: IssuerStatsRow) -> Self {
+        Self {
+            credential_schema_id: current.credential_schema_id,
+            credential_schema_name: current.name.clone(),
+            previous: prev.map(IssuerStats::from),
+            current: current.into(),
+        }
+    }
+}
+
+impl PaginatedStatsRow<ProofSchemaId> for VerifierStatsRow {
+    fn id(&self) -> ProofSchemaId {
+        self.proof_schema_id
+    }
+
+    fn clone_zeroed(&self) -> Self {
+        Self {
+            proof_schema_id: self.proof_schema_id,
+            name: self.name.clone(),
+            accepted: 0,
+            rejected: 0,
+            error: 0,
+        }
+    }
+}
+impl FromPrevAndCurrentStats<VerifierStatsRow> for VerifierSchemaStats {
+    fn from_prev_and_current(prev: Option<VerifierStatsRow>, current: VerifierStatsRow) -> Self {
+        Self {
+            proof_schema_id: current.proof_schema_id,
+            proof_schema_name: current.name.clone(),
+            previous: prev.map(VerifierStats::from),
+            current: current.into(),
+        }
+    }
+}
+
+impl PaginatedStatsRow<OrganisationId> for SystemInteractionStatsRow {
+    fn id(&self) -> OrganisationId {
+        self.organisation_id
+    }
+
+    fn clone_zeroed(&self) -> Self {
+        Self {
+            organisation_id: self.organisation_id,
+            issued: 0,
+            accepted: 0,
+            credential_lifecycle_operation: 0,
+            error: 0,
+        }
+    }
+}
+
+impl PaginatedStatsRow<OrganisationId> for SystemManagementsStatsRow {
+    fn id(&self) -> OrganisationId {
+        self.organisation_id
+    }
+
+    fn clone_zeroed(&self) -> Self {
+        Self {
+            organisation_id: self.organisation_id,
+            credential_schema: 0,
+            proof_schema: 0,
+            identifier: 0,
+        }
+    }
+}
+
+impl<IN, OUT> FromPrevAndCurrentStats<IN> for SystemOrgStats<OUT>
+where
+    IN: PaginatedStatsRow<OrganisationId>,
+    OUT: From<IN>,
+{
+    fn from_prev_and_current(prev: Option<IN>, current: IN) -> Self {
+        Self {
+            organisation_id: current.id(),
+            previous: prev.map(OUT::from),
+            current: current.into(),
+        }
+    }
+}
+
+pub(super) fn paginated_stats_to_list_response<IN, OUT, ID>(
+    paginated_stats: PaginatedStats<IN>,
+    limit: Option<u64>,
+) -> GetListResponse<OUT>
+where
+    ID: Eq + Hash,
+    IN: PaginatedStatsRow<ID>,
+    OUT: FromPrevAndCurrentStats<IN>,
+{
+    let add_missing_zeros = paginated_stats.previous.is_some();
+    let prev_map = paginated_stats
+        .previous
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| (r.id(), r))
+        .collect::<HashMap<_, _>>();
+    let values = paginated_stats
+        .current
+        .into_iter()
+        .map(|r| {
+            let mut previous = prev_map.get(&r.id()).cloned();
+            if add_missing_zeros && previous.is_none() {
+                // Previous values are missing for the particular schema, fill in with zeros
+                previous = Some(r.clone_zeroed());
+            }
+            OUT::from_prev_and_current(previous, r)
+        })
+        .collect();
+    GetListResponse {
+        values,
+        total_pages: calculate_pages_count(paginated_stats.total_items, limit.unwrap_or(0)),
+        total_items: paginated_stats.total_items,
+    }
+}
+
+impl From<VerifierStatsRow> for VerifierStats {
+    fn from(value: VerifierStatsRow) -> Self {
+        Self {
+            accepted_count: value.accepted as usize,
+            rejected_count: value.rejected as usize,
+            error_count: value.error as usize,
+        }
+    }
+}
+
+impl From<IssuerStatsRow> for IssuerStats {
+    fn from(value: IssuerStatsRow) -> Self {
+        Self {
+            issued_count: value.issued as usize,
+            suspended_count: value.suspended as usize,
+            reactivated_count: value.reactivated as usize,
+            revoked_count: value.revoked as usize,
+            error_count: value.error as usize,
+        }
+    }
+}
+
+impl From<SystemInteractionStatsRow> for SystemInteractionCounts {
+    fn from(value: SystemInteractionStatsRow) -> Self {
+        Self {
+            issued_count: value.issued as usize,
+            verified_count: value.accepted as usize,
+            error_count: value.error as usize,
+            credential_lifecycle_operation_count: value.credential_lifecycle_operation as usize,
+        }
+    }
+}
+
+impl From<SystemManagementsStatsRow> for SystemManagementCounts {
+    fn from(value: SystemManagementsStatsRow) -> Self {
+        Self {
+            credential_schema_created_count: value.credential_schema as usize,
+            proof_schema_created_count: value.proof_schema as usize,
+            identifier_created_count: value.identifier as usize,
+        }
+    }
 }

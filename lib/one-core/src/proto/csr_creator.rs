@@ -142,36 +142,15 @@ impl CsrCreator for CsrCreatorImpl {
 fn request_to_certificate_params(request: GenerateCsrRequest) -> CertificateParams {
     let mut params = CertificateParams::default();
 
-    let mut dn = DistinguishedName::new();
-    if let Some(common_name) = request.subject.common_name {
-        dn.push(DnType::CommonName, common_name);
-    }
-    if let Some(country_name) = request.subject.country_name {
-        dn.push(DnType::CountryName, country_name);
-    }
-    if let Some(organisation_name) = request.subject.organisation_name {
-        dn.push(DnType::OrganizationName, organisation_name);
-    }
-    if let Some(state_or_province_name) = request.subject.state_or_province_name {
-        dn.push(DnType::StateOrProvinceName, state_or_province_name);
-    }
-    if let Some(locality_name) = request.subject.locality_name {
-        dn.push(DnType::LocalityName, locality_name);
-    }
-    if let Some(serial_number) = request.subject.serial_number {
-        let dn_type_serial_number = vec![2, 5, 4, 5];
-        dn.push(DnType::CustomDnType(dn_type_serial_number), serial_number);
-    }
-
-    params.distinguished_name = dn;
+    params.distinguished_name = prepare_distinguished_name(request.subject);
 
     match request.profile {
         CsrRequestProfile::Generic => {} // nothing to add
         CsrRequestProfile::Mdl => {
-            params.custom_extensions.push(prepare_key_usage_extension());
+            params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
             params
                 .custom_extensions
-                .push(prepare_extended_key_usage_extension());
+                .push(prepare_extended_key_usage_extension_iso_mdl_ds());
         }
         CsrRequestProfile::Ca => {
             // Basic constraints cannot be set in CSR, so only key usages are specified here.
@@ -182,26 +161,39 @@ fn request_to_certificate_params(request: GenerateCsrRequest) -> CertificatePara
     params
 }
 
-fn prepare_key_usage_extension() -> CustomExtension {
-    const OID_KEY_USAGE: [u64; 4] = [2, 5, 29, 15];
-    const KEY_USAGE_PURPOSE_DIGITAL_SIGNATURE: [u8; 2] = [0x80, 0];
-    const BITS_TO_WRITE: usize = 15;
-
-    let content = yasna::construct_der(|writer| {
-        writer.write_bitvec_bytes(&KEY_USAGE_PURPOSE_DIGITAL_SIGNATURE, BITS_TO_WRITE);
-    });
-
-    CustomExtension::from_oid_content(&OID_KEY_USAGE, content)
+pub(crate) fn prepare_distinguished_name(subject: CsrRequestSubject) -> DistinguishedName {
+    let mut dn = DistinguishedName::new();
+    if let Some(common_name) = subject.common_name {
+        dn.push(DnType::CommonName, common_name);
+    }
+    if let Some(country_name) = subject.country_name {
+        dn.push(DnType::CountryName, country_name);
+    }
+    if let Some(organisation_name) = subject.organisation_name {
+        dn.push(DnType::OrganizationName, organisation_name);
+    }
+    if let Some(state_or_province_name) = subject.state_or_province_name {
+        dn.push(DnType::StateOrProvinceName, state_or_province_name);
+    }
+    if let Some(locality_name) = subject.locality_name {
+        dn.push(DnType::LocalityName, locality_name);
+    }
+    if let Some(serial_number) = subject.serial_number {
+        let dn_type_serial_number = vec![2, 5, 4, 5];
+        dn.push(DnType::CustomDnType(dn_type_serial_number), serial_number);
+    }
+    dn
 }
 
-fn prepare_extended_key_usage_extension() -> CustomExtension {
+/// ISO 18013-5, B.1.4 Document signer certificate
+pub(crate) const OID_EXTENDED_KEY_USAGE_ISO_MDL_DS: [u64; 6] = [1, 0, 18013, 5, 1, 2];
+pub(crate) fn prepare_extended_key_usage_extension_iso_mdl_ds() -> CustomExtension {
     const OID_EXTENDED_KEY_USAGE: [u64; 4] = [2, 5, 29, 37];
-    const OID_EXTENDED_KEY_USAGE_MDL_DS: [u64; 6] = [1, 0, 18013, 5, 1, 2];
 
     let mdlds_extended_key_usage = yasna::construct_der(|writer| {
         writer.write_sequence(|writer| {
             writer.next().write_oid(&ObjectIdentifier::from_slice(
-                &OID_EXTENDED_KEY_USAGE_MDL_DS,
+                &OID_EXTENDED_KEY_USAGE_ISO_MDL_DS,
             ));
         });
     });

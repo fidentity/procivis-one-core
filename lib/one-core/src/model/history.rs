@@ -106,6 +106,7 @@ pub enum HistoryEntityType {
     Signature,
     Notification,
     SupervisoryAuthority,
+    TrustListPublication,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -209,6 +210,69 @@ pub struct TimeSeriesPoint {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SortableIssuerStatisticsColumn {
+    Issued,
+    Revoked,
+    Suspended,
+    Reactivated,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SortableVerifierStatisticsColumn {
+    Accepted,
+    Rejected,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StatsBySchemaFilterValue {
+    OrganisationId(OrganisationId),
+    From(ValueComparison<OffsetDateTime>),
+    To(ValueComparison<OffsetDateTime>),
+}
+
+impl ListFilterValue for StatsBySchemaFilterValue {}
+pub type IssuerStatsQuery = ListQuery<SortableIssuerStatisticsColumn, StatsBySchemaFilterValue>;
+
+pub type GetIssuerStats = GetListResponse<IssuerSchemaStats>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerSchemaStats {
+    pub credential_schema_id: CredentialSchemaId,
+    pub credential_schema_name: String,
+    pub current: IssuerStats,
+    pub previous: Option<IssuerStats>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct IssuerStats {
+    pub issued_count: usize,
+    pub suspended_count: usize,
+    pub reactivated_count: usize,
+    pub revoked_count: usize,
+    pub error_count: usize,
+}
+
+pub type VerifierStatsQuery = ListQuery<SortableVerifierStatisticsColumn, StatsBySchemaFilterValue>;
+pub type GetVerifierStats = GetListResponse<VerifierSchemaStats>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifierSchemaStats {
+    pub proof_schema_id: ProofSchemaId,
+    pub proof_schema_name: String,
+    pub current: VerifierStats,
+    pub previous: Option<VerifierStats>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct VerifierStats {
+    pub accepted_count: usize,
+    pub rejected_count: usize,
+    pub error_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemStats {
     pub previous: Option<SystemOperationsCount>,
     pub current: SystemOperationsCount,
@@ -230,4 +294,58 @@ pub struct SystemOperationsCount {
     pub credential_lifecycle_operation_count: usize,
     pub session_token_count: usize,
     pub active_wallet_unit_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SortableSystemInteractionStatisticsColumn {
+    Issued,
+    Verified,
+    CredentialLifecycleOperation,
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemStatsFilterValue {
+    From(ValueComparison<OffsetDateTime>),
+    To(ValueComparison<OffsetDateTime>),
+}
+impl ListFilterValue for SystemStatsFilterValue {}
+
+pub type SystemInteractionStatsQuery =
+    ListQuery<SortableSystemInteractionStatisticsColumn, SystemStatsFilterValue>;
+
+pub type GetSystemInteractionStats = GetListResponse<SystemOrgStats<SystemInteractionCounts>>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemOrgStats<T> {
+    pub organisation_id: OrganisationId,
+    pub current: T,
+    pub previous: Option<T>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct SystemInteractionCounts {
+    pub issued_count: usize,
+    pub verified_count: usize,
+    pub credential_lifecycle_operation_count: usize,
+    pub error_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SortableSystemManagementStatisticsColumn {
+    CredentialSchema,
+    ProofSchema,
+    Identifier,
+}
+
+pub type SystemManagementStatsQuery =
+    ListQuery<SortableSystemManagementStatisticsColumn, SystemStatsFilterValue>;
+
+pub type GetSystemManagementStats = GetListResponse<SystemOrgStats<SystemManagementCounts>>;
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub struct SystemManagementCounts {
+    pub credential_schema_created_count: usize,
+    pub proof_schema_created_count: usize,
+    pub identifier_created_count: usize,
 }

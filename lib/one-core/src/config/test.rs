@@ -75,11 +75,6 @@ rusty_fork_test! {
                         public:
                             useRequestUri: true
             revocation:
-                NONE:
-                    display: 'revocation.none'
-                    order: 0
-                    type: 'NONE'
-                    params: null
                 BITSTRINGSTATUSLIST:
                     display: 'display'
                     order: 1
@@ -123,6 +118,8 @@ rusty_fork_test! {
             verificationEngagement: {}
             certificateValidation: {}
             signer: {}
+            verifierProvider: {}
+            trustListPublisher: {}
         "};
 
         let config3 = indoc::indoc! {"

@@ -247,7 +247,9 @@ pub(crate) fn get_encryption_key_jwk_from_proof(
 
             let Some(encryption_key) = match encryption_key {
                 Ok(key) => Some(key),
-                Err(_) => verifier_did.find_first_matching_key(&key_filter)?,
+                Err(_) => verifier_did
+                    .find_first_matching_key(&key_filter)
+                    .error_while("finding matching key")?,
             }
             .to_owned() else {
                 return Ok(None);
@@ -284,7 +286,7 @@ pub(crate) fn get_encryption_key_jwk_from_proof(
     {
         Some(JwkUse::Encryption)
     } else {
-        None
+        return Ok(None);
     };
 
     let mut jwk = key_algorithm
@@ -442,22 +444,6 @@ pub mod secret_slice {
     {
         let data = Vec::<u8>::deserialize(d)?;
         Ok(SecretSlice::from(data))
-    }
-}
-
-pub mod secret_string {
-    use secrecy::{ExposeSecret, SecretString};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    pub fn serialize<S: Serializer>(secret: &SecretString, s: S) -> Result<S::Ok, S::Error> {
-        secret.expose_secret().serialize(s)
-    }
-
-    pub fn deserialize<'de, D>(d: D) -> Result<SecretString, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let data = String::deserialize(d)?;
-        Ok(SecretString::from(data))
     }
 }
 

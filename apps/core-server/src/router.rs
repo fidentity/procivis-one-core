@@ -25,8 +25,8 @@ use crate::dto::response::ErrorResponse;
 use crate::endpoint::{
     cache, certificate, config, credential, credential_schema, did, did_resolver, history,
     holder_wallet_unit, identifier, interaction, jsonld, key, misc, organisation, proof,
-    proof_schema, signature, ssi, statistics, task, trust_anchor, trust_entity, vc_api,
-    wallet_provider,
+    proof_schema, signature, ssi, statistics, task, trust_anchor, trust_entity,
+    trust_list_publication, vc_api, wallet_provider,
 };
 use crate::middleware::{UserInfo, get_http_request_context};
 use crate::openapi::gen_openapi_documentation;
@@ -110,6 +110,9 @@ fn router(state: AppState, config: Arc<ServerConfig>, authentication: Authentica
             .merge(
                 SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi_documentation),
             )
+            .layer(middleware::from_fn(
+                crate::openapi::permissions::adapted_swagger_index,
+            ))
     } else {
         Router::new()
     };
@@ -201,6 +204,7 @@ fn router(state: AppState, config: Arc<ServerConfig>, authentication: Authentica
         .with_state(state)
 }
 
+#[expect(deprecated)]
 fn get_management_endpoints(
     config: &ServerConfig,
     authentication: Authentication,
@@ -471,8 +475,44 @@ fn get_management_endpoints(
                 get(statistics::controller::organisation_statistics),
             )
             .route(
+                "/api/statistics/v1/dashboard/issuer",
+                get(statistics::controller::issuer_statistics),
+            )
+            .route(
+                "/api/statistics/v1/dashboard/verifier",
+                get(statistics::controller::verifier_statistics),
+            )
+            .route(
                 "/api/statistics/v1/dashboard/system",
                 get(statistics::controller::system_statistics),
+            )
+            .route(
+                "/api/statistics/v1/dashboard/system/interaction",
+                get(statistics::controller::system_interaction_statistics),
+            )
+            .route(
+                "/api/statistics/v1/dashboard/system/management",
+                get(statistics::controller::system_management_statistics),
+            )
+            .route(
+                "/api/trust-list/v1",
+                get(trust_list_publication::controller::get_trust_list_publications)
+                    .post(trust_list_publication::controller::post_trust_list_publication),
+            )
+            .route(
+                "/api/trust-list/v1/{id}",
+                get(trust_list_publication::controller::get_trust_list_publication)
+                    .delete(trust_list_publication::controller::delete_trust_list_publication),
+            )
+            .route(
+                "/api/trust-list/v1/{id}/entry",
+                get(trust_list_publication::controller::get_trust_list_publication_entries)
+                    .post(trust_list_publication::controller::post_trust_entry),
+            )
+            .route(
+                "/api/trust-list/v1/{list_id}/entry/{entry_id}",
+                patch(trust_list_publication::controller::patch_trust_entry)
+                    .delete(trust_list_publication::controller::delete_trust_entry),
             );
 
         if config.enable_signature_endpoints {
@@ -512,6 +552,7 @@ fn get_management_endpoints(
     }
 }
 
+#[expect(deprecated)]
 fn get_external_endpoints(
     config: &ServerConfig,
     openapi_paths: &mut Option<&mut IndexMap<String, PathItem>>,
@@ -570,28 +611,40 @@ fn get_external_endpoints(
                 post(ssi::issuance::final1_0::controller::oid4vci_final1_0_nonce),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/openid-credential-issuer",
-                get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_get_issuer_metadata),
+                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0-swiyu/{protocol_id}/{id}",
+                get(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_get_issuer_metadata),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/openid-configuration",
-                get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_service_discovery),
+                "/ssi/openid4vci/final-1.0-swiyu/{protocol_id}/{id}/.well-known/openid-credential-issuer",
+                get(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_get_issuer_metadata_legacy),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{id}/.well-known/oauth-authorization-server",
-                get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_oauth_authorization_server),
+                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0-swiyu/{protocol_id}/{id}",
+                get(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_oauth_authorization_server),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{credential_schema_id}/offer/{credential_id}",
-                get(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_get_credential_offer),
+                "/ssi/openid4vci/final-1.0-swiyu/{protocol_id}/{id}/.well-known/oauth-authorization-server",
+                get(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_oauth_authorization_server_legacy),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{id}/token",
-                post(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_create_token),
+                "/ssi/openid4vci/final-1.0-swiyu/{credential_schema_id}/offer/{credential_id}",
+                get(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_get_credential_offer),
             )
             .route(
-                "/ssi/openid4vci/draft-13-swiyu/{id}/credential",
-                post(ssi::issuance::draft13_swiyu::controller::oid4vci_draft13_swiyu_create_credential),
+                "/ssi/openid4vci/final-1.0-swiyu/{id}/token",
+                post(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_create_token),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0-swiyu/{id}/credential",
+                post(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_create_credential),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0-swiyu/{protocol_id}/nonce",
+                post(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_swiyu_nonce),
+            )
+            .route(
+                "/ssi/openid4vci/final-1.0-swiyu/{id}/notification",
+                post(ssi::issuance::final1_0_swiyu::controller::oid4vci_final1_0_credential_notification),
             )
             .route(
                 "/ssi/openid4vp/draft-20/response",
@@ -695,6 +748,10 @@ fn get_external_endpoints(
                 get(ssi::controller::ssi_get_certificate_authority),
             )
             .route(
+                "/ssi/verifier-provider/v1/{verifierProvider}",
+                get(ssi::verifier_provider::controller::get_verification_provider)
+            )
+            .route(
                 "/ssi/wallet-unit/v1",
                 post(ssi::wallet_provider::controller::register_wallet_unit)
             )
@@ -709,6 +766,10 @@ fn get_external_endpoints(
             .route(
                 "/ssi/wallet-provider/v1/{walletProvider}",
                 get(ssi::wallet_provider::controller::get_wallet_provider_metadata),
+            )
+            .route(
+                "/ssi/trust-list/v1/{id}",
+                get(ssi::controller::ssi_get_trust_list_publication),
             )
     } else {
         if let Some(paths) = openapi_paths {

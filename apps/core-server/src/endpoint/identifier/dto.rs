@@ -6,6 +6,9 @@ use one_core::service::error::ServiceError;
 use one_core::service::identifier::dto::{
     CreateCertificateAuthorityRequestDTO, CreateIdentifierDidRequestDTO,
     CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO,
+    CreateSelfSignedCertificateAuthorityContentRequestDTO,
+    CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
+    CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
     GetIdentifierListResponseDTO, GetIdentifierResponseDTO,
 };
@@ -119,19 +122,36 @@ pub(crate) struct CreateCertificateAuthorityRequestRestDTO {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[into(CreateSelfSignedCertificateAuthorityRequestDTO)]
 pub(crate) struct CreateSelfSignedCertificateAuthorityRequestRestDTO {
-    pub content: CreateCaCSRRequestRestDTO,
+    /// Certificate content for the self-signed CA, including subject
+    /// information and an optional issuer alternative name, required for
+    /// mdoc CAs.
+    pub content: CreateSelfSignedCaRequestContentRestDTO,
+    /// Signer instance to use for CA certificate signing. Must reference
+    /// an `X509_CERTIFICATE` signer configured in the signing configuration.
+    /// For mdoc CAs, ensure the referenced instance is configured with
+    /// `pathLenConstraint: 0` and `keyIdDerivation: "sha-1"`.
     #[modify_schema(field = signer)]
     pub signer: String,
+    /// Start of the CA certificate validity period (RFC 3339). If omitted,
+    /// defaults to time of issuance.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub validity_start: Option<OffsetDateTime>,
+    /// End of the CA certificate validity period (RFC 3339). Must not
+    /// exceed the `maxValidityDuration` set in the referenced signer
+    /// configuration.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub validity_end: Option<OffsetDateTime>,
 }
 
-#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CreateCaCSRRequestRestDTO {
+#[into(CreateSelfSignedCertificateAuthorityContentRequestDTO)]
+pub(crate) struct CreateSelfSignedCaRequestContentRestDTO {
     pub subject: KeyGenerateCSRRequestSubjectRestDTO,
+    /// If you are creating an mdoc CA, provide an alternative name.
+    #[into(with_fn = convert_inner)]
+    pub issuer_alternative_name: Option<CreateSelfSignedCaRequestIssuerAlternativeNameRestDTO>,
 }
 
 #[options_not_nullable]
@@ -344,4 +364,21 @@ pub(crate) struct ResolvedIdentifierTrustEntityResponseRestDTO {
     pub trust_entity: GetTrustEntityResponseRestDTO,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub certificate_ids: Vec<CertificateId>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Deserialize, ToSchema, Into)]
+#[into(CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSelfSignedCaRequestIssuerAlternativeNameRestDTO {
+    pub r#type: CreateSelfSignedCaRequestIssuerAlternativeNameTypeRest,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[into(CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CreateSelfSignedCaRequestIssuerAlternativeNameTypeRest {
+    Email,
+    Uri,
 }

@@ -1,7 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use proc_macros::require_permissions;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
+use proc_macros::endpoint;
 use shared_types::{Permission, ProofSchemaId};
 
 use super::dto::{
@@ -15,7 +17,8 @@ use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErr
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaCreate],
     post,
     path = "/api/proof-schema/v1",
     request_body = CreateProofSchemaRequestRestDTO,
@@ -31,7 +34,6 @@ use crate::router::AppState;
         Related guide: [Proof schemas](/proof-schemas)
     "},
 )]
-#[require_permissions(Permission::ProofSchemaCreate)]
 pub(crate) async fn post_proof_schema(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -40,17 +42,21 @@ pub(crate) async fn post_proof_schema(
     >,
 ) -> CreatedOrErrorResponse<EntityResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .proof_schema_service
-            .create_proof_schema(request.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .proof_schema_service
+                .create_proof_schema(request.try_into()?)
+                .await
+                .error_while("creating proof schema")?,
+        )
     }
     .await;
     CreatedOrErrorResponse::from_result(result, state, "creating proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaList],
     get,
     path = "/api/proof-schema/v1",
     responses(OkOrErrorResponse<GetProofSchemaListResponseRestDTO>),
@@ -62,24 +68,27 @@ pub(crate) async fn post_proof_schema(
     summary = "Retrieve proof schemas",
     description = "Returns a list of proof schemas.",
 )]
-#[require_permissions(Permission::ProofSchemaList)]
 pub(crate) async fn get_proof_schemas(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetProofSchemaQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetProofSchemaListResponseRestDTO> {
     let result = async {
         let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
-        state
-            .core
-            .proof_schema_service
-            .get_proof_schema_list(&organisation_id, query.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .proof_schema_service
+                .get_proof_schema_list(&organisation_id, query.try_into()?)
+                .await
+                .error_while("getting proof schema list")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "getting proof schemas")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaDetail],
     get,
     path = "/api/proof-schema/v1/{id}",
     responses(OkOrErrorResponse<GetProofSchemaResponseRestDTO>),
@@ -93,7 +102,6 @@ pub(crate) async fn get_proof_schemas(
     summary = "Retrieve proof schema",
     description = "Returns detailed information about a proof schema.",
 )]
-#[require_permissions(Permission::ProofSchemaDetail)]
 pub(crate) async fn get_proof_schema_detail(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<ProofSchemaId>, ErrorResponseRestDTO>,
@@ -102,7 +110,8 @@ pub(crate) async fn get_proof_schema_detail(
     OkOrErrorResponse::from_result(result, state, "getting proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaDelete],
     delete,
     path = "/api/proof-schema/v1/{id}",
     responses(EmptyOrErrorResponse),
@@ -116,7 +125,6 @@ pub(crate) async fn get_proof_schema_detail(
     summary = "Delete a proof schema",
     description = "Deletes a proof schema.",
 )]
-#[require_permissions(Permission::ProofSchemaDelete)]
 pub(crate) async fn delete_proof_schema(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<ProofSchemaId>, ErrorResponseRestDTO>,
@@ -129,7 +137,8 @@ pub(crate) async fn delete_proof_schema(
     EmptyOrErrorResponse::from_result(result, state, "deleting proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaShare],
     post,
     path = "/api/proof-schema/v1/{id}/share",
     responses(CreatedOrErrorResponse<ProofSchemaShareResponseRestDTO>),
@@ -143,7 +152,6 @@ pub(crate) async fn delete_proof_schema(
     summary = "Share proof schema",
     description = "Generates a url to share a proof schema with a mobile verifier.",
 )]
-#[require_permissions(Permission::ProofSchemaShare)]
 pub(crate) async fn share_proof_schema(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<ProofSchemaId>, ErrorResponseRestDTO>,
@@ -152,7 +160,8 @@ pub(crate) async fn share_proof_schema(
     CreatedOrErrorResponse::from_result(result, state, "sharing proof schema")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::ProofSchemaCreate],
     post,
     path = "/api/proof-schema/v1/import",
     request_body = ImportProofSchemaRequestRestDTO,
@@ -168,7 +177,6 @@ pub(crate) async fn share_proof_schema(
         the uuid of the mobile verifier's organization, to import the proof schema.
     "},
 )]
-#[require_permissions(Permission::ProofSchemaCreate)]
 pub(crate) async fn import_proof_schema(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<

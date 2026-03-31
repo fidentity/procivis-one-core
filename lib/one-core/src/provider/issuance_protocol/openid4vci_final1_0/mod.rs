@@ -9,6 +9,7 @@ use one_crypto::encryption::{decrypt_string, encrypt_string};
 use one_crypto::utilities::generate_alphanumeric;
 use one_dto_mapper::convert_inner;
 use secrecy::{ExposeSecret, SecretString};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared_types::{
     BlobId, CredentialFormat, CredentialId, DidValue, HolderWalletUnitId, InteractionId,
@@ -169,6 +170,55 @@ impl OpenID4VCIFinal1_0 {
         certificate_validator: Arc<dyn CertificateValidator>,
     ) -> Self {
         let protocol_base_url = base_url.as_ref().map(|url| get_protocol_base_url(url));
+        Self {
+            client,
+            metadata_cache,
+            credential_repository,
+            key_repository,
+            identifier_creator,
+            credential_schema_importer,
+            validity_credential_repository,
+            formatter_provider,
+            revocation_provider,
+            did_method_provider,
+            key_algorithm_provider,
+            key_provider,
+            base_url,
+            protocol_base_url,
+            config,
+            params,
+            blob_storage_provider,
+            config_id,
+            holder_wallet_unit_proto,
+            key_security_level_provider,
+            certificate_validator,
+        }
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub fn new_with_custom_protocol_base_url(
+        protocol_base_url: Option<String>,
+        client: Arc<dyn HttpClient>,
+        metadata_cache: Arc<dyn OpenIDMetadataFetcher>,
+        credential_repository: Arc<dyn CredentialRepository>,
+        key_repository: Arc<dyn KeyRepository>,
+        identifier_creator: Arc<dyn IdentifierCreator>,
+        credential_schema_importer: Arc<dyn CredentialSchemaImporter>,
+        validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+        formatter_provider: Arc<dyn CredentialFormatterProvider>,
+        revocation_provider: Arc<dyn RevocationMethodProvider>,
+        did_method_provider: Arc<dyn DidMethodProvider>,
+        key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+        key_provider: Arc<dyn KeyProvider>,
+        key_security_level_provider: Arc<dyn KeySecurityLevelProvider>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
+        base_url: Option<String>,
+        config: Arc<CoreConfig>,
+        params: OpenID4VCIFinal1Params,
+        config_id: String,
+        holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
+        certificate_validator: Arc<dyn CertificateValidator>,
+    ) -> Self {
         Self {
             client,
             metadata_cache,
@@ -521,22 +571,16 @@ impl OpenID4VCIFinal1_0 {
         // DEVIATION: RFC8414 specifies `client_secret_basic` as the default when
         // token_endpoint_auth_methods_supported is absent, but some issuers (e.g. swiyu) don't publish this field.
         // Treating empty/missing as `none` to avoid interop issues
+        let default_auth_methods = [TokenEndpointAuthMethod::None];
         let token_endpoint_auth_methods = interaction_data
             .token_endpoint_auth_methods_supported
             .as_deref()
-            .unwrap_or(&[TokenEndpointAuthMethod::None]);
+            .unwrap_or(&default_auth_methods);
 
         let wallet_attestation_supported =
             token_endpoint_auth_methods.contains(&TokenEndpointAuthMethod::AttestJwtClientAuth);
 
-        // See https://gitlab.procivis.ch/procivis/one/one-core/-/merge_requests/2585#note_86705
-        // Some issuers advertise "public", which is not documented / defined by any specification
-        // We treat it as the rfc7591 defined "none"
-        let has_public_auth = token_endpoint_auth_methods.contains(&TokenEndpointAuthMethod::None)
-            || token_endpoint_auth_methods
-                .contains(&TokenEndpointAuthMethod::Other("public".to_string()));
-
-        let wallet_attestation_required = wallet_attestation_supported && !has_public_auth;
+        let wallet_attestation_required = requires_wia(token_endpoint_auth_methods);
         let wallet_unit_provided = holder_wallet_unit_id.is_some();
 
         if wallet_attestation_required && !wallet_unit_provided {
@@ -1700,7 +1744,8 @@ async fn handle_credential_invitation(
     }
 
     let tx_code = credential_offer.grants.tx_code().cloned();
-    let requires_wallet_instance_attestation = requires_wia(&oauth_metadata);
+    let requires_wallet_instance_attestation =
+        requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
 
     let PrepareIssuanceSuccess {
         interaction_id,
@@ -1729,10 +1774,17 @@ async fn handle_credential_invitation(
     })
 }
 
-fn requires_wia(oauth_metadata: &OAuthAuthorizationServerMetadataResponseDTO) -> bool {
-    let auth_methods = &oauth_metadata.token_endpoint_auth_methods_supported;
-    !auth_methods.contains(&TokenEndpointAuthMethod::None)
-        && auth_methods.contains(&TokenEndpointAuthMethod::AttestJwtClientAuth)
+fn requires_wia(token_endpoint_auth_methods: &[TokenEndpointAuthMethod]) -> bool {
+    // See https://gitlab.procivis.ch/procivis/one/one-core/-/merge_requests/2585#note_86705
+    // Some issuers advertise "public", which is not documented / defined by any specification
+    // We treat it as the rfc7591 defined "none"
+    let public_auth_supported = token_endpoint_auth_methods
+        .contains(&TokenEndpointAuthMethod::None)
+        || token_endpoint_auth_methods
+            .contains(&TokenEndpointAuthMethod::Other("public".to_string()));
+
+    token_endpoint_auth_methods.contains(&TokenEndpointAuthMethod::AttestJwtClientAuth)
+        && !public_auth_supported
 }
 
 async fn handle_continue_issuance(
@@ -1780,7 +1832,8 @@ async fn handle_continue_issuance(
     ]
     .concat();
 
-    let requires_wallet_instance_attestation = requires_wia(&oauth_metadata);
+    let requires_wallet_instance_attestation =
+        requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
 
     let PrepareIssuanceSuccess {
         interaction_id,
@@ -1947,19 +2000,6 @@ async fn resolve_credential_offer(
     }
 }
 
-fn prepend_well_known_path(credential_issuer: &Url, well_known_path_segment: &str) -> String {
-    let origin = {
-        let mut url = credential_issuer.clone();
-        url.set_path("");
-        url.to_string()
-    };
-    let path = match credential_issuer.path() {
-        "/" => "", // do not append trailing slash for empty path
-        path => path,
-    };
-    format!("{origin}.well-known/{well_known_path_segment}{path}")
-}
-
 struct Metadata {
     token_endpoint: String,
     issuer_metadata: OpenID4VCIIssuerMetadataResponseDTO,
@@ -1977,13 +2017,13 @@ async fn get_issuer_and_authorization_metadata(
         ))
     })?;
 
-    let issuer_metadata_endpoint =
-        prepend_well_known_path(&credential_issuer_endpoint, "openid-credential-issuer");
-
-    let issuer_metadata: OpenID4VCIIssuerMetadataResponseDTO = fetcher
-        .fetch(&issuer_metadata_endpoint)
-        .await
-        .error_while("fetching issuer metadata")?;
+    let issuer_metadata: OpenID4VCIIssuerMetadataResponseDTO = fetch_metadata_with_fallback(
+        fetcher,
+        &credential_issuer_endpoint,
+        "openid-credential-issuer",
+    )
+    .await
+    .error_while("fetching issuer metadata")?;
 
     let authorization_server = if let Some(authorization_server) = authorization_server {
         if issuer_metadata
@@ -2018,14 +2058,13 @@ async fn get_issuer_and_authorization_metadata(
             "Invalid authorization_server url {authorization_server}",
         ))
     })?;
-
-    let authorization_server_metadata_endpoint =
-        prepend_well_known_path(&authorization_server_endpoint, "oauth-authorization-server");
-
-    let oauth_metadata_response: OAuthAuthorizationServerMetadata = fetcher
-        .fetch(&authorization_server_metadata_endpoint)
-        .await
-        .error_while("fetching authorization server metadata")?;
+    let oauth_metadata_response: OAuthAuthorizationServerMetadata = fetch_metadata_with_fallback(
+        fetcher,
+        &authorization_server_endpoint,
+        "oauth-authorization-server",
+    )
+    .await
+    .error_while("fetching authorization server metadata")?;
 
     let token_endpoint = oauth_metadata_response
         .token_endpoint
@@ -2040,6 +2079,58 @@ async fn get_issuer_and_authorization_metadata(
         issuer_metadata,
         oauth_metadata: oauth_metadata_response.into(),
     })
+}
+
+async fn fetch_metadata_with_fallback<T: DeserializeOwned>(
+    fetcher: &dyn OpenIDMetadataFetcher,
+    issuer_url: &Url,
+    well_known_path: &str,
+) -> Result<T, IssuanceProtocolError> {
+    let issuer_metadata_endpoint = prepend_well_known_path(issuer_url, well_known_path);
+    Ok(match fetcher.fetch(&issuer_metadata_endpoint).await {
+        Ok(response) => response,
+        Err(err) => {
+            if err.error_code() == ErrorCode::BR_0347 {
+                let fallback_metadata_endpoint = append_well_known(issuer_url, well_known_path)?;
+                tracing::warn!(
+                    "Failed to fetch from `{issuer_metadata_endpoint}`, falling back to legacy endpoint `{fallback_metadata_endpoint}`: {err}"
+                );
+                fetcher
+                    .fetch(&fallback_metadata_endpoint)
+                    .await
+                    .error_while("fetching metadata from fallback URL")?
+            } else {
+                Err(err).error_while("fetching metadata")?
+            }
+        }
+    })
+}
+
+fn prepend_well_known_path(credential_issuer: &Url, well_known_path_segment: &str) -> String {
+    let origin = {
+        let mut url = credential_issuer.clone();
+        url.set_path("");
+        url.to_string()
+    };
+    let path = match credential_issuer.path() {
+        "/" => "", // do not append trailing slash for empty path
+        path => path,
+    };
+    format!("{origin}.well-known/{well_known_path_segment}{path}")
+}
+
+fn append_well_known(credential_issuer: &Url, path: &str) -> Result<String, IssuanceProtocolError> {
+    let mut url = credential_issuer.to_owned();
+    url.path_segments_mut()
+        .map_err(move |_| {
+            IssuanceProtocolError::Failed(format!(
+                "Invalid credential_issuer URL: {credential_issuer}",
+            ))
+        })?
+        .push(".well-known")
+        .extend(path.split("/"));
+
+    Ok(url.to_string())
 }
 
 async fn create_and_store_interaction(

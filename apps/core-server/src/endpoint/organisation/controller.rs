@@ -1,8 +1,10 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
 use one_dto_mapper::convert_inner;
-use proc_macros::require_permissions;
+use proc_macros::endpoint;
 use shared_types::{OrganisationId, Permission};
 
 use super::dto::{
@@ -16,7 +18,8 @@ use crate::endpoint::organisation::mapper::upsert_request_from_request;
 use crate::extractor::Qs;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationDetail],
     get,
     path = "/api/organisation/v1/{id}",
     responses(OkOrErrorResponse<GetOrganisationDetailsResponseRestDTO>),
@@ -30,7 +33,6 @@ use crate::router::AppState;
     summary = "Retrieve organization",
     description = "Returns information about an organization.",
 )]
-#[require_permissions(Permission::StsOrganisationDetail)]
 pub(crate) async fn get_organisation(
     state: State<AppState>,
     Path(id): Path<OrganisationId>,
@@ -39,7 +41,8 @@ pub(crate) async fn get_organisation(
     OkOrErrorResponse::from_result(result, state, "getting organization details")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationList],
     get,
     path = "/api/organisation/v1",
     responses(OkOrErrorResponse<GetOrganisationListResponseRestDTO>),
@@ -51,17 +54,19 @@ pub(crate) async fn get_organisation(
     summary = "List organizations",
     description = "Returns a list of organizations in the system.",
 )]
-#[require_permissions(Permission::StsOrganisationList)]
 pub(crate) async fn get_organisations(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetOrganisationsQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetOrganisationListResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .organisation_service
-            .get_organisation_list(query.try_into()?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .organisation_service
+                .get_organisation_list(query.try_into()?)
+                .await
+                .error_while("getting organisation list")?,
+        )
     }
     .await;
 
@@ -78,7 +83,8 @@ pub(crate) async fn get_organisations(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationCreate],
     post,
     path = "/api/organisation/v1",
     request_body(
@@ -99,7 +105,6 @@ pub(crate) async fn get_organisations(
         supports the creation of as many organizations as is needed.
     "},
 )]
-#[require_permissions(Permission::StsOrganisationCreate)]
 pub(crate) async fn post_organisation(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -115,7 +120,8 @@ pub(crate) async fn post_organisation(
     CreatedOrErrorResponse::from_result(result, state, "creating organization")
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [Permission::StsOrganisationEdit],
     patch,
     path = "/api/organisation/v1/{id}",
     params(
@@ -133,7 +139,6 @@ pub(crate) async fn post_organisation(
         a new organization using the provided UUID and name.
     "},
 )]
-#[require_permissions(Permission::StsOrganisationEdit)]
 pub(crate) async fn patch_organisation(
     state: State<AppState>,
     Path(id): Path<OrganisationId>,

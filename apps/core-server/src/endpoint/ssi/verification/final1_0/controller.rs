@@ -5,7 +5,8 @@ use axum::{Form, Json};
 use axum_extra::extract::WithRejection;
 use one_core::error::{ErrorCode, ErrorCodeMixin};
 use one_core::provider::verification_protocol::openid4vp::error::OpenID4VCError;
-use one_core::service::error::{BusinessLogicError, ServiceError};
+use one_core::service::oid4vp_final1_0::error::OID4VPFinal1_0ServiceError;
+use proc_macros::endpoint;
 use shared_types::ProofId;
 use standardized_types::openid4vp::ClientMetadata;
 
@@ -14,7 +15,8 @@ use super::super::dto::{OpenID4VPDirectPostRequestRestDTO, OpenID4VPDirectPostRe
 use crate::dto::error::ErrorResponseRestDTO;
 use crate::router::AppState;
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     post,
     path = "/ssi/openid4vp/final-1.0/response",
     request_body(content = OpenID4VPDirectPostRequestRestDTO, description = "Verifier request", content_type = "application/x-www-form-urlencoded"
@@ -51,8 +53,8 @@ pub(crate) async fn oid4vp_final1_0_direct_post(
             Json(OpenID4VPDirectPostResponseRestDTO::from(value)),
         )
             .into_response(),
-        Err(ServiceError::OpenID4VCError(OpenID4VCError::ValidationError(error))) => {
-            tracing::error!("OpenID4VC validation error: {:?}", error);
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0323) => {
+            tracing::error!("Validation error: {:?}", error);
             (
                 StatusCode::BAD_REQUEST,
                 Json(OpenID4VCIErrorResponseRestDTO {
@@ -61,7 +63,7 @@ pub(crate) async fn oid4vp_final1_0_direct_post(
             )
                 .into_response()
         }
-        Err(ServiceError::OpenID4VCError(OpenID4VCError::InvalidRequest)) => {
+        Err(OID4VPFinal1_0ServiceError::OpenID4VCError(OpenID4VCError::InvalidRequest)) => {
             tracing::error!("OpenID4VC invalid request");
             (
                 StatusCode::BAD_REQUEST,
@@ -75,7 +77,7 @@ pub(crate) async fn oid4vp_final1_0_direct_post(
             tracing::error!("Config validation error: {error}");
             StatusCode::NOT_FOUND.into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::CredentialIsRevokedOrSuspended)) => {
+        Err(error) if error.error_code() == ErrorCode::BR_0099 => {
             tracing::error!("Credential is revoked or suspended");
             (
                 StatusCode::BAD_REQUEST,
@@ -83,7 +85,7 @@ pub(crate) async fn oid4vp_final1_0_direct_post(
             )
                 .into_response()
         }
-        Err(ServiceError::BusinessLogic(BusinessLogicError::MissingProofForInteraction(_))) => {
+        Err(OID4VPFinal1_0ServiceError::MissingProofForInteraction(_)) => {
             tracing::error!("Missing interaction or proof");
             (StatusCode::BAD_REQUEST, "Missing interaction of proof").into_response()
         }
@@ -94,7 +96,8 @@ pub(crate) async fn oid4vp_final1_0_direct_post(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/openid4vp/final-1.0/{id}/client-metadata",
     params(
@@ -125,17 +128,7 @@ pub(crate) async fn oid4vp_final1_0_client_metadata(
 
     match result {
         Ok(value) => (StatusCode::OK, Json(value)).into_response(),
-        Err(error) if error.error_code() == ErrorCode::BR_0089 => {
-            tracing::error!("Config validation error: {error}");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(OpenID4VCIErrorResponseRestDTO {
-                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
-                }),
-            )
-                .into_response()
-        }
-        Err(error @ ServiceError::BusinessLogic(BusinessLogicError::InvalidProofState { .. })) => {
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0089) => {
             tracing::error!("BAD_REQUEST validation error: {error}");
             (
                 StatusCode::BAD_REQUEST,
@@ -145,7 +138,7 @@ pub(crate) async fn oid4vp_final1_0_client_metadata(
             )
                 .into_response()
         }
-        Err(ServiceError::EntityNotFound(_)) => StatusCode::NOT_FOUND.into_response(),
+        Err(OID4VPFinal1_0ServiceError::MissingProof(_)) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!("Error: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -153,7 +146,8 @@ pub(crate) async fn oid4vp_final1_0_client_metadata(
     }
 }
 
-#[utoipa::path(
+#[endpoint(
+    permissions = [],
     get,
     path = "/ssi/openid4vp/final-1.0/{id}/client-request",
     params(
@@ -189,8 +183,8 @@ pub(crate) async fn oid4vp_final1_0_client_request(
             jwt,
         )
             .into_response(),
-        Err(error) if error.error_code() == ErrorCode::BR_0089 => {
-            tracing::error!("Config validation error: {error}");
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0013 | ErrorCode::BR_0089) => {
+            tracing::warn!("BAD_REQUEST validation error: {error}");
             (
                 StatusCode::BAD_REQUEST,
                 Json(OpenID4VCIErrorResponseRestDTO {
@@ -199,17 +193,7 @@ pub(crate) async fn oid4vp_final1_0_client_request(
             )
                 .into_response()
         }
-        Err(error @ ServiceError::BusinessLogic(BusinessLogicError::InvalidProofState { .. })) => {
-            tracing::error!("BAD_REQUEST validation error: {error}");
-            (
-                StatusCode::BAD_REQUEST,
-                Json(OpenID4VCIErrorResponseRestDTO {
-                    error: OpenID4VCIErrorRestEnum::InvalidRequest,
-                }),
-            )
-                .into_response()
-        }
-        Err(ServiceError::EntityNotFound(_)) => StatusCode::NOT_FOUND.into_response(),
+        Err(OID4VPFinal1_0ServiceError::MissingProof(_)) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             tracing::error!("Error: {:?}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

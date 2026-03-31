@@ -1,7 +1,7 @@
 use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
 use time::OffsetDateTime;
 
-use crate::model::certificate::CertificateState;
+use crate::model::certificate::{CertificateRole, CertificateState};
 use crate::service::key::dto::{
     KeyGenerateCSRRequestProfile, KeyGenerateCSRRequestSubjectDTO, KeyListItemResponseDTO,
 };
@@ -12,6 +12,7 @@ pub struct CreateCertificateRequestDTO {
     pub chain: Option<String>,
     pub key_id: KeyId,
     pub content: Option<CreateCertificateContentDTO>,
+    pub roles: Vec<CertificateRole>,
 }
 
 #[derive(Clone, Debug)]
@@ -60,4 +61,5 @@ pub struct CertificateResponseDTO {
     pub key: Option<KeyListItemResponseDTO>,
     pub x509_attributes: CertificateX509AttributesDTO,
     pub organisation_id: Option<OrganisationId>,
+    pub roles: Vec<CertificateRole>,
 }

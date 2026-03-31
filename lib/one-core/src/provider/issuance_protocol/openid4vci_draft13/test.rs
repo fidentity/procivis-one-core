@@ -202,6 +202,7 @@ fn generic_credential_certificate() -> Credential {
             chain: "<dummy test cert chain>".to_string(),
             fingerprint: "123456".to_string(),
             state: CertificateState::Active,
+            roles: vec![],
             key: None,
         }]),
         trust_information: None,

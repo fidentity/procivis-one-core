@@ -33,6 +33,7 @@ pub(crate) async fn format_mdoc_credential(
         chain,
         fingerprint: "".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     });
 

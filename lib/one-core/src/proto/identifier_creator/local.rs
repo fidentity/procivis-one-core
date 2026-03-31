@@ -350,6 +350,9 @@ impl IdentifierCreatorProto {
         organisation_id: OrganisationId,
         request: CreateCertificateRequestDTO,
     ) -> Result<Certificate, Error> {
+        if request.roles.is_empty() {
+            return Err(Error::EmptyCertificateRoles);
+        }
         let key = self
             .key_repository
             .get_key(
@@ -496,6 +499,7 @@ impl IdentifierCreatorProto {
             chain,
             fingerprint: attributes.fingerprint,
             state: CertificateState::Active,
+            roles: request.roles,
             key: Some(key),
         })
     }
@@ -594,6 +598,7 @@ impl IdentifierCreatorProto {
             chain,
             fingerprint: attributes.fingerprint,
             state: CertificateState::Active,
+            roles: vec![],
             key: Some(key),
         })
     }

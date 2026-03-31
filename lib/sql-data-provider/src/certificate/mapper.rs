@@ -1,7 +1,11 @@
+use std::str::FromStr;
+
+use itertools::Itertools;
 use one_core::model::certificate::{
-    Certificate, CertificateFilterValue, SortableCertificateColumn,
+    Certificate, CertificateFilterValue, CertificateRole, SortableCertificateColumn,
 };
 use one_core::model::list_filter::ListFilterCondition;
+use one_core::repository::error::DataLayerError;
 use sea_orm::sea_query::{IntoCondition, SimpleExpr};
 use sea_orm::{ColumnTrait, IntoSimpleExpr, Set};
 
@@ -15,6 +19,11 @@ impl From<Certificate> for ActiveModel {
     fn from(certificate: Certificate) -> Self {
         let key_id = certificate.key.map(|key| key.id);
 
+        let roles = if !certificate.roles.is_empty() {
+            Some(certificate.roles.iter().join(","))
+        } else {
+            None
+        };
         Self {
             id: Set(certificate.id),
             identifier_id: Set(certificate.identifier_id),
@@ -27,13 +36,24 @@ impl From<Certificate> for ActiveModel {
             state: Set(certificate.state.into()),
             key_id: Set(key_id),
             organisation_id: Set(certificate.organisation_id),
+            roles: Set(roles),
         }
     }
 }
 
-impl From<certificate::Model> for Certificate {
-    fn from(value: certificate::Model) -> Self {
-        Self {
+impl TryFrom<certificate::Model> for Certificate {
+    type Error = DataLayerError;
+    fn try_from(value: certificate::Model) -> Result<Self, Self::Error> {
+        let roles = if let Some(value) = value.roles {
+            value
+                .split(",")
+                .map(CertificateRole::from_str)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| DataLayerError::MappingError)?
+        } else {
+            vec![]
+        };
+        Ok(Self {
             id: value.id,
             identifier_id: value.identifier_id,
             organisation_id: value.organisation_id,
@@ -44,8 +64,9 @@ impl From<certificate::Model> for Certificate {
             chain: value.chain,
             fingerprint: value.fingerprint,
             state: value.state.into(),
+            roles,
             key: None,
-        }
+        })
     }
 }
 

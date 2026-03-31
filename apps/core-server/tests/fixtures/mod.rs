@@ -524,6 +524,7 @@ pub async fn create_cert_identifier(
         chain: format!("{}{}", cert.pem(), ca_cert.pem()),
         fingerprint: "ffffaaaa22".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: Some(key.clone()),
     };
     let identifier = context

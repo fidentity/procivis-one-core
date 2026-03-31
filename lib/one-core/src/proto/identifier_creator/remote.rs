@@ -200,6 +200,7 @@ impl IdentifierCreatorProto {
             chain,
             fingerprint,
             state: CertificateState::Active,
+            roles: vec![],
             key: None,
         };
         self.certificate_repository

@@ -188,6 +188,7 @@ qzmSNPsC3TZzs4uCBIsS3LKDZHCktmj3La1PCGSS
             key.id,
             organisation.id,
             CERTIFICATE_CHAIN_PEM,
+            &["ASSERTION_METHOD"],
         )
         .await;
 
@@ -279,6 +280,7 @@ qzmSNPsC3TZzs4uCBIsS3LKDZHCktmj3La1PCGSS
             key.id,
             organisation.id,
             CERTIFICATE_CHAIN_PEM,
+            &["ASSERTION_METHOD"],
         )
         .await;
 

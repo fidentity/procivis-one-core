@@ -163,6 +163,7 @@ async fn test_get_or_create_remote_identifier_certificate_existing() {
         chain: "chain".to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     };
     certificate_repository.expect_list().once().return_once({

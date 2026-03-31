@@ -226,6 +226,7 @@ async fn create_dummy_certificate_identifier(
         chain: "".to_string(),
         fingerprint: Uuid::new_v4().to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: Some(key.clone()),
     };
 

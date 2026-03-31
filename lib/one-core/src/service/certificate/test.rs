@@ -28,6 +28,7 @@ async fn test_get_cert_fail_session_org_mismatch() {
             chain: "".to_string(),
             fingerprint: "".to_string(),
             state: CertificateState::NotYetActive,
+            roles: vec![],
             key: None,
         }))
     });
@@ -58,6 +59,7 @@ async fn test_get_certificate_authority_invalid_identifier() {
             chain: "".to_string(),
             fingerprint: "".to_string(),
             state: CertificateState::Active,
+            roles: vec![],
             key: None,
         }))
     });

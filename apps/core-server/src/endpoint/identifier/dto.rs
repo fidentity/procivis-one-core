@@ -39,7 +39,7 @@ use validator::Validate;
 use crate::deserialize::deserialize_timestamp;
 use crate::dto::common::{Boolean, ListQueryParamsRest};
 use crate::dto::mapper::fallback_organisation_id_from_session;
-use crate::endpoint::certificate::dto::CertificateResponseRestDTO;
+use crate::endpoint::certificate::dto::{CertificateResponseRestDTO, CertificateRoleRestEnum};
 use crate::endpoint::did::dto::{CreateDidRequestKeysRestDTO, DidResponseRestDTO, KeyRoleRestEnum};
 use crate::endpoint::key::dto::{
     KeyGenerateCSRRequestProfileRest, KeyGenerateCSRRequestSubjectRestDTO, KeyResponseRestDTO,
@@ -118,6 +118,8 @@ pub(crate) struct CreateCertificateRequestRestDTO {
     /// and an existing CA to sign it. Use instead of `chain`.
     #[into(with_fn = convert_inner)]
     pub content: Option<CreateCertificateContentRestDTO>,
+    #[into(with_fn = convert_inner)]
+    pub roles: Vec<CertificateRoleRestEnum>,
 }
 
 #[options_not_nullable]

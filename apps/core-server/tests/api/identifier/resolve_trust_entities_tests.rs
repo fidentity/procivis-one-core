@@ -342,6 +342,7 @@ async fn prepare_certificate_identifier(
         chain: format!("{}{}", cert.pem(), ca_cert.pem()),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: Some(key.clone()),
     };
 

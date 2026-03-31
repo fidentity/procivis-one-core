@@ -18,6 +18,7 @@ async fn test_db_schema_certificate() {
             "key_id",
             "fingerprint",
             "organisation_id",
+            "roles",
         ])
         .index(
             "index-Certificate-Fingerprint-OrganisationId-Unique",
@@ -81,6 +82,10 @@ async fn test_db_schema_certificate() {
         .r#type(ColumnType::String(None))
         .nullable(false)
         .default(None);
+    certificate
+        .column("roles")
+        .r#type(ColumnType::String(None))
+        .nullable(true);
     certificate
         .column("organisation_id")
         .r#type(ColumnType::Uuid)

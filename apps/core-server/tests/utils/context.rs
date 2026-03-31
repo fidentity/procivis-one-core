@@ -192,6 +192,7 @@ impl TestContext {
             chain: format!("{}{}", cert.pem(), ca_cert.pem()),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
+            roles: vec![],
             key: Some(key.clone()),
         };
 
@@ -241,6 +242,7 @@ impl TestContext {
             chain: ca_cert.pem(),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
+            roles: vec![],
             key: Some(key.clone()),
         };
 

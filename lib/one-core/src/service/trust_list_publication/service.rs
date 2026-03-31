@@ -497,6 +497,7 @@ mod tests {
                 chain: "".to_string(),
                 fingerprint: "".to_string(),
                 state: CertificateState::Active,
+                roles: vec![],
                 key: Some(Key {
                     id: Uuid::new_v4().into(),
                     created_date: now,
@@ -994,7 +995,7 @@ mod tests {
         let now = crate::clock::now_utc();
         let key = create_test_key(key_type);
         let identifier_id = Uuid::new_v4().into();
-        let certificate = crate::model::certificate::Certificate {
+        let certificate = Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
             organisation_id: None,
@@ -1006,6 +1007,7 @@ mod tests {
             fingerprint: "".to_string(),
             key: Some(key),
             state: CertificateState::Active,
+            roles: vec![],
         };
 
         Identifier {

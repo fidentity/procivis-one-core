@@ -23,6 +23,7 @@ impl TryFrom<Certificate> for CertificateResponseDTO {
             key: convert_inner(certificate.key),
             x509_attributes,
             organisation_id: certificate.organisation_id,
+            roles: certificate.roles,
         })
     }
 }

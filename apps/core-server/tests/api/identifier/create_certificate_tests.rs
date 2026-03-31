@@ -397,10 +397,48 @@ async fn test_create_certificate_identifier_no_crl() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
+}
+
+#[tokio::test]
+async fn test_create_certificate_identifier_empty_role() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let mut ca_params = CertificateParams::default();
+    let (ca_cert, ca_issuer) = create_ca_cert(&mut ca_params, &eddsa::Key);
+
+    let cert = create_cert(
+        &mut CertificateParams::default(),
+        ecdsa::Key,
+        &ca_issuer,
+        &ca_params,
+    );
+
+    let chain = format!("{}{}", cert.pem(), ca_cert.pem());
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain, &[])
+        .await;
+
+    assert_eq!(result.status(), 400);
+    assert_eq!(result.error_code().await, "BR_0409");
 }
 
 #[tokio::test]
@@ -430,7 +468,13 @@ async fn test_create_certificate_identifier_crl_not_available() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     // http client error
@@ -478,7 +522,13 @@ async fn test_create_certificate_identifier_with_crl() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
@@ -571,7 +621,13 @@ async fn test_create_certificate_identifier_with_crl_revoked() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -603,7 +659,13 @@ async fn test_create_certificate_identifier_cert_already_exists() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
@@ -611,7 +673,13 @@ async fn test_create_certificate_identifier_cert_already_exists() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier2", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier2",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -647,6 +715,7 @@ async fn test_create_certificate_identifier_conflicting_certs() {
             "test-identifier",
             organisation.id,
             &[(key.id, &chain), (key.id, &chain)],
+            &["ASSERTION_METHOD"],
         )
         .await;
 
@@ -679,7 +748,13 @@ async fn test_create_certificate_identifier_unknown_critical_extension() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -711,7 +786,13 @@ async fn test_create_certificate_identifier_ca_incorrect_key_usage() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -743,7 +824,13 @@ async fn test_create_certificate_identifier_missing_digital_signature() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -794,6 +881,7 @@ async fn test_create_certificate_authority_self_signed_and_certificate_mdl_profi
             "Cert",
             "X509_CERTIFICATE",
             "MDL",
+            &["ASSERTION_METHOD"],
         )
         .await;
 
@@ -898,6 +986,7 @@ async fn test_create_certificate_authority_self_signed_and_certificate_generic_p
             "Cert",
             "X509_CERTIFICATE",
             "GENERIC",
+            &["ASSERTION_METHOD"],
         )
         .await;
 

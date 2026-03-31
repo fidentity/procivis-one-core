@@ -412,6 +412,7 @@ qzmSNPsC3TZzs4uCBIsS3LKDZHCktmj3La1PCGSS
         .to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: Some(dummy_key()),
     }
 }

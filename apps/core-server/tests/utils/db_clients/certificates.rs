@@ -66,6 +66,7 @@ impl CertificatesDB {
             chain: unwrap_or_random(params.chain),
             fingerprint: unwrap_or_random(params.fingerprint),
             state: params.state.unwrap_or(CertificateState::Active),
+            roles: vec![],
             key: params.key,
             organisation_id: params.organisation_id,
         };

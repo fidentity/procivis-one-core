@@ -50,6 +50,7 @@ fn dummy_certificate(pem: String) -> Certificate {
         chain: pem,
         fingerprint: "test".into(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     }
 }

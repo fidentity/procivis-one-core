@@ -103,6 +103,8 @@ pub(crate) enum Error {
     OrganisationMismatch,
     #[error("Invalid CSR profile")]
     InvalidCSRProfile,
+    #[error("Certificate roles must not be empty")]
+    EmptyCertificateRoles,
 
     #[error(transparent)]
     Nested(#[from] NestedError),
@@ -128,6 +130,7 @@ impl ErrorCodeMixin for Error {
             Self::OrganisationMismatch => ErrorCode::BR_0285,
             Self::InvalidCSRProfile => ErrorCode::BR_0323,
             Self::ConflictingCertificates => ErrorCode::BR_0408,
+            Self::EmptyCertificateRoles => ErrorCode::BR_0409,
             Self::Nested(nested) => nested.error_code(),
         }
     }

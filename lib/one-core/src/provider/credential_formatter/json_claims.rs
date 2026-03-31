@@ -241,6 +241,7 @@ pub fn prepare_identifier(
                 chain: certificate.chain.clone(),
                 fingerprint: certificate.fingerprint.clone(),
                 state: CertificateState::Active,
+                roles: vec![],
                 key: None,
             };
             (

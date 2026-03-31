@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use one_core::model::certificate::CertificateState;
+use one_core::model::certificate::{CertificateRole, CertificateState};
 use one_core::model::identifier::{
     IdentifierFilterValue, IdentifierListQuery, IdentifierState, IdentifierType,
     SortableIdentifierColumn,
@@ -301,6 +301,17 @@ pub struct CertificateResponseBindingDTO {
     #[from(with_fn = convert_inner)]
     pub key: Option<KeyListItemBindingDTO>,
     pub x509_attributes: CertificateX509AttributesBindingDTO,
+    #[from(with_fn = convert_inner)]
+    pub roles: Vec<CertificateRoleBindingEnum>,
+}
+
+#[derive(Clone, Debug, Into, From, uniffi::Enum)]
+#[into(CertificateRole)]
+#[from(CertificateRole)]
+#[uniffi(name = "CertificateRole")]
+pub enum CertificateRoleBindingEnum {
+    Authentication,
+    AssertionMethod,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
@@ -463,6 +474,7 @@ pub struct CreateCertificateRequestBindingDTO {
     pub name: Option<String>,
     pub chain: String,
     pub key_id: String,
+    pub roles: Vec<CertificateRoleBindingEnum>,
 }
 
 impl TryFrom<CreateCertificateRequestBindingDTO> for CreateCertificateRequestDTO {
@@ -474,6 +486,7 @@ impl TryFrom<CreateCertificateRequestBindingDTO> for CreateCertificateRequestDTO
             chain: Some(value.chain),
             key_id: into_id(value.key_id)?,
             content: None,
+            roles: convert_inner(value.roles),
         })
     }
 }

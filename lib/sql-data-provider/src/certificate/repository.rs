@@ -20,7 +20,7 @@ impl CertificateProvider {
         model: certificate::Model,
         relations: &CertificateRelations,
     ) -> Result<Certificate, DataLayerError> {
-        let mut result: Certificate = model.clone().into();
+        let mut result: Certificate = model.clone().try_into()?;
 
         if let Some(key_relations) = &relations.key
             && let Some(key_id) = &model.key_id

@@ -97,6 +97,7 @@ impl IdentifiersApi {
         key_id: KeyId,
         organisation_id: OrganisationId,
         chain: &str,
+        roles: &[&str],
     ) -> Response {
         self.client
             .post(
@@ -106,7 +107,8 @@ impl IdentifiersApi {
                     "organisationId": organisation_id,
                     "certificates": [{
                         "chain": chain,
-                        "keyId": key_id
+                        "keyId": key_id,
+                        "roles": roles
                     }]
                 }),
             )
@@ -118,13 +120,15 @@ impl IdentifiersApi {
         name: &str,
         organisation_id: OrganisationId,
         certs: &[(KeyId, &str)],
+        roles: &[&str],
     ) -> Response {
         let certs: Vec<_> = certs
             .iter()
             .map(|(key_id, chain)| {
                 json!({
                     "chain": chain,
-                    "keyId": key_id
+                    "keyId": key_id,
+                    "roles": roles
                 })
             })
             .collect();
@@ -150,6 +154,7 @@ impl IdentifiersApi {
         common_name: &str,
         signer: &str,
         profile: &str,
+        roles: &[&str],
     ) -> Response {
         self.client
             .post(
@@ -159,6 +164,7 @@ impl IdentifiersApi {
                     "organisationId": organisation_id,
                     "certificates": [{
                         "keyId": key_id,
+                        "roles": roles,
                         "content": {
                             "certificateAuthority": {
                                 "identifierId": ca_identifier_id

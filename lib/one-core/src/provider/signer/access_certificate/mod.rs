@@ -213,6 +213,9 @@ impl Signer for AccessCertificateSigner {
                 self.core_base_url.as_str(),
                 ca_certificate.id,
             ));
+        cert_params
+            .custom_extensions
+            .push(extended_key_usage_extension());
 
         let content = cert_params
             .signed_by(&pub_key, &cert_issuer)
@@ -249,4 +252,22 @@ fn authority_information_access_extension(
     });
     // Non-critical
     CustomExtension::from_oid_content(&OID_AUTHORITY_INFORMATION_ACCESS, authority_info_access)
+}
+
+fn extended_key_usage_extension() -> CustomExtension {
+    const OID_EXTENDED_KEY_USAGE: [u64; 4] = [2, 5, 29, 37];
+    const OID_MDL_READER_AUTH: [u64; 6] = [1, 0, 18013, 5, 1, 6];
+    const OID_MDOC_READER_AUTH: [u64; 6] = [1, 0, 23220, 4, 1, 6];
+
+    let content = yasna::construct_der(|writer| {
+        writer.write_sequence(|writer| {
+            writer
+                .next()
+                .write_oid(&ObjectIdentifier::from_slice(&OID_MDL_READER_AUTH));
+            writer
+                .next()
+                .write_oid(&ObjectIdentifier::from_slice(&OID_MDOC_READER_AUTH));
+        });
+    });
+    CustomExtension::from_oid_content(&OID_EXTENDED_KEY_USAGE, content)
 }

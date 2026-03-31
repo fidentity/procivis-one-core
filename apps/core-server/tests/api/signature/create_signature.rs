@@ -4,7 +4,7 @@ use one_core::provider::signer::registration_certificate::model::WRPRegistration
 use rcgen::{CertificateParams, KeyUsagePurpose};
 use similar_asserts::assert_eq;
 use x509_parser::extensions::ParsedExtension;
-use x509_parser::oid_registry::OID_X509_EXT_CRL_DISTRIBUTION_POINTS;
+use x509_parser::oid_registry::{OID_X509_EXT_CRL_DISTRIBUTION_POINTS, OID_X509_EXT_KEY_USAGE};
 use x509_parser::pem::Pem;
 use x509_parser::time::ASN1Time;
 
@@ -379,8 +379,8 @@ async fn test_create_signature_x509_success_no_crl() {
         .map(|pem| pem.parse_x509())
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-
     let leaf_cert = certs.first().unwrap();
+
     let crl_ext = leaf_cert
         .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
         .unwrap();
@@ -454,12 +454,6 @@ async fn test_create_signature_access_certificate_natural_person_success() {
         .unwrap();
 
     let leaf_cert = certs.first().unwrap();
-    let crl_ext = leaf_cert
-        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
-        .unwrap()
-        .unwrap()
-        .parsed_extension();
-    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
     assert_eq!(
         leaf_cert.subject.to_string(),
         "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, givenName=Max, surname=Muster"
@@ -474,6 +468,18 @@ async fn test_create_signature_access_certificate_natural_person_success() {
             .whole_days(),
         365 * 5 - 1 // -1 to account for the fractional day since issuance
     );
+
+    let crl_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+        .unwrap()
+        .unwrap()
+        .parsed_extension();
+    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
+
+    let key_usage_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_KEY_USAGE)
+        .unwrap();
+    assert!(key_usage_ext.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -513,12 +519,6 @@ async fn test_create_signature_access_certificate_legal_person_success() {
         .unwrap();
 
     let leaf_cert = certs.first().unwrap();
-    let crl_ext = leaf_cert
-        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
-        .unwrap()
-        .unwrap()
-        .parsed_extension();
-    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
     assert_eq!(
         leaf_cert.subject.to_string(),
         "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, O=Org name"
@@ -533,6 +533,18 @@ async fn test_create_signature_access_certificate_legal_person_success() {
             .whole_days(),
         365 * 5 - 1 // -1 to account for the fractional day since issuance
     );
+
+    let crl_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+        .unwrap()
+        .unwrap()
+        .parsed_extension();
+    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
+
+    let key_usage_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_KEY_USAGE)
+        .unwrap();
+    assert!(key_usage_ext.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

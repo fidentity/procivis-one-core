@@ -71,7 +71,10 @@ pub(crate) fn trust_list_subscriber_provider_from_config(
                     remote_entity_cache_repository.clone(),
                     resolver,
                 );
-                Arc::new(EtsiLoteSubscriber::new(etsi_lote_cache)) as _
+                Arc::new(EtsiLoteSubscriber::new(
+                    etsi_lote_cache,
+                    certificate_validator.clone(),
+                )) as _
             }
         };
         subscribers.insert(key.clone(), subscriber);

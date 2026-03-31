@@ -13,7 +13,7 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::certificate::{Certificate, CertificateState};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::trust_list_role::TrustListRoleEnum;
-use crate::proto::certificate_validator::CertificateValidatorImpl;
+use crate::proto::certificate_validator::{CertificateValidatorImpl, MockCertificateValidator};
 use crate::proto::clock::MockClock;
 use crate::proto::http_client::{Method, MockHttpClient, Request, Response, StatusCode};
 use crate::provider::caching_loader::android_attestation_crl::{
@@ -288,5 +288,5 @@ fn setup_subscriber(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber
         Duration::seconds(60),
     );
 
-    EtsiLoteSubscriber::new(cache)
+    EtsiLoteSubscriber::new(cache, Arc::new(MockCertificateValidator::new()))
 }

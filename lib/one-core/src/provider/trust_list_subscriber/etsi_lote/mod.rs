@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use ct_codecs::{Base64, Encoder};
 use serde::Deserialize;
@@ -11,9 +12,11 @@ use x509_parser::oid_registry::OID_X509_EXT_SUBJECT_KEY_IDENTIFIER;
 
 use crate::error::ContextWithErrorCode;
 use crate::model::identifier::{Identifier, IdentifierType};
-use crate::model::key::Key;
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::proto::certificate_validator::parse::extract_leaf_pem_from_chain;
+use crate::proto::certificate_validator::{
+    CertificateValidationOptions, CertificateValidator, ParsedCertificate,
+};
 use crate::provider::caching_loader::etsi_lote::EtsiLoteCache;
 use crate::provider::trust_list_subscriber::error::TrustListSubscriberError;
 use crate::provider::trust_list_subscriber::etsi_lote::model::PreprocessedLote;
@@ -50,11 +53,15 @@ pub enum LoteContentType {
 
 pub struct EtsiLoteSubscriber {
     cache: EtsiLoteCache,
+    certificate_validator: Arc<dyn CertificateValidator>,
 }
 
 impl EtsiLoteSubscriber {
-    pub fn new(cache: EtsiLoteCache) -> Self {
-        Self { cache }
+    pub fn new(cache: EtsiLoteCache, certificate_validator: Arc<dyn CertificateValidator>) -> Self {
+        Self {
+            cache,
+            certificate_validator,
+        }
     }
 
     async fn get_list(
@@ -107,15 +114,44 @@ impl TrustListSubscriber for EtsiLoteSubscriber {
         let list = self.get_list(reference).await?;
         let mut result = HashMap::new();
         for identifier in identifiers {
-            if let Some(entity) = find_matching_trusted_entity(identifier, &list)? {
+            if let Some(entity) = find_matching_trusted_entity_for_identifier(identifier, &list)? {
                 result.insert(identifier.id, TrustEntityResponse::LOTE(entity));
             }
         }
         Ok(result)
     }
+
+    async fn resolve_certificate(
+        &self,
+        reference: &Url,
+        pem_chain: &str,
+    ) -> Result<Option<TrustEntityResponse>, TrustListSubscriberError> {
+        let list = self.get_list(reference).await?;
+
+        let ParsedCertificate {
+            attributes,
+            public_key,
+            ..
+        } = self
+            .certificate_validator
+            .parse_pem_chain(pem_chain, CertificateValidationOptions::no_validation())
+            .await
+            .error_while("parsing PEM")?;
+
+        if let Some(result) =
+            find_matching_for_certificate(&list, &attributes.fingerprint, pem_chain)?
+        {
+            return Ok(Some(TrustEntityResponse::LOTE(result)));
+        };
+
+        Ok(
+            find_matching_for_public_key(&list, &public_key.public_key_as_raw())?
+                .map(TrustEntityResponse::LOTE),
+        )
+    }
 }
 
-fn find_matching_trusted_entity(
+fn find_matching_trusted_entity_for_identifier(
     identifier: &Identifier,
     preprocessed_lote: &PreprocessedLote,
 ) -> Result<Option<TrustedEntityInformation>, TrustListSubscriberError> {
@@ -130,7 +166,7 @@ fn find_matching_trusted_entity(
                     identifier.id
                 ))
             })?;
-            find_matching_public_key(preprocessed_lote, key)
+            find_matching_for_public_key(preprocessed_lote, &key.public_key)
         }
         IdentifierType::Certificate | IdentifierType::CertificateAuthority => {
             let Some(active_certs) = identifier.active_certs() else {
@@ -145,34 +181,12 @@ fn find_matching_trusted_entity(
                 return Ok(None);
             };
 
-            // check fingerprint
-            if let Some(idx) = preprocessed_lote
-                .certificate_fingerprints
-                .get(&active_cert.fingerprint)
-            {
-                return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
-            }
-
-            let pem = extract_leaf_pem_from_chain(active_cert.chain.as_bytes())
-                .error_while("parsing certificate value")?;
-            let identifier_cert = pem.parse_x509()?;
-
-            // check subject name
-            if let Some(idx) = preprocessed_lote
-                .subject_names
-                .get(&identifier_cert.subject.to_string())
-            {
-                return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
-            }
-
-            // check subject key identifier
-            if let Some(ski) =
-                identifier_cert.get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)?
-            {
-                let ski = Base64::encode_to_string(ski.value)?;
-                if let Some(idx) = preprocessed_lote.subject_key_identifiers.get(&ski) {
-                    return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
-                }
+            if let Some(result) = find_matching_for_certificate(
+                preprocessed_lote,
+                &active_cert.fingerprint,
+                &active_cert.chain,
+            )? {
+                return Ok(Some(result));
             }
 
             let key = active_cert.key.as_ref().ok_or_else(|| {
@@ -181,16 +195,49 @@ fn find_matching_trusted_entity(
                     active_cert.id
                 ))
             })?;
-            find_matching_public_key(preprocessed_lote, key)
+            find_matching_for_public_key(preprocessed_lote, &key.public_key)
         }
     }
 }
 
-fn find_matching_public_key(
+fn find_matching_for_certificate(
     preprocessed_lote: &PreprocessedLote,
-    key: &Key,
+    fingerprint: &str,
+    pem_chain: &str,
 ) -> Result<Option<TrustedEntityInformation>, TrustListSubscriberError> {
-    let raw_public_key = Base64::encode_to_string(&key.public_key)?;
+    // check fingerprint
+    if let Some(idx) = preprocessed_lote.certificate_fingerprints.get(fingerprint) {
+        return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
+    }
+
+    let pem = extract_leaf_pem_from_chain(pem_chain.as_bytes())
+        .error_while("parsing certificate value")?;
+    let cert = pem.parse_x509()?;
+
+    // check subject name
+    if let Some(idx) = preprocessed_lote
+        .subject_names
+        .get(&cert.subject.to_string())
+    {
+        return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
+    }
+
+    // check subject key identifier
+    if let Some(ski) = cert.get_extension_unique(&OID_X509_EXT_SUBJECT_KEY_IDENTIFIER)? {
+        let ski = Base64::encode_to_string(ski.value)?;
+        if let Some(idx) = preprocessed_lote.subject_key_identifiers.get(&ski) {
+            return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
+        }
+    }
+
+    Ok(None)
+}
+
+fn find_matching_for_public_key(
+    preprocessed_lote: &PreprocessedLote,
+    raw_public_key: &[u8],
+) -> Result<Option<TrustedEntityInformation>, TrustListSubscriberError> {
+    let raw_public_key = Base64::encode_to_string(raw_public_key)?;
     if let Some(idx) = preprocessed_lote.public_keys.get(&raw_public_key) {
         return get(&preprocessed_lote.trusted_entities, *idx).map(Some);
     }

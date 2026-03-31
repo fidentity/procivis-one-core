@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use error::TrustListSubscriberError;
 use serde::Serialize;
 use shared_types::IdentifierId;
 use standardized_types::etsi_119_602::TrustedEntityInformation;
@@ -7,7 +8,6 @@ use url::Url;
 
 use crate::model::identifier::Identifier;
 use crate::model::trust_list_role::TrustListRoleEnum;
-use crate::provider::trust_list_subscriber::error::TrustListSubscriberError;
 
 pub mod error;
 pub(crate) mod etsi_lote;
@@ -29,6 +29,12 @@ pub trait TrustListSubscriber: Send + Sync {
         reference: &Url,
         identifiers: &[Identifier],
     ) -> Result<HashMap<IdentifierId, TrustEntityResponse>, TrustListSubscriberError>;
+
+    async fn resolve_certificate(
+        &self,
+        reference: &Url,
+        pem_chain: &str,
+    ) -> Result<Option<TrustEntityResponse>, TrustListSubscriberError>;
 }
 
 #[derive(Debug, Serialize)]

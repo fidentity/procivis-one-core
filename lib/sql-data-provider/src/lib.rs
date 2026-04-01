@@ -120,7 +120,6 @@ pub struct DataLayer {
     credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
     history_repository: Arc<dyn HistoryRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
-    #[allow(dead_code)]
     identifier_trust_information_repository: Arc<dyn IdentifierTrustInformationRepository>,
     certificate_repository: Arc<dyn CertificateRepository>,
     key_repository: Arc<dyn KeyRepository>,
@@ -389,6 +388,11 @@ impl DataRepository for DataLayer {
     }
     fn get_identifier_repository(&self) -> Arc<dyn IdentifierRepository> {
         self.identifier_repository.clone()
+    }
+    fn get_identifier_trust_information_repository(
+        &self,
+    ) -> Arc<dyn IdentifierTrustInformationRepository> {
+        self.identifier_trust_information_repository.clone()
     }
     fn get_remote_entity_cache_repository(&self) -> Arc<dyn RemoteEntityCacheRepository> {
         self.json_ld_context_repository.clone()

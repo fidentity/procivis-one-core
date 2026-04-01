@@ -47,6 +47,7 @@ use did_repository::DidRepository;
 use history_repository::HistoryRepository;
 use holder_wallet_unit_repository::HolderWalletUnitRepository;
 use identifier_repository::IdentifierRepository;
+use identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use interaction_repository::InteractionRepository;
 use key_repository::KeyRepository;
 use notification_repository::NotificationRepository;
@@ -79,6 +80,9 @@ pub trait DataRepository: Send + Sync {
     fn get_credential_schema_repository(&self) -> Arc<dyn CredentialSchemaRepository>;
     fn get_history_repository(&self) -> Arc<dyn HistoryRepository>;
     fn get_identifier_repository(&self) -> Arc<dyn IdentifierRepository>;
+    fn get_identifier_trust_information_repository(
+        &self,
+    ) -> Arc<dyn IdentifierTrustInformationRepository>;
     fn get_interaction_repository(&self) -> Arc<dyn InteractionRepository>;
     fn get_key_repository(&self) -> Arc<dyn KeyRepository>;
     fn get_proof_schema_repository(&self) -> Arc<dyn ProofSchemaRepository>;

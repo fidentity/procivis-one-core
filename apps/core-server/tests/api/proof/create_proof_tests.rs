@@ -1,3 +1,4 @@
+use one_core::model::certificate::CertificateRole;
 use one_core::model::did::{KeyRole, RelatedKey};
 use one_core::model::history::HistoryAction;
 use one_core::model::identifier::IdentifierType;
@@ -536,6 +537,91 @@ async fn test_create_proof_success_with_certificate() {
 
     // THEN
     assert_eq!(resp.status(), 201);
+}
+
+#[tokio::test]
+async fn test_create_proof_certificate_without_authentication_role() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Certificate),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Create certificate with only AssertionMethod role (no Authentication)
+    let _certificate = context
+        .db
+        .certificates
+        .create(
+            identifier.id,
+            TestingCertificateParams {
+                key: Some(key),
+                roles: Some(vec![CertificateRole::AssertionMethod]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create("test", &organisation, None, Default::default())
+        .await;
+    let claim_schema = credential_schema
+        .claim_schemas
+        .as_ref()
+        .unwrap()
+        .first()
+        .unwrap()
+        .to_owned();
+
+    let proof_schema = context
+        .db
+        .proof_schemas
+        .create(
+            "test",
+            &organisation,
+            vec![CreateProofInputSchema {
+                claims: vec![CreateProofClaim {
+                    id: claim_schema.id,
+                    key: &claim_schema.key,
+                    required: true,
+                    data_type: &claim_schema.data_type,
+                    array: false,
+                }],
+                credential_schema: &credential_schema,
+            }],
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .proofs
+        .create_with_identifier(
+            &proof_schema.id.to_string(),
+            "OPENID4VP_FINAL1",
+            &identifier.id,
+            None,
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+    assert_eq!("BR_0222", resp.error_code().await);
 }
 
 #[tokio::test]

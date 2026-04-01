@@ -27,6 +27,7 @@ use crate::repository::did_repository::DidRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
+use crate::repository::identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::repository::key_repository::KeyRepository;
 use crate::repository::notification_repository::NotificationRepository;
@@ -86,6 +87,12 @@ impl DataRepository for DecoratedDataProvider {
     }
     fn get_identifier_repository(&self) -> Arc<dyn IdentifierRepository> {
         self.identifier_repository.clone()
+    }
+    fn get_identifier_trust_information_repository(
+        &self,
+    ) -> Arc<dyn IdentifierTrustInformationRepository> {
+        self.data_provider
+            .get_identifier_trust_information_repository()
     }
     fn get_key_repository(&self) -> Arc<dyn KeyRepository> {
         self.key_repository.clone()

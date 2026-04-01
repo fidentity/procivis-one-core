@@ -1,3 +1,4 @@
+use identifier_trust_information::IdentifierTrustInformationDB;
 use identifiers::IdentifiersDB;
 use one_core::repository::DataRepository;
 use sql_data_provider::{DataLayer, DbConn};
@@ -35,6 +36,7 @@ pub mod credentials;
 pub mod dids;
 pub mod histories;
 pub mod holder_wallet_unit;
+pub mod identifier_trust_information;
 pub mod identifiers;
 pub mod interactions;
 pub mod keys;
@@ -60,6 +62,7 @@ pub struct DbClient {
     pub dids: DidsDB,
     pub certificates: CertificatesDB,
     pub identifiers: IdentifiersDB,
+    pub identifier_trust_information: IdentifierTrustInformationDB,
     pub credential_schemas: CredentialSchemasDB,
     pub credentials: CredentialsDB,
     pub histories: HistoriesDB,
@@ -95,6 +98,9 @@ impl DbClient {
             dids: DidsDB::new(layer.get_did_repository()),
             certificates: CertificatesDB::new(layer.get_certificate_repository()),
             identifiers: IdentifiersDB::new(layer.get_identifier_repository()),
+            identifier_trust_information: IdentifierTrustInformationDB::new(
+                layer.get_identifier_trust_information_repository(),
+            ),
             credential_schemas: CredentialSchemasDB::new(layer.get_credential_schema_repository()),
             credentials: CredentialsDB::new(layer.get_credential_repository()),
             histories: HistoriesDB::new(layer.get_history_repository()),

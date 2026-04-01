@@ -164,9 +164,7 @@ fn format_params_for_redirect_uri(
         ),
         client_metadata: Some(metadata),
         dcql_query: Some(dcql_query),
-        request: None,
-        request_uri: None,
-        redirect_uri: None,
+        ..Default::default()
     })
 }
 

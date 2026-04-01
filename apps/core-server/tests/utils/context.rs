@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use core_server::ServerConfig;
 use one_core::config::core_config::AppConfig;
-use one_core::model::certificate::{Certificate, CertificateState};
+use one_core::model::certificate::{Certificate, CertificateRole, CertificateState};
 use one_core::model::did::{Did, DidType, KeyRole, RelatedKey};
 use one_core::model::identifier::{Identifier, IdentifierType};
 use one_core::model::key::Key;
@@ -192,7 +192,10 @@ impl TestContext {
             chain: format!("{}{}", cert.pem(), ca_cert.pem()),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
-            roles: vec![],
+            roles: vec![
+                CertificateRole::Authentication,
+                CertificateRole::AssertionMethod,
+            ],
             key: Some(key.clone()),
         };
 
@@ -242,7 +245,10 @@ impl TestContext {
             chain: ca_cert.pem(),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
-            roles: vec![],
+            roles: vec![
+                CertificateRole::Authentication,
+                CertificateRole::AssertionMethod,
+            ],
             key: Some(key.clone()),
         };
 

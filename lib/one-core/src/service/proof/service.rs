@@ -32,7 +32,7 @@ use crate::config::validator::transport::{
 };
 use crate::error::ContextWithErrorCode;
 use crate::mapper::list_response_try_into;
-use crate::model::certificate::CertificateRelations;
+use crate::model::certificate::{CertificateRelations, CertificateRole};
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential::{CredentialFilterValue, CredentialRelations, GetCredentialQuery};
@@ -497,6 +497,12 @@ impl ProofService {
                 (&key.key, None)
             }
         };
+
+        if let Some(cert) = &verifier_certificate
+            && !cert.roles.contains(&CertificateRole::Authentication)
+        {
+            return Err(ProofServiceError::NoKeyWithRole(KeyRole::Authentication));
+        }
 
         if verifier_key.key_type == "BBS_PLUS" {
             return Err(ProofServiceError::BBSNotSupported);

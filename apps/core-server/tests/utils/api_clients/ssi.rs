@@ -65,6 +65,14 @@ impl SSIApi {
         self.client.get(&url).await
     }
 
+    pub async fn get_client_request_final1(&self, proof_id: impl Into<Uuid>) -> Response {
+        let url = format!(
+            "/ssi/openid4vp/final-1.0/{}/client-request",
+            proof_id.into()
+        );
+        self.client.get(&url).await
+    }
+
     pub async fn issuer_create_credential(
         &self,
         credential_schema_id: impl Into<Uuid>,

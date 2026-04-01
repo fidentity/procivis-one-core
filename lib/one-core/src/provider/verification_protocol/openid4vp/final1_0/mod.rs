@@ -578,6 +578,7 @@ impl VerificationProtocol for OpenID4VPFinal1_0 {
             response_uri.clone(),
             &interaction_id,
             client_metadata,
+            vec![],
         )?;
 
         let interaction_content = OpenID4VPVerifierInteractionContent {

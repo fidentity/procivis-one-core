@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use shared_types::{DidId, DidValue, KeyId, OrganisationId};
+use shared_types::{DidId, DidValue, KeyId};
 use uuid::Uuid;
 
 use super::DidService;
 use super::dto::{
-    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidPatchRequestDTO, DidResponseDTO,
-    GetDidListResponseDTO,
+    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidFilterParamsDTO, DidPatchRequestDTO,
+    DidResponseDTO, GetDidListResponseDTO,
 };
 use super::error::DidServiceError;
 use super::mapper::{
@@ -15,7 +15,7 @@ use super::mapper::{
 use super::validator::validate_deactivation_request;
 use crate::config::core_config::{KeyAlgorithmType, KeyStorageType};
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
-use crate::model::did::{DidListQuery, DidRelations, RelatedKey};
+use crate::model::did::{DidRelations, RelatedKey, SortableDidColumn};
 use crate::model::identifier::{IdentifierState, UpdateIdentifierRequest};
 use crate::model::key::{Key, KeyRelations};
 use crate::model::organisation::{Organisation, OrganisationRelations};
@@ -25,6 +25,7 @@ use crate::provider::did_method::common::jwk_verification_method;
 use crate::provider::did_method::dto::DidDocumentDTO;
 use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_storage::provider::KeyProvider;
+use crate::service::common_dto::ListQueryDTO;
 use crate::validator::{
     throw_if_org_not_matching_session, throw_if_org_relation_not_matching_session,
 };
@@ -163,14 +164,16 @@ impl DidService {
     /// * `query` - query parameters
     pub async fn get_did_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: DidListQuery,
+        filter_params: ListQueryDTO<SortableDidColumn, DidFilterParamsDTO>,
     ) -> Result<GetDidListResponseDTO, DidServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
         let result = self
             .did_repository
-            .get_did_list(query)
+            .get_did_list(filter_params.into())
             .await
             .error_while("getting dids")?;
         Ok(result.into())

@@ -9,15 +9,13 @@ use time::format_description::well_known::iso8601::{
 use super::Error;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::credential_schema_claim::claim_schema_from_metadata_claim_schema;
-use crate::model::credential_schema::CredentialSchema;
+use crate::model::credential_schema::{CredentialSchema, CredentialSchemaListQuery};
 use crate::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
 use crate::model::list_query::ListPagination;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::error::DataLayerError;
-use crate::service::credential_schema::dto::{
-    CredentialSchemaFilterValue, GetCredentialSchemaQueryDTO,
-};
+use crate::service::credential_schema::dto::CredentialSchemaFilterValue;
 use crate::service::error::MissingProviderError;
 
 const DATE_TIME_NO_MILLIS: EncodedConfig = Config::DEFAULT
@@ -112,7 +110,7 @@ impl CredentialSchemaImporterProto {
         name: String,
         schema_id: String,
     ) -> Result<Vec<CredentialSchema>, Error> {
-        let query = GetCredentialSchemaQueryDTO {
+        let query = CredentialSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 1,

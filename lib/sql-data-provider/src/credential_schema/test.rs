@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential_schema::{
-    BackgroundProperties, CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaQuery,
+    BackgroundProperties, CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
     LayoutProperties, LayoutType, UpdateCredentialSchemaRequest,
 };
 use one_core::model::list_filter::ListFilterValue;
@@ -243,7 +243,7 @@ async fn test_get_credential_schema_list_success() {
 
     let result = repository
         .get_credential_schema_list(
-            GetCredentialSchemaQuery {
+            CredentialSchemaListQuery {
                 pagination: Some(ListPagination {
                     page: 0,
                     page_size: 5,
@@ -284,7 +284,7 @@ async fn test_get_credential_schema_list_deleted_schema() {
 
     let result = repository
         .get_credential_schema_list(
-            GetCredentialSchemaQuery {
+            CredentialSchemaListQuery {
                 pagination: Some(ListPagination {
                     page: 0,
                     page_size: 1,

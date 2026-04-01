@@ -5,8 +5,8 @@ use std::sync::Arc;
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential::{
-    Clearable, Credential, CredentialFilterValue, CredentialRelations, CredentialRole,
-    CredentialStateEnum, UpdateCredentialRequest,
+    Clearable, Credential, CredentialFilterValue, CredentialListQuery, CredentialRelations,
+    CredentialRole, CredentialStateEnum, UpdateCredentialRequest,
 };
 use one_core::model::credential_schema::{CredentialSchema, CredentialSchemaRelations, LayoutType};
 use one_core::model::did::Did;
@@ -29,7 +29,6 @@ use one_core::repository::interaction_repository::{
     InteractionRepository, MockInteractionRepository,
 };
 use one_core::repository::key_repository::{KeyRepository, MockKeyRepository};
-use one_core::service::credential::dto::GetCredentialQueryDTO;
 use one_dto_mapper::convert_inner;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, EntityTrait, Set};
 use shared_types::CredentialId;
@@ -597,7 +596,7 @@ async fn test_get_credential_list_success() {
     let provider = credential_repository(db, None);
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 5,
@@ -665,7 +664,7 @@ async fn test_get_credential_list_success_filter_state() {
     let provider = credential_repository(db, None);
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::States(vec![CredentialStateEnum::Offered]).condition(),
             ),
@@ -677,7 +676,7 @@ async fn test_get_credential_list_success_filter_state() {
     assert_eq!(1, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::States(vec![CredentialStateEnum::Created]).condition(),
             ),
@@ -689,7 +688,7 @@ async fn test_get_credential_list_success_filter_state() {
     assert_eq!(0, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::States(vec![
                     CredentialStateEnum::Offered,
@@ -726,7 +725,7 @@ async fn test_get_credential_list_success_filter_suspend_end_date() {
     let provider = credential_repository(db, None);
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::SuspendEndDate(ValueComparison {
                     comparison: ComparisonType::GreaterThanOrEqual,
@@ -742,7 +741,7 @@ async fn test_get_credential_list_success_filter_suspend_end_date() {
     assert_eq!(1, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::SuspendEndDate(ValueComparison {
                     comparison: ComparisonType::LessThan,
@@ -758,7 +757,7 @@ async fn test_get_credential_list_success_filter_suspend_end_date() {
     assert_eq!(0, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::SuspendEndDate(ValueComparison {
                     comparison: ComparisonType::GreaterThan,
@@ -817,7 +816,7 @@ async fn test_get_credential_list_success_filter_claim_name_value() {
     let provider = credential_repository(db, None);
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::ClaimName(StringMatch::contains("key")).condition(),
             ),
@@ -830,7 +829,7 @@ async fn test_get_credential_list_success_filter_claim_name_value() {
     assert_eq!(1, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::ClaimValue(StringMatch::contains("value")).condition(),
             ),
@@ -843,7 +842,7 @@ async fn test_get_credential_list_success_filter_claim_name_value() {
     assert_eq!(1, credentials.values.len());
 
     let credentials = provider
-        .get_credential_list(GetCredentialQueryDTO {
+        .get_credential_list(CredentialListQuery {
             filtering: Some(
                 CredentialFilterValue::ClaimValue(StringMatch::contains("wrong")).condition(),
             ),

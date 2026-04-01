@@ -75,6 +75,12 @@ pub enum SortableCredentialSchemaColumn {
     CreatedDate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialSchemaExactColumn {
+    Name,
+    SchemaId,
+}
+
 #[derive(Clone, Debug, Eq, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LayoutType {
@@ -153,7 +159,7 @@ pub enum CodeTypeEnum {
 }
 
 pub type GetCredentialSchemaList = GetListResponse<CredentialSchema>;
-pub type GetCredentialSchemaQuery = ListQuery<
+pub type CredentialSchemaListQuery = ListQuery<
     SortableCredentialSchemaColumn,
     CredentialSchemaFilterValue,
     CredentialSchemaListIncludeEntityTypeEnum,

@@ -4,9 +4,11 @@ use one_core::service::proof_schema::dto::{
     GetProofSchemaResponseDTO, ImportProofSchemaClaimSchemaDTO,
     ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO, ImportProofSchemaInputSchemaDTO,
     ImportProofSchemaRequestDTO, ProofClaimSchemaResponseDTO, ProofInputSchemaRequestDTO,
-    ProofInputSchemaResponseDTO, ProofSchemaShareResponseDTO,
+    ProofInputSchemaResponseDTO, ProofSchemaFilterParamsDTO, ProofSchemaShareResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{OrganisationId, ProofSchemaId};
@@ -198,47 +200,57 @@ pub(crate) enum SortableProofSchemaColumnRestEnum {
 pub(crate) type GetProofSchemaQuery =
     ListQueryParamsRest<ProofSchemasFilterQueryParamsRest, SortableProofSchemaColumnRestEnum>;
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = ProofSchemaFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetProofSchemaQuery
 pub(crate) struct ProofSchemasFilterQueryParamsRest {
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Return only proof schemas with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by specific UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<ProofSchemaId>>,
     /// Set which filters apply in an exact way.
+    #[try_into(with_fn = convert_inner_of_inner, infallible)]
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactColumn>>,
     /// Return only proof schemas which use only the specified credential formats.
     #[param(rename = "formats[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub formats: Option<Vec<String>>,
 
     /// Return only proof schemas created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only proof schemas created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only proof schemas last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only proof schemas last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 

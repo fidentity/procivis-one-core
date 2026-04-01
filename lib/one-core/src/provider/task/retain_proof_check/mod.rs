@@ -9,7 +9,7 @@ use uuid::Uuid;
 use super::Task;
 use crate::error::ContextWithErrorCode;
 use crate::model::claim::ClaimRelations;
-use crate::model::credential::{CredentialFilterValue, CredentialRelations, GetCredentialQuery};
+use crate::model::credential::{CredentialFilterValue, CredentialListQuery, CredentialRelations};
 use crate::model::history::{HistoryAction, HistoryEntityType, HistoryFilterValue};
 use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::{ListPagination, ListQuery};
@@ -160,14 +160,14 @@ impl Task for RetainProofCheck {
 
                 let credential_blob_ids = self
                     .credential_repository
-                    .get_credential_list(GetCredentialQuery {
+                    .get_credential_list(CredentialListQuery {
                         filtering: Some(
                             CredentialFilterValue::CredentialIds(Vec::from_iter(
                                 credential_ids.clone(),
                             ))
                             .condition(),
                         ),
-                        ..GetCredentialQuery::default()
+                        ..CredentialListQuery::default()
                     })
                     .await
                     .error_while("getting credentials")?

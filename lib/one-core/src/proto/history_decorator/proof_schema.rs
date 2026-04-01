@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::model::proof_schema::{
-    GetProofSchemaList, GetProofSchemaQuery, ProofSchema, ProofSchemaRelations,
+    GetProofSchemaList, ProofSchema, ProofSchemaListQuery, ProofSchemaRelations,
 };
 use crate::proto::session_provider::{SessionExt, SessionProvider};
 use crate::repository::error::DataLayerError;
@@ -106,7 +106,7 @@ impl ProofSchemaRepository for ProofSchemaHistoryDecorator {
 
     async fn get_proof_schema_list(
         &self,
-        query_params: GetProofSchemaQuery,
+        query_params: ProofSchemaListQuery,
     ) -> Result<GetProofSchemaList, DataLayerError> {
         self.inner.get_proof_schema_list(query_params).await
     }

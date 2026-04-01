@@ -61,11 +61,10 @@ impl OneCore {
         &self,
         filter: ListProofSchemasFiltersBindingDTO,
     ) -> Result<ProofSchemaListBindingDTO, BindingError> {
-        let organisation_id = into_id(filter.organisation_id.clone())?;
         let core = self.use_core().await?;
         Ok(core
             .proof_schema_service
-            .get_proof_schema_list(&organisation_id, filter.try_into()?)
+            .get_proof_schema_list(filter.try_into()?)
             .await?
             .into())
     }

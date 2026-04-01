@@ -80,6 +80,12 @@ pub enum SortableDidColumn {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactDidFilterColumn {
+    Name,
+    Did,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DidFilterValue {
     Name(StringMatch),
     Method(String),

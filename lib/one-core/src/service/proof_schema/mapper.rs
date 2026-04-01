@@ -6,20 +6,26 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{
-    CreateProofSchemaRequestDTO, GetProofSchemaQueryDTO, GetProofSchemaResponseDTO,
-    ImportProofSchemaClaimSchemaDTO, ImportProofSchemaInputSchemaDTO, ProofClaimSchemaResponseDTO,
-    ProofInputSchemaResponseDTO, ProofSchemaFilterValue,
+    CreateProofSchemaRequestDTO, GetProofSchemaResponseDTO, ImportProofSchemaClaimSchemaDTO,
+    ImportProofSchemaInputSchemaDTO, ProofClaimSchemaResponseDTO, ProofInputSchemaResponseDTO,
+    ProofSchemaFilterParamsDTO, ProofSchemaFilterValue,
 };
 use super::error::ProofSchemaServiceError;
 use crate::config::core_config::{DatatypeConfig, DatatypeType};
 use crate::error::ContextWithErrorCode;
 use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
 use crate::model::claim_schema::ClaimSchema;
+use crate::model::common::ExactColumn;
 use crate::model::credential_schema::CredentialSchema;
-use crate::model::list_filter::{ListFilterValue, StringMatch};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
-use crate::model::proof_schema::{ProofInputClaimSchema, ProofInputSchema, ProofSchema};
+use crate::model::proof_schema::{
+    ProofInputClaimSchema, ProofInputSchema, ProofSchema, ProofSchemaListQuery,
+};
 
 pub(super) fn convert_proof_schema_to_response(
     value: ProofSchema,
@@ -307,8 +313,8 @@ impl From<ProofInputClaimSchema> for ProofClaimSchemaResponseDTO {
 pub fn create_unique_name_check_request(
     name: &str,
     organisation_id: OrganisationId,
-) -> Result<GetProofSchemaQueryDTO, ProofSchemaServiceError> {
-    Ok(GetProofSchemaQueryDTO {
+) -> Result<ProofSchemaListQuery, ProofSchemaServiceError> {
+    Ok(ProofSchemaListQuery {
         pagination: Some(ListPagination {
             page: 0,
             page_size: 1,
@@ -382,4 +388,68 @@ pub fn proof_schema_from_create_request(
         deleted_at: None,
         input_schemas: Some(input_schemas),
     })
+}
+
+impl From<ProofSchemaFilterParamsDTO> for ListFilterCondition<ProofSchemaFilterValue> {
+    fn from(value: ProofSchemaFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            ProofSchemaFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            ProofSchemaFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(ExactColumn::Name),
+                value: name,
+            })
+        });
+
+        let proof_schema_ids = value.ids.map(ProofSchemaFilterValue::ProofSchemaIds);
+
+        let formats = value.formats.map(ProofSchemaFilterValue::Formats);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            ProofSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+
+        let created_date_before = value.created_date_before.map(|date| {
+            ProofSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            ProofSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_before = value.last_modified_before.map(|date| {
+            ProofSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & proof_schema_ids
+            & formats
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+    }
 }

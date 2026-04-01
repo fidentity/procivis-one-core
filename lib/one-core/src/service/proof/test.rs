@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::ProofService;
 use super::dto::{
-    CreateProofRequestDTO, GetProofQueryDTO, ProofClaimValueDTO, ProofFilterValue,
-    ProposeProofRequestDTO, ShareProofRequestDTO,
+    CreateProofRequestDTO, ProofClaimValueDTO, ProofFilterParamsDTO, ProposeProofRequestDTO,
+    ShareProofRequestDTO,
 };
 use super::error::ProofServiceError;
 use crate::config::core_config::{
@@ -35,8 +35,6 @@ use crate::model::history::GetHistoryList;
 use crate::model::identifier::{Identifier, IdentifierRelations};
 use crate::model::interaction::{Interaction, InteractionRelations, InteractionType};
 use crate::model::key::Key;
-use crate::model::list_filter::ListFilterValue;
-use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
 use crate::model::proof::{
     GetProofList, Proof, ProofClaim, ProofClaimRelations, ProofRelations, ProofRole, ProofStateEnum,
@@ -91,6 +89,7 @@ use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::proof_repository::MockProofRepository;
 use crate::repository::proof_schema_repository::MockProofSchemaRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{
     dummy_identifier, dummy_organisation, generic_config, get_dummy_date,
 };
@@ -2281,20 +2280,32 @@ async fn test_get_proof_list_success() {
 
     let organisation_id = Uuid::new_v4().into();
     let result = service
-        .get_proof_list(
-            &organisation_id,
-            GetProofQueryDTO {
-                filtering: ProofFilterValue::OrganisationId(organisation_id)
-                    .condition()
-                    .into(),
-                pagination: Some(ListPagination {
-                    page: 0,
-                    page_size: 1,
-                }),
-                sorting: None,
-                include: None,
+        .get_proof_list(ListQueryDTO {
+            page: 0,
+            page_size: 1,
+            sort: None,
+            sort_direction: None,
+            filter: ProofFilterParamsDTO {
+                name: None,
+                exact: None,
+                states: None,
+                roles: None,
+                ids: None,
+                proof_schema_ids: None,
+                verifier_ids: None,
+                profiles: None,
+                organisation_id,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+                requested_date_after: None,
+                requested_date_before: None,
+                completed_date_after: None,
+                completed_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
     assert!(result.is_ok());
     let result = result.unwrap();
@@ -4445,15 +4456,32 @@ async fn test_list_proof_session_org_mismatch() {
     });
 
     let result = service
-        .get_proof_list(
-            &Uuid::new_v4().into(),
-            GetProofQueryDTO {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_proof_list(ListQueryDTO {
+            page: 0,
+            page_size: 1,
+            sort: None,
+            sort_direction: None,
+            filter: ProofFilterParamsDTO {
+                name: None,
+                exact: None,
+                states: None,
+                roles: None,
+                ids: None,
+                proof_schema_ids: None,
+                verifier_ids: None,
+                profiles: None,
+                organisation_id: Uuid::new_v4().into(),
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+                requested_date_after: None,
+                requested_date_before: None,
+                completed_date_after: None,
+                completed_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }

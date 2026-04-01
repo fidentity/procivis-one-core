@@ -5,12 +5,18 @@ use shared_types::{DidId, DidValue, KeyId};
 use time::OffsetDateTime;
 
 use super::dto::{
-    CreateDidRequestDTO, DidListItemResponseDTO, DidResponseDTO, DidResponseKeysDTO,
-    GetDidListResponseDTO,
+    CreateDidRequestDTO, DidFilterParamsDTO, DidListItemResponseDTO, DidResponseDTO,
+    DidResponseKeysDTO, GetDidListResponseDTO,
 };
 use super::error::DidServiceError;
-use crate::model::did::{Did, DidType, GetDidList, KeyRole, RelatedKey, UpdateDidRequest};
+use crate::model::did::{
+    Did, DidFilterValue, DidType, ExactDidFilterColumn, GetDidList, KeyRole, RelatedKey,
+    UpdateDidRequest,
+};
 use crate::model::key::Key;
+use crate::model::list_filter::{
+    ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+};
 use crate::model::organisation::Organisation;
 use crate::provider::did_method::dto::{DidDocumentDTO, DidVerificationMethodDTO};
 use crate::provider::did_method::{DidCreated, DidKeys, DidUpdate};
@@ -219,5 +225,64 @@ pub(super) fn did_update_to_update_request(
         id: did_id,
         deactivated: did_update.deactivated,
         log: did_update.log.map(Some),
+    }
+}
+
+impl From<DidFilterParamsDTO> for ListFilterCondition<DidFilterValue> {
+    fn from(value: DidFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+        let organisation_id = DidFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name: ListFilterCondition<DidFilterValue> = value
+            .name
+            .map(|name| {
+                DidFilterValue::Name(StringMatch {
+                    r#match: get_string_match_type(ExactDidFilterColumn::Name),
+                    value: name,
+                })
+            })
+            .into();
+
+        let did_value = value.did.map(|did| {
+            DidFilterValue::Did(StringMatch {
+                r#match: get_string_match_type(ExactDidFilterColumn::Did),
+                value: did,
+            })
+        });
+
+        let r#type = value.r#type.map(DidFilterValue::Type);
+        let deactivated = value.deactivated.map(DidFilterValue::Deactivated);
+
+        let key_algorithms = value.key_algorithms.map(|values| {
+            DidFilterValue::KeyAlgorithms(
+                values.into_iter().filter(|key| !key.is_empty()).collect(),
+            )
+        });
+
+        let key_roles = value.key_roles.map(DidFilterValue::KeyRoles);
+
+        let key_storages = value.key_storages.map(|values| {
+            DidFilterValue::KeyStorages(values.into_iter().filter(|key| !key.is_empty()).collect())
+        });
+
+        let did_methods = value.did_methods.map(DidFilterValue::DidMethods);
+        let key_ids = value.key_ids.map(DidFilterValue::KeyIds);
+
+        organisation_id
+            & r#type
+            & (name | did_value)
+            & deactivated
+            & key_algorithms
+            & key_roles
+            & key_storages
+            & did_methods
+            & key_ids
     }
 }

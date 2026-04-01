@@ -3,7 +3,7 @@ use std::sync::Arc;
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential_schema::{
     BackgroundProperties, CodeProperties, CodeTypeEnum, CredentialSchema,
-    CredentialSchemaRelations, GetCredentialSchemaQuery, KeyStorageSecurity, LayoutProperties,
+    CredentialSchemaListQuery, CredentialSchemaRelations, KeyStorageSecurity, LayoutProperties,
     LayoutType, LogoProperties, TransactionCode,
 };
 use one_core::model::organisation::{Organisation, OrganisationRelations};
@@ -802,7 +802,7 @@ impl CredentialSchemasDB {
         let response = self
             .repository
             .get_credential_schema_list(
-                GetCredentialSchemaQuery {
+                CredentialSchemaListQuery {
                     pagination: None,
                     sorting: None,
                     filtering: None,

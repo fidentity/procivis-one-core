@@ -9,10 +9,9 @@ use uuid::Uuid;
 
 use super::ProofSchemaService;
 use super::dto::{
-    CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, GetProofSchemaQueryDTO,
-    ImportProofSchemaClaimSchemaDTO, ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO,
-    ImportProofSchemaInputSchemaDTO, ImportProofSchemaRequestDTO, ProofInputSchemaRequestDTO,
-    ProofSchemaFilterValue,
+    CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, ImportProofSchemaClaimSchemaDTO,
+    ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO, ImportProofSchemaInputSchemaDTO,
+    ImportProofSchemaRequestDTO, ProofInputSchemaRequestDTO, ProofSchemaFilterParamsDTO,
 };
 use super::error::ProofSchemaServiceError;
 use crate::config::core_config::{
@@ -25,8 +24,6 @@ use crate::model::credential_schema::{
     CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, KeyStorageSecurity,
     LayoutType,
 };
-use crate::model::list_filter::ListFilterValue;
-use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
 use crate::model::proof_schema::{
     GetProofSchemaList, ProofInputClaimSchema, ProofInputSchema, ProofInputSchemaRelations,
@@ -53,6 +50,7 @@ use crate::repository::credential_schema_repository::MockCredentialSchemaReposit
 use crate::repository::error::DataLayerError;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::proof_schema_repository::MockProofSchemaRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{
     dummy_credential_schema, dummy_organisation, dummy_proof_schema, generic_config,
     generic_formatter_capabilities, get_dummy_date,
@@ -196,15 +194,26 @@ async fn test_get_proof_schema_list_success() {
     });
 
     let organisation_id = Uuid::new_v4().into();
-    let query = GetProofSchemaQueryDTO {
-        pagination: Some(ListPagination {
+    let result = service
+        .get_proof_schema_list(ListQueryDTO {
             page: 0,
             page_size: 1,
-        }),
-        filtering: Some(ProofSchemaFilterValue::OrganisationId(organisation_id).condition()),
-        ..Default::default()
-    };
-    let result = service.get_proof_schema_list(&organisation_id, query).await;
+            sort: None,
+            sort_direction: None,
+            filter: ProofSchemaFilterParamsDTO {
+                name: None,
+                exact: None,
+                organisation_id,
+                ids: None,
+                formats: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+            },
+            include: None,
+        })
+        .await;
 
     assert!(result.is_ok());
     let result = result.unwrap();
@@ -230,15 +239,26 @@ async fn test_get_proof_schema_list_failure() {
     });
 
     let organisation_id = Uuid::new_v4().into();
-    let query = GetProofSchemaQueryDTO {
-        pagination: Some(ListPagination {
+    let result = service
+        .get_proof_schema_list(ListQueryDTO {
             page: 0,
             page_size: 1,
-        }),
-        filtering: Some(ProofSchemaFilterValue::OrganisationId(organisation_id).condition()),
-        ..Default::default()
-    };
-    let result = service.get_proof_schema_list(&organisation_id, query).await;
+            sort: None,
+            sort_direction: None,
+            filter: ProofSchemaFilterParamsDTO {
+                name: None,
+                exact: None,
+                organisation_id,
+                ids: None,
+                formats: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+            },
+            include: None,
+        })
+        .await;
 
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0054);
 }
@@ -2369,15 +2389,24 @@ async fn test_list_proof_schema_failure_session_org_mismatch() {
     });
 
     let result = service
-        .get_proof_schema_list(
-            &Uuid::new_v4().into(),
-            GetProofSchemaQueryDTO {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_proof_schema_list(ListQueryDTO {
+            page: 0,
+            page_size: 0,
+            sort: None,
+            sort_direction: None,
+            filter: ProofSchemaFilterParamsDTO {
+                name: None,
+                exact: None,
+                organisation_id: Uuid::new_v4().into(),
+                ids: None,
+                formats: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
             },
-        )
+            include: None,
+        })
         .await;
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }

@@ -4,8 +4,8 @@ use futures::FutureExt;
 use one_core::model::claim_schema::ClaimSchemaRelations;
 use one_core::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
 use one_core::model::proof_schema::{
-    GetProofSchemaList, GetProofSchemaQuery, ProofInputClaimSchema, ProofInputSchema,
-    ProofInputSchemaRelations, ProofSchema, ProofSchemaRelations,
+    GetProofSchemaList, ProofInputClaimSchema, ProofInputSchema, ProofInputSchemaRelations,
+    ProofSchema, ProofSchemaListQuery, ProofSchemaRelations,
 };
 use one_core::repository::error::DataLayerError;
 use one_core::repository::proof_schema_repository::ProofSchemaRepository;
@@ -185,7 +185,7 @@ impl ProofSchemaRepository for ProofSchemaProvider {
 
     async fn get_proof_schema_list(
         &self,
-        query_params: GetProofSchemaQuery,
+        query_params: ProofSchemaListQuery,
     ) -> Result<GetProofSchemaList, DataLayerError> {
         let query = crate::entity::proof_schema::Entity::find()
             .filter(proof_schema::Column::DeletedAt.is_null())

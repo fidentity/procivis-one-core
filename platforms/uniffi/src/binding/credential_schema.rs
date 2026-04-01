@@ -1,29 +1,23 @@
 use one_core::model::credential_schema::{
-    KeyStorageSecurity, LayoutType, SortableCredentialSchemaColumn, TransactionCodeType,
+    CredentialSchemaExactColumn, KeyStorageSecurity, LayoutType, SortableCredentialSchemaColumn,
+    TransactionCodeType,
 };
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
-    ValueComparison,
-};
-use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::credential_schema::dto::{
     CredentialClaimSchemaDTO, CredentialSchemaBackgroundPropertiesRequestDTO,
     CredentialSchemaBackgroundPropertiesResponseDTO, CredentialSchemaCodePropertiesDTO,
-    CredentialSchemaCodeTypeEnum, CredentialSchemaDetailResponseDTO, CredentialSchemaFilterValue,
+    CredentialSchemaCodeTypeEnum, CredentialSchemaDetailResponseDTO,
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaLayoutPropertiesResponseDTO,
     CredentialSchemaListIncludeEntityTypeEnum, CredentialSchemaLogoPropertiesRequestDTO,
     CredentialSchemaLogoPropertiesResponseDTO, CredentialSchemaShareResponseDTO,
     CredentialSchemaTransactionCodeDTO, GetCredentialSchemaListResponseDTO,
-    GetCredentialSchemaQueryDTO, ImportCredentialSchemaLayoutPropertiesDTO,
-    ImportCredentialSchemaRequestDTO, ImportCredentialSchemaRequestSchemaDTO,
-    ImportCredentialSchemaTransactionCodeDTO,
+    ImportCredentialSchemaLayoutPropertiesDTO, ImportCredentialSchemaRequestDTO,
+    ImportCredentialSchemaRequestSchemaDTO, ImportCredentialSchemaTransactionCodeDTO,
 };
 use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
 use shared_types::CredentialSchemaId;
 
 use super::OneCore;
 use super::common::SortDirection;
-use super::mapper::deserialize_timestamp;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, into_id, into_timestamp};
 
@@ -56,109 +50,10 @@ impl OneCore {
         &self,
         query: CredentialSchemaListQueryBindingDTO,
     ) -> Result<CredentialSchemaListBindingDTO, BindingError> {
-        let organisation_id = into_id(&query.organisation_id)?;
-        let sorting = query.sort.map(|sort_by| ListSorting {
-            column: sort_by.into(),
-            direction: query.sort_direction.map(Into::into),
-        });
-
-        let mut conditions =
-            vec![CredentialSchemaFilterValue::OrganisationId(organisation_id).condition()];
-
-        let exact = query.exact.unwrap_or_default();
-        let get_string_match_type = |column| {
-            if exact.contains(&column) {
-                StringMatchType::Equals
-            } else {
-                StringMatchType::StartsWith
-            }
-        };
-
-        if let Some(name) = query.name.map(|name| {
-            CredentialSchemaFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(
-                    CredentialSchemaListQueryExactColumnBindingEnum::Name,
-                ),
-                value: name,
-            })
-        }) {
-            conditions.push(name.condition())
-        }
-
-        if let Some(schema_id) = query.schema_id.map(|schema_id| {
-            CredentialSchemaFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(
-                    CredentialSchemaListQueryExactColumnBindingEnum::SchemaId,
-                ),
-                value: schema_id,
-            })
-        }) {
-            conditions.push(schema_id.condition())
-        }
-
-        if let Some(formats) = query.formats.map(CredentialSchemaFilterValue::Formats) {
-            conditions.push(formats.condition())
-        }
-
-        if let Some(ids) = query.ids {
-            let ids = ids.iter().map(into_id).collect::<Result<_, _>>()?;
-            conditions.push(CredentialSchemaFilterValue::CredentialSchemaIds(ids).condition());
-        }
-
-        if let Some(value) = query.created_date_after {
-            conditions.push(
-                CredentialSchemaFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-        if let Some(value) = query.created_date_before {
-            conditions.push(
-                CredentialSchemaFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-        if let Some(value) = query.last_modified_after {
-            conditions.push(
-                CredentialSchemaFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-        if let Some(value) = query.last_modified_before {
-            conditions.push(
-                CredentialSchemaFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-
         let core = self.use_core().await?;
         Ok(core
             .credential_schema_service
-            .get_credential_schema_list(
-                &organisation_id,
-                GetCredentialSchemaQueryDTO {
-                    pagination: Some(ListPagination {
-                        page: query.page,
-                        page_size: query.page_size,
-                    }),
-                    filtering: Some(ListFilterCondition::And(conditions)),
-                    sorting,
-                    include: query
-                        .include
-                        .map(|incl| incl.into_iter().map(Into::into).collect()),
-                },
-            )
+            .get_credential_schema_list(query.try_into()?)
             .await?
             .into())
     }
@@ -301,7 +196,8 @@ pub struct CredentialSchemaListQueryBindingDTO {
     pub last_modified_before: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
+#[into(CredentialSchemaExactColumn)]
 #[uniffi(name = "CredentialSchemaListQueryExactColumn")]
 pub enum CredentialSchemaListQueryExactColumnBindingEnum {
     Name,

@@ -5,16 +5,15 @@ use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::DidService;
-use super::dto::{CreateDidRequestDTO, CreateDidRequestKeysDTO, DidPatchRequestDTO};
+use super::dto::{
+    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidFilterParamsDTO, DidPatchRequestDTO,
+};
 use super::error::DidServiceError;
 use crate::config::core_config::KeyAlgorithmType;
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::did::{
-    Did, DidListQuery, DidRelations, DidType, GetDidList, KeyRole, RelatedKey,
-};
+use crate::model::did::{Did, DidRelations, DidType, GetDidList, KeyRole, RelatedKey};
 use crate::model::identifier::Identifier;
 use crate::model::key::{Key, KeyRelations};
-use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
 use crate::proto::identifier_creator::MockIdentifierCreator;
 use crate::proto::session_provider::NoSessionProvider;
@@ -26,6 +25,7 @@ use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::repository::did_repository::MockDidRepository;
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{dummy_did, dummy_identifier, dummy_organisation};
 
 fn setup_service(
@@ -181,16 +181,26 @@ async fn test_get_did_list() {
     );
 
     let result = service
-        .get_did_list(
-            &organisation_id,
-            DidListQuery {
-                pagination: Some(ListPagination {
-                    page: 0,
-                    page_size: 1,
-                }),
-                ..Default::default()
+        .get_did_list(ListQueryDTO {
+            page: 0,
+            page_size: 1,
+            sort: None,
+            sort_direction: None,
+            filter: DidFilterParamsDTO {
+                name: None,
+                did: None,
+                r#type: None,
+                exact: None,
+                deactivated: None,
+                key_algorithms: None,
+                key_roles: None,
+                key_storages: None,
+                key_ids: None,
+                did_methods: None,
+                organisation_id,
             },
-        )
+            include: None,
+        })
         .await;
 
     assert!(result.is_ok());
@@ -385,15 +395,26 @@ async fn test_list_did_fail_session_org_mismatch() {
     };
 
     let result = service
-        .get_did_list(
-            &Uuid::new_v4().into(),
-            DidListQuery {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_did_list(ListQueryDTO {
+            page: 0,
+            page_size: 0,
+            sort: None,
+            sort_direction: None,
+            filter: DidFilterParamsDTO {
+                name: None,
+                did: None,
+                r#type: None,
+                exact: None,
+                deactivated: None,
+                key_algorithms: None,
+                key_roles: None,
+                key_storages: None,
+                key_ids: None,
+                did_methods: None,
+                organisation_id: Uuid::new_v4().into(),
             },
-        )
+            include: None,
+        })
         .await;
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }

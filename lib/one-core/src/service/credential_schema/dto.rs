@@ -11,11 +11,10 @@ use uuid::Uuid;
 use crate::model;
 use crate::model::common::GetListResponse;
 use crate::model::credential_schema::{
-    CredentialSchema, KeyStorageSecurity, LayoutType, SortableCredentialSchemaColumn,
-    TransactionCode, TransactionCodeType,
+    CredentialSchema, CredentialSchemaExactColumn, KeyStorageSecurity, LayoutType, TransactionCode,
+    TransactionCodeType,
 };
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
-use crate::model::list_query::ListQuery;
 use crate::proto::credential_schema::transaction_code::TransactionCodeLength;
 use crate::service::common_dto::{BoundedB64Image, KB, MB};
 
@@ -117,12 +116,23 @@ pub enum CredentialSchemaFilterValue {
 
 impl ListFilterValue for CredentialSchemaFilterValue {}
 
+#[derive(Clone, Debug)]
+pub struct CredentialSchemaFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<CredentialSchemaExactColumn>>,
+    pub organisation_id: OrganisationId,
+    pub schema_id: Option<String>,
+    pub formats: Option<Vec<String>>,
+    pub requires_wallet_instance_attestation: Option<bool>,
+    pub key_storage_security: Option<Vec<KeyStorageSecurity>>,
+    pub credential_schema_ids: Option<Vec<CredentialSchemaId>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
 pub type GetCredentialSchemaListResponseDTO = GetListResponse<CredentialSchemaListItemResponseDTO>;
-pub type GetCredentialSchemaQueryDTO = ListQuery<
-    SortableCredentialSchemaColumn,
-    CredentialSchemaFilterValue,
-    CredentialSchemaListIncludeEntityTypeEnum,
->;
 
 #[derive(Clone, Debug)]
 pub struct CreateCredentialSchemaRequestDTO {

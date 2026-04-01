@@ -6,8 +6,8 @@ use shared_types::{ClaimId, CredentialId, InteractionId};
 use uuid::Uuid;
 
 use crate::model::credential::{
-    Credential, CredentialRelations, CredentialRole, CredentialStateEnum, GetCredentialList,
-    GetCredentialQuery, UpdateCredentialRequest,
+    Credential, CredentialListQuery, CredentialRelations, CredentialRole, CredentialStateEnum,
+    GetCredentialList, UpdateCredentialRequest,
 };
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
@@ -230,7 +230,7 @@ impl CredentialRepository for CredentialHistoryDecorator {
 
     async fn get_credential_list(
         &self,
-        query_params: GetCredentialQuery,
+        query_params: CredentialListQuery,
     ) -> Result<GetCredentialList, DataLayerError> {
         self.inner.get_credential_list(query_params).await
     }

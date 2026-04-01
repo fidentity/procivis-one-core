@@ -4,7 +4,7 @@ use one_core::model::claim::Claim;
 use one_core::model::common::LockType;
 use one_core::model::history::HistoryErrorMetadata;
 use one_core::model::proof::{
-    GetProofList, GetProofQuery, Proof, ProofClaim, ProofClaimRelations, ProofRelations,
+    GetProofList, Proof, ProofClaim, ProofClaimRelations, ProofListQuery, ProofRelations,
     ProofStateEnum, UpdateProofRequest,
 };
 use one_core::repository::error::DataLayerError;
@@ -94,7 +94,7 @@ impl ProofRepository for ProofProvider {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError> {
         let limit = query_params
             .pagination
@@ -227,7 +227,7 @@ impl ProofRepository for ProofProvider {
 }
 
 /// produces list query declared to be used together with `into_model::<ProofListItemModel>()`
-fn get_proof_list_query(query_params: &GetProofQuery) -> Select<crate::entity::proof::Entity> {
+fn get_proof_list_query(query_params: &ProofListQuery) -> Select<crate::entity::proof::Entity> {
     let mut query = crate::entity::proof::Entity::find()
         .select_only()
         .columns([

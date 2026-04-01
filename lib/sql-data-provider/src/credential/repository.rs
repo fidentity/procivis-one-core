@@ -5,8 +5,8 @@ use std::sync::Arc;
 use autometrics::autometrics;
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::credential::{
-    Credential, CredentialListIncludeEntityTypeEnum, CredentialRelations, GetCredentialList,
-    GetCredentialQuery, UpdateCredentialRequest,
+    Credential, CredentialListIncludeEntityTypeEnum, CredentialListQuery, CredentialRelations,
+    GetCredentialList, UpdateCredentialRequest,
 };
 use one_core::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
 use one_core::model::identifier::{Identifier, IdentifierRelations};
@@ -238,7 +238,7 @@ impl CredentialProvider {
     }
 }
 
-fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credential::Entity> {
+fn get_credential_list_query(query_params: CredentialListQuery) -> Select<credential::Entity> {
     let mut query = credential::Entity::find()
         .select_only()
         .columns([
@@ -474,7 +474,7 @@ impl CredentialRepository for CredentialProvider {
 
     async fn get_credential_list(
         &self,
-        query_params: GetCredentialQuery,
+        query_params: CredentialListQuery,
     ) -> Result<GetCredentialList, DataLayerError> {
         let limit = query_params
             .pagination

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use one_core::model::common::ExactColumn;
-use one_core::model::proof::{ProofRole, ProofStateEnum, SortableProofColumn};
+use one_core::model::proof::{
+    ExactProofFilterColumn, ProofRole, ProofStateEnum, SortableProofColumn,
+};
 use one_core::provider::verification_protocol::dto::{
     CredentialDetailClaimExtResponseDTO, CredentialQueryFailureHintResponseDTO,
     CredentialQueryFailureReasonEnum, CredentialQueryResponseDTO, CredentialSetResponseDTO,
@@ -79,11 +80,7 @@ impl OneCore {
         query: ProofListQueryBindingDTO,
     ) -> Result<ProofListBindingDTO, BindingError> {
         let core = self.use_core().await?;
-        let organisation_id = into_id(query.organisation_id.clone())?;
-        let proofs = core
-            .proof_service
-            .get_proof_list(&organisation_id, query.try_into()?)
-            .await?;
+        let proofs = core.proof_service.get_proof_list(query.try_into()?).await?;
         Ok(proofs.into())
     }
 
@@ -246,7 +243,7 @@ pub struct CreateProofRequestBindingDTO {
 }
 
 #[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
-#[into(ExactColumn)]
+#[into(ExactProofFilterColumn)]
 #[uniffi(name = "ProofListQueryExactColumn")]
 pub enum ProofListQueryExactColumnBindingEnum {
     Name,

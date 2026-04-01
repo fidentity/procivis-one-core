@@ -4,8 +4,8 @@ use shared_types::{CredentialSchemaId, OrganisationId};
 use uuid::Uuid;
 
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, GetCredentialSchemaQuery,
-    UpdateCredentialSchemaRequest,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
+    GetCredentialSchemaList, UpdateCredentialSchemaRequest,
 };
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::model::organisation::Organisation;
@@ -84,7 +84,7 @@ impl CredentialSchemaRepository for CredentialSchemaHistoryDecorator {
 
     async fn get_credential_schema_list(
         &self,
-        query_params: GetCredentialSchemaQuery,
+        query_params: CredentialSchemaListQuery,
         relations: &CredentialSchemaRelations,
     ) -> Result<GetCredentialSchemaList, DataLayerError> {
         self.inner

@@ -11,7 +11,7 @@ use crate::model::history::{
 };
 use crate::model::interaction::InteractionRelations;
 use crate::model::proof::{
-    GetProofList, GetProofQuery, Proof, ProofRelations, ProofRole, ProofStateEnum,
+    GetProofList, Proof, ProofListQuery, ProofRelations, ProofRole, ProofStateEnum,
     UpdateProofRequest,
 };
 use crate::model::proof_schema::ProofSchemaRelations;
@@ -192,7 +192,7 @@ impl ProofRepository for ProofHistoryDecorator {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError> {
         self.inner.get_proof_list(query_params).await
     }

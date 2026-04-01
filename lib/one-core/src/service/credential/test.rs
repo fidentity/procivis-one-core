@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use super::CredentialService;
 use super::dto::{
-    CreateCredentialRequestDTO, CredentialRequestClaimDTO, DetailCredentialClaimValueResponseDTO,
-    GetCredentialQueryDTO,
+    CreateCredentialRequestDTO, CredentialFilterParamsDTO, CredentialRequestClaimDTO,
+    DetailCredentialClaimValueResponseDTO,
 };
 use super::error::CredentialServiceError;
 use super::validator::validate_create_request;
@@ -22,14 +22,12 @@ use crate::model::certificate::{Certificate, CertificateState};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{
-    Credential, CredentialFilterValue, CredentialRole, CredentialStateEnum, GetCredentialList,
+    Credential, CredentialRole, CredentialStateEnum, GetCredentialList,
 };
 use crate::model::credential_schema::{CredentialSchema, KeyStorageSecurity, LayoutType};
 use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::key::Key;
-use crate::model::list_filter::ListFilterValue as _;
-use crate::model::list_query::ListPagination;
 use crate::model::validity_credential::{ValidityCredential, ValidityCredentialType};
 use crate::proto::credential_validity_manager::MockCredentialValidityManager;
 use crate::proto::notification_scheduler::MockNotificationScheduler;
@@ -47,6 +45,7 @@ use crate::repository::credential_schema_repository::MockCredentialSchemaReposit
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::interaction_repository::MockInteractionRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{
     dummy_did, dummy_identifier, dummy_key, dummy_organisation, generic_config,
     generic_formatter_capabilities, get_dummy_date,
@@ -368,18 +367,34 @@ async fn test_get_credential_list_success() {
 
     let organisation_id = Uuid::new_v4().into();
     let result = service
-        .get_credential_list(
-            &organisation_id,
-            GetCredentialQueryDTO {
-                pagination: Some(ListPagination {
-                    page: 0,
-                    page_size: 5,
-                }),
-                sorting: None,
-                filtering: Some(CredentialFilterValue::OrganisationId(organisation_id).condition()),
-                include: None,
+        .get_credential_list(ListQueryDTO {
+            page: 0,
+            page_size: 5,
+            sort: None,
+            sort_direction: None,
+            filter: CredentialFilterParamsDTO {
+                organisation_id,
+                name: None,
+                search_text: None,
+                search_type: None,
+                exact: None,
+                roles: None,
+                ids: None,
+                credential_schema_ids: None,
+                issuers: None,
+                states: None,
+                profiles: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+                issuance_date_after: None,
+                issuance_date_before: None,
+                revocation_date_after: None,
+                revocation_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     assert!(result.is_ok());
@@ -4836,15 +4851,34 @@ async fn test_list_credential_session_org_mismatch() {
     });
 
     let result = service
-        .get_credential_list(
-            &Uuid::new_v4().into(),
-            GetCredentialQueryDTO {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_credential_list(ListQueryDTO {
+            page: 0,
+            page_size: 30,
+            sort: None,
+            sort_direction: None,
+            filter: CredentialFilterParamsDTO {
+                organisation_id: Uuid::new_v4().into(),
+                name: None,
+                search_text: None,
+                search_type: None,
+                exact: None,
+                roles: None,
+                ids: None,
+                credential_schema_ids: None,
+                issuers: None,
+                states: None,
+                profiles: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
+                issuance_date_after: None,
+                issuance_date_before: None,
+                revocation_date_after: None,
+                revocation_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);

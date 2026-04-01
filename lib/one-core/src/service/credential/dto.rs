@@ -10,13 +10,10 @@ use time::OffsetDateTime;
 
 use crate::model::blob::Blob;
 use crate::model::common::GetListResponse;
-use crate::model::credential::{
-    CredentialFilterValue, CredentialListIncludeEntityTypeEnum, SortableCredentialColumn,
-};
+use crate::model::credential::ExactCredentialFilterColumn;
 use crate::model::credential_schema::{
     KeyStorageSecurity, LayoutType, TransactionCode, TransactionCodeType,
 };
-use crate::model::list_query::ListQuery;
 use crate::service::certificate::dto::CertificateResponseDTO;
 use crate::service::credential_schema::dto::{
     CredentialClaimSchemaDTO, CredentialSchemaLayoutPropertiesResponseDTO,
@@ -179,9 +176,37 @@ pub enum CredentialStateEnum {
     InteractionExpired,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CredentialSearchTypeDTO {
+    ClaimName,
+    ClaimValue,
+    CredentialSchemaName,
+}
+
+#[derive(Clone, Debug)]
+pub struct CredentialFilterParamsDTO {
+    pub organisation_id: OrganisationId,
+    pub name: Option<String>,
+    pub search_text: Option<String>,
+    pub search_type: Option<Vec<CredentialSearchTypeDTO>>,
+    pub exact: Option<Vec<ExactCredentialFilterColumn>>,
+    pub roles: Option<Vec<CredentialRole>>,
+    pub ids: Option<Vec<CredentialId>>,
+    pub credential_schema_ids: Option<Vec<CredentialSchemaId>>,
+    pub issuers: Option<Vec<IdentifierId>>,
+    pub states: Option<Vec<CredentialStateEnum>>,
+    pub profiles: Option<Vec<String>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+    pub issuance_date_after: Option<OffsetDateTime>,
+    pub issuance_date_before: Option<OffsetDateTime>,
+    pub revocation_date_after: Option<OffsetDateTime>,
+    pub revocation_date_before: Option<OffsetDateTime>,
+}
+
 pub type GetCredentialListResponseDTO = GetListResponse<CredentialListItemResponseDTO>;
-pub type GetCredentialQueryDTO =
-    ListQuery<SortableCredentialColumn, CredentialFilterValue, CredentialListIncludeEntityTypeEnum>;
 
 #[derive(Clone, Debug)]
 pub struct CreateCredentialRequestDTO {

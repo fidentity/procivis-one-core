@@ -5,8 +5,8 @@ use futures::stream::{self, StreamExt};
 use itertools::Either;
 use one_core::model::claim_schema::ClaimSchema;
 use one_core::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, GetCredentialSchemaQuery,
-    UpdateCredentialSchemaRequest,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
+    GetCredentialSchemaList, UpdateCredentialSchemaRequest,
 };
 use one_core::model::organisation::Organisation;
 use one_core::proto::transaction_manager::IsolationLevel;
@@ -154,7 +154,7 @@ impl CredentialSchemaRepository for CredentialSchemaProvider {
 
     async fn get_credential_schema_list(
         &self,
-        query_params: GetCredentialSchemaQuery,
+        query_params: CredentialSchemaListQuery,
         relations: &CredentialSchemaRelations,
     ) -> Result<GetCredentialSchemaList, DataLayerError> {
         let limit = query_params

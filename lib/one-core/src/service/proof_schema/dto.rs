@@ -6,11 +6,10 @@ use shared_types::{
 };
 use time::OffsetDateTime;
 
-use crate::model::common::GetListResponse;
+use crate::model::common::{ExactColumn, GetListResponse};
 use crate::model::credential_schema::{KeyStorageSecurity, LayoutType};
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
-use crate::model::list_query::ListQuery;
-use crate::model::proof_schema::{ProofSchema, SortableProofSchemaColumn};
+use crate::model::proof_schema::ProofSchema;
 use crate::service::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaListItemResponseDTO,
 };
@@ -29,7 +28,18 @@ pub enum ProofSchemaFilterValue {
 
 impl ListFilterValue for ProofSchemaFilterValue {}
 
-pub type GetProofSchemaQueryDTO = ListQuery<SortableProofSchemaColumn, ProofSchemaFilterValue>;
+#[derive(Clone, Debug)]
+pub struct ProofSchemaFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactColumn>>,
+    pub organisation_id: OrganisationId,
+    pub ids: Option<Vec<ProofSchemaId>>,
+    pub formats: Option<Vec<String>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

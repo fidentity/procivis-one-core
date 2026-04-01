@@ -12,7 +12,6 @@ use super::dto::{
 };
 use crate::dto::common::{EntityResponseRestDTO, GetCredentialsResponseDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{
     CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse, VecResponse,
 };
@@ -104,12 +103,11 @@ pub(crate) async fn get_credential_list(
     WithRejection(Qs(query), _): WithRejection<Qs<GetCredentialQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetCredentialsResponseDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .credential_service
-                .get_credential_list(&organisation_id, query.try_into()?)
+                .get_credential_list(query.try_into()?)
                 .await
                 .error_while("getting credential list")?,
         )

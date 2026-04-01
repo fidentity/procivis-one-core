@@ -10,8 +10,9 @@ use one_core::model::list_filter::{ListFilterValue, StringMatch};
 use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::model::organisation::OrganisationRelations;
 use one_core::model::proof_schema::{
-    GetProofSchemaQuery, ProofInputClaimSchema, ProofInputSchema, ProofInputSchemaRelations,
-    ProofSchema, ProofSchemaClaimRelations, ProofSchemaRelations, SortableProofSchemaColumn,
+    ProofInputClaimSchema, ProofInputSchema, ProofInputSchemaRelations, ProofSchema,
+    ProofSchemaClaimRelations, ProofSchemaListQuery, ProofSchemaRelations,
+    SortableProofSchemaColumn,
 };
 use one_core::repository::claim_schema_repository::{
     self, ClaimSchemaRepository, MockClaimSchemaRepository,
@@ -801,7 +802,7 @@ async fn test_get_proof_schema_list_empty() {
     .await;
 
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 1,
@@ -838,7 +839,7 @@ async fn test_get_proof_schema_list_deleted() {
         .unwrap();
 
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 1,
@@ -903,7 +904,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // default sorting - by created date descending
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -923,7 +924,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
     // =========== SORTING
     // sort by name - default (ascending)
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -940,7 +941,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // sort by name - descending
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -957,7 +958,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // sort by created-date - ascending
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -975,7 +976,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
     // =========== FILTERING
     // filter by name - one result
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -997,7 +998,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // filter by name - two results
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -1018,7 +1019,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // filter by name - no results
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 2,
@@ -1040,7 +1041,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
     // ====== PAGINATION
     // first page
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 0,
                 page_size: 1,
@@ -1059,7 +1060,7 @@ async fn test_get_proof_schema_list_sorting_filtering_pagination() {
 
     // second page
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             pagination: Some(ListPagination {
                 page: 1,
                 page_size: 1,
@@ -1237,7 +1238,7 @@ async fn test_get_proof_schema_list_filter_formats() {
 
     // JWT only
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             filtering: Some(ProofSchemaFilterValue::Formats(vec!["JWT".to_string()]).condition()),
             ..Default::default()
         })
@@ -1249,7 +1250,7 @@ async fn test_get_proof_schema_list_filter_formats() {
 
     // MDOC only
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             filtering: Some(ProofSchemaFilterValue::Formats(vec!["MDOC".to_string()]).condition()),
             ..Default::default()
         })
@@ -1261,7 +1262,7 @@ async fn test_get_proof_schema_list_filter_formats() {
 
     // MDOC or JWT
     let result = repository
-        .get_proof_schema_list(GetProofSchemaQuery {
+        .get_proof_schema_list(ProofSchemaListQuery {
             filtering: Some(
                 ProofSchemaFilterValue::Formats(vec!["MDOC".to_string(), "JWT".to_string()])
                     .condition(),

@@ -44,7 +44,7 @@ pub enum SortableProofSchemaColumn {
 }
 
 pub type GetProofSchemaList = GetListResponse<ProofSchema>;
-pub type GetProofSchemaQuery = ListQuery<SortableProofSchemaColumn, ProofSchemaFilterValue>;
+pub type ProofSchemaListQuery = ListQuery<SortableProofSchemaColumn, ProofSchemaFilterValue>;
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct ProofSchemaRelations {

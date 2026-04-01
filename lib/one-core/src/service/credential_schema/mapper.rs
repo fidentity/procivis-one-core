@@ -5,14 +5,19 @@ use uuid::Uuid;
 use super::dto::{
     CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
     CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
-    CredentialSchemaDetailResponseDTO, CredentialSchemaFilterValue,
-    CredentialSchemaLogoPropertiesRequestDTO, GetCredentialSchemaQueryDTO,
+    CredentialSchemaDetailResponseDTO, CredentialSchemaFilterParamsDTO,
+    CredentialSchemaFilterValue, CredentialSchemaLogoPropertiesRequestDTO,
 };
 use super::error::CredentialSchemaServiceError;
 use crate::mapper::credential_schema_claim::from_jwt_request_claim_schema;
 use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
-use crate::model::credential_schema::CredentialSchema;
-use crate::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
+use crate::model::credential_schema::{
+    CredentialSchema, CredentialSchemaExactColumn, CredentialSchemaListQuery,
+};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
 
@@ -60,8 +65,8 @@ pub(super) fn create_unique_name_check_request(
     name: &str,
     schema_id: Option<String>,
     organisation_id: OrganisationId,
-) -> Result<GetCredentialSchemaQueryDTO, CredentialSchemaServiceError> {
-    Ok(GetCredentialSchemaQueryDTO {
+) -> Result<CredentialSchemaListQuery, CredentialSchemaServiceError> {
+    Ok(CredentialSchemaListQuery {
         pagination: Some(ListPagination {
             page: 0,
             page_size: 1,
@@ -236,5 +241,87 @@ impl From<CredentialSchemaBackgroundPropertiesRequestDTO>
             color: value.color,
             image: value.image,
         }
+    }
+}
+
+impl From<CredentialSchemaFilterParamsDTO> for ListFilterCondition<CredentialSchemaFilterValue> {
+    fn from(value: CredentialSchemaFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            CredentialSchemaFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            CredentialSchemaFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(CredentialSchemaExactColumn::Name),
+                value: name,
+            })
+        });
+
+        let schema_id = value.schema_id.map(|schema_id| {
+            CredentialSchemaFilterValue::SchemaId(StringMatch {
+                r#match: get_string_match_type(CredentialSchemaExactColumn::SchemaId),
+                value: schema_id,
+            })
+        });
+
+        let formats = value.formats.map(CredentialSchemaFilterValue::Formats);
+
+        let key_storage_security = value
+            .key_storage_security
+            .map(CredentialSchemaFilterValue::KeyStorageSecurity);
+
+        let requires_wia = value
+            .requires_wallet_instance_attestation
+            .map(CredentialSchemaFilterValue::RequiresWalletInstanceAttestation);
+
+        let credential_schema_ids = value
+            .credential_schema_ids
+            .map(CredentialSchemaFilterValue::CredentialSchemaIds);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            CredentialSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            CredentialSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & schema_id
+            & formats
+            & key_storage_security
+            & requires_wia
+            & credential_schema_ids
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

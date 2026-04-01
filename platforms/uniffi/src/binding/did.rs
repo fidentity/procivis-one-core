@@ -1,15 +1,13 @@
 use std::collections::HashMap;
 
-use one_core::model::did::{DidFilterValue, DidListQuery, DidType, KeyRole, SortableDidColumn};
-use one_core::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
-use one_core::model::list_query::{ListPagination, ListSorting};
+use one_core::model::did::{DidType, ExactDidFilterColumn, KeyRole, SortableDidColumn};
 use one_core::service::did::dto::{DidListItemResponseDTO, GetDidListResponseDTO};
 use one_dto_mapper::{From, Into, convert_inner};
 
 use super::common::SortDirection;
 use crate::OneCore;
 use crate::error::BindingError;
-use crate::utils::{TimestampFormat, into_id};
+use crate::utils::TimestampFormat;
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCore {
@@ -32,86 +30,9 @@ impl OneCore {
     ) -> Result<DidListBindingDTO, BindingError> {
         let core = self.use_core().await?;
 
-        let organisation_id = into_id(&query.organisation_id)?;
-        let condition = {
-            let exact = query.exact.unwrap_or_default();
-            let get_string_match_type = |column| {
-                if exact.contains(&column) {
-                    StringMatchType::Equals
-                } else {
-                    StringMatchType::StartsWith
-                }
-            };
-
-            let organisation = DidFilterValue::OrganisationId(organisation_id).condition();
-
-            let name = query.name.map(|name| {
-                DidFilterValue::Name(StringMatch {
-                    r#match: get_string_match_type(ExactDidFilterColumnBindingEnum::Name),
-                    value: name,
-                })
-            });
-
-            let did_value = query.did.map(|did| {
-                DidFilterValue::Name(StringMatch {
-                    r#match: get_string_match_type(ExactDidFilterColumnBindingEnum::Did),
-                    value: did,
-                })
-            });
-
-            let r#type = query
-                .r#type
-                .map(|r#type| DidFilterValue::Type(r#type.into()));
-
-            let deactivated = query.deactivated.map(DidFilterValue::Deactivated);
-
-            let key_algorithms = query.key_algorithms.map(DidFilterValue::KeyAlgorithms);
-
-            let key_roles = query.key_roles.map(|values| {
-                DidFilterValue::KeyRoles(values.into_iter().map(|role| role.into()).collect())
-            });
-
-            let key_storages = query.key_storages.map(DidFilterValue::KeyStorages);
-
-            let key_ids = match query.key_ids {
-                None => None,
-                Some(key_ids) => {
-                    let ids = key_ids.iter().map(into_id).collect::<Result<_, _>>()?;
-                    Some(DidFilterValue::KeyIds(ids))
-                }
-            };
-
-            let did_methods = query.did_methods.map(DidFilterValue::DidMethods);
-
-            organisation
-                & name
-                & did_value
-                & r#type
-                & deactivated
-                & key_algorithms
-                & key_roles
-                & key_storages
-                & key_ids
-                & did_methods
-        };
-
         Ok(core
             .did_service
-            .get_did_list(
-                &organisation_id,
-                DidListQuery {
-                    pagination: Some(ListPagination {
-                        page: query.page,
-                        page_size: query.page_size,
-                    }),
-                    sorting: query.sort.map(|column| ListSorting {
-                        column: column.into(),
-                        direction: convert_inner(query.sort_direction),
-                    }),
-                    filtering: Some(condition),
-                    include: None,
-                },
-            )
+            .get_did_list(query.try_into()?)
             .await?
             .into())
     }
@@ -188,7 +109,8 @@ pub enum SortableDidColumnBindingEnum {
     Deactivated,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
+#[into(ExactDidFilterColumn)]
 #[uniffi(name = "DidListQueryExactColumn")]
 pub enum ExactDidFilterColumnBindingEnum {
     Name,

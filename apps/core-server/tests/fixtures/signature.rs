@@ -10,12 +10,19 @@ pub fn dummy_registration_certificate_payload() -> serde_json::Value {
             "family_name": "Doe",
             "id": "TIN-1234567890"
         },
+        "registry_uri": "https://wallet-relying-party-registry.example",
+        "support_uri": "https://registrar.example.com/contact-form",
         "info_uri": "https://example.com",
         "country": "DE",
         "privacy_policy": [{
-            "type": "http://data.europa.eu/eudi/policy/terms-and-conditions",
+            "type": "http://data.europa.eu/eudi/policy/privacy-policy",
             "policyURI": "https://example-company.com/en/privacy-policy"
         }],
+        "dpa": {
+            "uri": "https://supervisory-authority.example",
+            "email": "reports@supervisory-authority.example",
+            "phone": "+15555555"
+        },
         "policy_id": [],
         "certificate_policy": "https://registrar.example.com/certificate-policy",
         "purpose": [],

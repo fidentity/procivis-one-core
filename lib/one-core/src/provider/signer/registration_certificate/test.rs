@@ -1,8 +1,44 @@
-// ETSI TS 119 475 v1.1.1, Annex C
-// (with fixed typos and adjusted privacy policy)
+// ETSI TS 119 475 v1.2.1 (2026-03), Annex C
+// (without "sub" and "iat")
 const PAYLOAD: &str = r#"
 {
-  "name": "Example GmbH",
+  "name": "Example Company",
+  "sub_ln": "Example Company GmbH",
+  "country": "DE",
+  "registry_uri": "https://registrar.com",
+  "srv_description": [
+    [
+      {
+        "lang": "en-US",
+        "value": "Awesome Service by Example Company"
+      },
+      {
+        "lang": "de-DE",
+        "value": "Super Dienst von Example Company"
+      }
+    ]
+  ],
+  "entitlements": [
+    "https://uri.etsi.org/19475/Entitlement/Non_Q_EAA_Provider"
+  ],
+  "privacy_policy": "https://example.com/privacy-policy",
+  "info_uri": "https://example.com/info",
+  "support_uri": "https://example.com/support",
+  "supervisory_authority": {
+    "email": "supervisory@dpa.com",
+    "phone": "+49 123 4567890",
+    "uri": "https://dpa.com/supervisory-authority"
+  },
+  "policy_id": [
+    "0.4.0.19475.3.1"
+  ],
+  "certificate_policy": "https://registrar.com/certificate-policy",
+  "status": {
+    "status_list": {
+      "idx": 0,
+      "uri": "https://example.com/statuslists/1"
+    }
+  },
   "purpose": [
     {
       "lang": "en-US",
@@ -13,76 +49,51 @@ const PAYLOAD: &str = r#"
       "value": "Benötigt für die Überprüfung des Mindestalters"
     }
   ],
-  "info_uri": "https://example.com",
-  "country": "DE",
-  "sub": {
-    "legal_name": "Example GmbH",
-    "id": "LEIXG-529900T8BM49AURSDO55"
-  },
-  "privacy_policy": [
-    {
-      "type": "http://data.europa.eu/eudi/policy/terms-and-conditions",
-      "policyURI": "https://example-company.com/en/privacy-policy"
-    }
-  ],
-  "policy_id": [
-    "0.4.0.19475.3.1"
-  ],
-  "certificate_policy": "https://registrat.example.com/certificate-policy",
   "credentials": [
     {
       "format": "dc+sd-jwt",
       "meta": {
         "vct_values": [
-          "https://credentials.example.com/identity_credential"
+          "urn:eudi:pid:de:1"
         ]
       },
-      "claims": [
-        { "path": ["given_name"] },
-        { "path": ["family_name"] },
-        { "path": ["address", "street_address"] }
+      "claim": [
+        {
+          "path": [
+            "age_equal_or_over",
+            "18"
+          ]
+        }
       ]
     },
     {
-      "format": "dc+sd-jwt",
+      "format": "mso_mdoc",
       "meta": {
-        "vct_values": [
-          "https://othercredentials.example/mdl"
-        ]
+        "doctype_value": "eu.europa.ec.eudi.pid.1"
       },
-      "claims": [
-        { "path": ["given_name"] },
-        { "path": ["family_name"] },
-        { "path": ["address", "street_address"] }
+      "claim": [
+        {
+          "path": [
+            "eu.europa.ec.eudi.pid.1",
+            "age_over_18"
+          ]
+        }
       ]
     }
   ],
-  "entitlements": [
-    "https://uri.etsi.org/19475/Entitlement/Non_Q_EAA_Provider"
-  ],
-  "provided_attestations": [
+  "provides_attestations": [
     {
       "format": "dc+sd-jwt",
       "meta": {
         "vct_values": [
-          ""
+          "https://example.com/attestations/age_over_18"
         ]
       }
     }
   ],
-  "public_body": false,
-  "service": [
-    {
-      "lang": "en-US",
-      "value": "Bundesagentur für Sprunginnovationen"
-    },
-    {
-      "lang": "de-DE",
-      "value": "Federal Agency for Breakthrough Innovations"
-    }
-  ],
-  "act": {
-    "sub": "DE:EX-987654381"
+  "intermediary": {
+    "sub": "LEIXG-INTERMEDIARY-1234567890",
+    "name": "Intermediary Services Ltd."
   }
 }
 "#;

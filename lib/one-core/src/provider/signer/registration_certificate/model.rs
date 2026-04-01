@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use one_dto_mapper::From;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -10,8 +9,9 @@ use crate::proto::jwt::model::SerdeSkippable;
 // Payload specification according to spec from:
 // https://www.etsi.org/deliver/etsi_ts/119400_119499/119475/01.01.01_60/ts_119475v010101p.pdf
 
-pub type WRPRegistrationCertificate = JwtImpl<Subject, Payload>;
-pub type WRPRegistrationCertificatePayload = crate::proto::jwt::model::Payload<Subject, Payload>;
+pub type WRPRegistrationCertificate = JwtImpl<Option<String>, Payload>;
+pub type WRPRegistrationCertificatePayload =
+    crate::proto::jwt::model::Payload<Option<String>, Payload>;
 
 // 5.2.4 Payload Attributes
 #[derive(Debug)]
@@ -19,46 +19,48 @@ pub struct RequestData {
     pub name: String,
     pub subject: Subject,
     pub country: String,
-    pub registry_uri: Option<Url>,
-    pub service: Vec<MultiLangString>,
+    pub registry_uri: Url,
+    pub service_description: Vec<MultiLangString>,
     pub entitlements: Vec<Entitlement>,
-    pub privacy_policy: Vec<Policy>,
-    pub info_uri: String,
-    pub data_protection_authority: Option<DataProtectionAuthority>,
+    pub privacy_policy: Url,
+    pub info_uri: Url,
+    pub supervisory_authority: SupervisoryAuthority,
     pub policy_id: Vec<String>,
     pub certificate_policy: Url,
     pub status: Option<Status>,
-    pub provided_attestations: Option<Vec<ProvidedAttestation>>,
+    pub provided_attestations: Option<Vec<Credential>>,
     pub credentials: Option<Vec<Credential>>,
     pub purpose: Option<Vec<MultiLangString>>,
     pub intended_use_id: Option<String>,
     pub public_body: Option<bool>,
-    pub support_uri: Option<Url>,
+    pub support_uri: Url,
     pub intermediary: Option<Intermediary>,
 }
 
-#[derive(Debug, Serialize, Deserialize, From)]
-#[from(RequestData)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Payload {
     pub name: String,
+    pub sub_ln: Option<String>,
+    pub sub_gn: Option<String>,
+    pub sub_fn: Option<String>,
     pub country: String,
-    pub registry_uri: Option<Url>,
-    pub service: Vec<MultiLangString>,
+    pub registry_uri: Url,
+    #[serde(rename = "srv_description")]
+    pub service_descriptions: Vec<Vec<MultiLangString>>,
     pub entitlements: Vec<Entitlement>,
-    pub privacy_policy: Vec<Policy>,
-    pub info_uri: String,
-    #[serde(rename = "dpa")]
-    pub data_protection_authority: Option<DataProtectionAuthority>,
+    pub privacy_policy: Url,
+    pub info_uri: Url,
+    pub supervisory_authority: SupervisoryAuthority,
     pub policy_id: Vec<String>,
     pub certificate_policy: Url,
     pub status: Option<Status>,
-    pub provided_attestations: Option<Vec<ProvidedAttestation>>,
+    pub provides_attestations: Option<Vec<Credential>>,
     pub credentials: Option<Vec<Credential>>,
     pub purpose: Option<Vec<MultiLangString>>,
     pub intended_use_id: Option<String>,
     pub public_body: Option<bool>,
-    pub support_uri: Option<Url>,
-    #[serde(rename = "act")]
+    pub support_uri: Url,
     pub intermediary: Option<Intermediary>,
 }
 
@@ -87,11 +89,12 @@ impl SerdeSkippable for Subject {
 pub struct Policy {
     pub r#type: PolicyType,
     #[serde(rename = "policyURI")]
-    pub policy_uri: String,
+    pub policy_uri: Url,
 }
 
 // Values defined here: https://github.com/eu-digital-identity-wallet/eudi-doc-standards-and-technical-specifications/blob/main/docs/technical-specifications/ts2-notification-publication-provider-information.md#286-policy
-#[derive(Debug, Serialize, Deserialize)]
+// The WRPRCs are only concerned with PrivacyPolicies, but we support other policies for compatibility.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PolicyType {
     #[serde(rename = "http://data.europa.eu/eudi/policy/trust-service-practice-statement")]
     TrustServicePracticeStatement,
@@ -144,10 +147,10 @@ pub enum EntitlementRole {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DataProtectionAuthority {
-    pub email: Option<String>,
-    pub phone: Option<String>,
-    pub uri: Option<String>,
+pub struct SupervisoryAuthority {
+    pub email: String,
+    pub phone: String,
+    pub uri: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -157,25 +160,17 @@ pub struct Status {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProvidedAttestation {
+pub struct Credential {
     pub format: String,
-    pub meta: serde_json::Value,
-    pub claim: Option<serde_json::Value>,
+    pub meta: dcql::CredentialMeta,
+    pub claim: Option<Vec<Claim>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Credential {
-    pub format: String,
-    pub meta: serde_json::Value,
-    pub claims: Option<Vec<Claim>>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct Claim {
-    pub path: Vec<String>,
-    pub values: Option<Vec<serde_json::Value>>,
+    pub path: dcql::ClaimPath,
+    pub values: Option<Vec<dcql::ClaimValue>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -183,6 +178,8 @@ pub struct Claim {
 pub struct Intermediary {
     #[serde(rename = "sub")]
     pub subject: String,
+    #[serde(rename = "name")]
+    pub common_name: String,
 }
 
 impl<'de> Deserialize<'de> for RequestData {
@@ -197,21 +194,22 @@ impl<'de> Deserialize<'de> for RequestData {
             #[serde(rename = "sub")]
             pub subject: Subject,
             pub country: String,
-            pub registry_uri: Option<Url>,
-            pub service: Vec<MultiLangString>,
+            pub registry_uri: Url,
+            #[serde(rename = "service")]
+            pub service_description: Vec<MultiLangString>,
             pub entitlements: Vec<Entitlement>,
             pub privacy_policy: Vec<Policy>,
-            pub info_uri: String,
+            pub info_uri: Url,
             #[serde(rename = "dpa")]
-            pub data_protection_authority: Option<DataProtectionAuthority>,
+            pub data_protection_authority: SupervisoryAuthority,
             pub policy_id: Vec<String>,
             pub certificate_policy: Url,
-            pub provided_attestations: Option<Vec<ProvidedAttestation>>,
+            pub provided_attestations: Option<Vec<Credential>>,
             pub credentials: Option<Vec<Credential>>,
             pub purpose: Option<Vec<MultiLangString>>,
             pub intended_use_id: Option<String>,
             pub public_body: Option<bool>,
-            pub support_uri: Option<Url>,
+            pub support_uri: Url,
             #[serde(rename = "act")]
             pub intermediary: Option<Intermediary>,
         }
@@ -243,16 +241,24 @@ impl<'de> Deserialize<'de> for RequestData {
             }
         }
 
+        let privacy_policy = proto
+            .privacy_policy
+            .into_iter()
+            .find(|policy| policy.r#type == PolicyType::PrivacyPolicy)
+            .ok_or(Error::custom(
+                "Must provide at least one policy of PrivacyPolicy type",
+            ))?;
+
         Ok(Self {
             name: proto.name,
             subject: proto.subject,
             country: proto.country,
             registry_uri: proto.registry_uri,
-            service: proto.service,
+            service_description: proto.service_description,
             entitlements: proto.entitlements,
-            privacy_policy: proto.privacy_policy,
+            privacy_policy: privacy_policy.policy_uri,
             info_uri: proto.info_uri,
-            data_protection_authority: proto.data_protection_authority,
+            supervisory_authority: proto.data_protection_authority,
             policy_id: proto.policy_id,
             certificate_policy: proto.certificate_policy,
             provided_attestations: proto.provided_attestations,
@@ -264,6 +270,15 @@ impl<'de> Deserialize<'de> for RequestData {
             intermediary: proto.intermediary,
             status: None,
         })
+    }
+}
+
+impl RequestData {
+    pub fn get_subject_id(&self) -> &str {
+        match &self.subject {
+            Subject::LegalPerson { id, .. } => id.as_str(),
+            Subject::NaturalPerson { id, .. } => id.as_str(),
+        }
     }
 }
 
@@ -385,35 +400,39 @@ impl<'de> Deserialize<'de> for Entitlement {
     }
 }
 
-impl<'de> Deserialize<'de> for Claim {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        pub struct ClaimProto {
-            pub path: Vec<String>,
-            pub values: Option<Vec<serde_json::Value>>,
-        }
+impl From<RequestData> for Payload {
+    fn from(value: RequestData) -> Self {
+        let (sub_ln, sub_gn, sub_fn) = match value.subject {
+            Subject::LegalPerson { legal_name, .. } => (Some(legal_name), None, None),
+            Subject::NaturalPerson {
+                given_name,
+                family_name,
+                ..
+            } => (None, Some(given_name), Some(family_name)),
+        };
 
-        // B.2.10 Class Claim
-        // values: array of strings, integers or boolean values
-        //         that specifies the expected values of the claim
-        let proto = ClaimProto::deserialize(deserializer)?;
-        if let Some(values) = &proto.values {
-            for v in values {
-                if !(v.is_string() || v.is_i64() || v.is_u64() || v.is_boolean()) {
-                    return Err(Error::custom(
-                        "claim values must be strings, integers or booleans",
-                    ));
-                }
-            }
+        Self {
+            name: value.name,
+            sub_ln,
+            sub_gn,
+            sub_fn,
+            country: value.country,
+            registry_uri: value.registry_uri,
+            service_descriptions: vec![value.service_description],
+            entitlements: value.entitlements,
+            privacy_policy: value.privacy_policy,
+            info_uri: value.info_uri,
+            supervisory_authority: value.supervisory_authority,
+            policy_id: value.policy_id,
+            certificate_policy: value.certificate_policy,
+            status: value.status,
+            provides_attestations: value.provided_attestations,
+            credentials: value.credentials,
+            purpose: value.purpose,
+            intended_use_id: value.intended_use_id,
+            public_body: value.public_body,
+            support_uri: value.support_uri,
+            intermediary: value.intermediary,
         }
-
-        Ok(Self {
-            path: proto.path,
-            values: proto.values,
-        })
     }
 }

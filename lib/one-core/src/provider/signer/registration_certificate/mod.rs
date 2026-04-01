@@ -175,7 +175,7 @@ impl Signer for RegistrationCertificate {
             invalid_before: Some(start),
             expires_at: Some(end),
             issuer: None,
-            subject: payload.subject.clone(),
+            subject: Some(payload.get_subject_id().to_owned()),
             audience: self.params.payload.audience.clone(),
             jwt_id: Some(jwt_id.to_string()),
             proof_of_possession_key: None,

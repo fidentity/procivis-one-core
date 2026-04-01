@@ -1,6 +1,6 @@
 services:
   mariadb:
-    image: mariadb:10.9
+    image: mariadb:12.2.2
     ports:
       - 3306:3306
     volumes:
@@ -34,11 +34,11 @@ services:
       ONE_app__coreBaseUrl: "https://fidentity2.ngrok.dev"
       ONE_app__auth__mode: "UNSAFE_STATIC"
       ONE_app__auth__staticToken: "test"
-      ONE_app__authToken: "test"
       ONE_app__serverPort: "3210"
       ONE_app__enableOpenApi: "true"
       ONE_app__enableExternalEndpoints: "true"
       ONE_app__enableManagementEndpoints: "true"
+      ONE_app__enableServerInfo: "true"
     depends_on:
       - mariadb
     restart: on-failure

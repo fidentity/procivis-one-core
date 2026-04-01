@@ -151,7 +151,7 @@ before_script:
     WAIT_ON_TIMEOUT: 10m
   trigger:
     project: procivis/one/one-tests
-    branch: ONE-9252-certificate-creation
+    branch: v1.74.2
     strategy: depend
     forward:
       pipeline_variables: true

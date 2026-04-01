@@ -38,6 +38,7 @@ pub struct CertificateX509AttributesDTO {
     pub not_after: OffsetDateTime,
     pub issuer: String,
     pub subject: String,
+    /// hex-encoded SHA256 hash of DER content
     pub fingerprint: String,
     pub extensions: Vec<CertificateX509ExtensionDTO>,
 }

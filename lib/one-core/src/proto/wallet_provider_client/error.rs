@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
+use crate::model::wallet_unit::WalletProviderType;
 
 #[derive(Debug, Error)]
 pub enum WalletProviderClientError {
@@ -8,6 +9,9 @@ pub enum WalletProviderClientError {
     IntegrityCheckRequired,
     #[error("Integrity check not required")]
     IntegrityCheckNotRequired,
+
+    #[error("Unknown provider type: `{0}`")]
+    UnsupportedType(WalletProviderType),
 
     #[error("URL error: `{0}`")]
     URLError(#[from] url::ParseError),
@@ -23,7 +27,9 @@ impl ErrorCodeMixin for WalletProviderClientError {
         match self {
             Self::IntegrityCheckRequired => ErrorCode::BR_0280,
             Self::IntegrityCheckNotRequired => ErrorCode::BR_0281,
-            Self::URLError(_) | Self::JsonError(_) | Self::Nested(_) => ErrorCode::BR_0264,
+            Self::UnsupportedType(_) | Self::URLError(_) | Self::JsonError(_) | Self::Nested(_) => {
+                ErrorCode::BR_0264
+            }
         }
     }
 }

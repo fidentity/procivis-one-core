@@ -870,6 +870,15 @@ pub enum ErrorCode {
 
     #[strum(message = "Certificate roles must not be empty")]
     BR_0409,
+
+    #[strum(message = "Certificate not trusted")]
+    BR_0410,
+
+    #[strum(message = "Operation not allowed by registration certificate")]
+    BR_0411,
+
+    #[strum(message = "Trust management disabled")]
+    BR_0412,
 }
 
 pub trait ErrorCodeMixin: Error + Send + Sync + 'static {

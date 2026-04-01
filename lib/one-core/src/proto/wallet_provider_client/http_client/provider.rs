@@ -2,16 +2,17 @@ use serde::Deserialize;
 use shared_types::WalletUnitId;
 use url::Url;
 
-use crate::error::{ContextWithErrorCode, ErrorCode};
-use crate::proto::wallet_provider_client::WalletProviderClient;
-use crate::proto::wallet_provider_client::dto::IssueWalletAttestationResponse;
-use crate::proto::wallet_provider_client::error::WalletProviderClientError;
-use crate::proto::wallet_provider_client::http_client::HTTPWalletProviderClient;
-use crate::proto::wallet_provider_client::http_client::dto::{
+use super::HTTPWalletProviderClient;
+use super::dto::{
     ActivateWalletUnitRequestRestDTO, IssueWalletUnitAttestationRequestRestDTO,
     IssueWalletUnitAttestationResponseRestDTO, RegisterWalletUnitRequestRestDTO,
     RegisterWalletUnitResponseRestDTO, WalletProviderMetadataResponseRestDTO,
 };
+use crate::error::{ContextWithErrorCode, ErrorCode};
+use crate::model::wallet_unit::WalletProviderType;
+use crate::proto::wallet_provider_client::WalletProviderClient;
+use crate::proto::wallet_provider_client::dto::{IssueWalletAttestationResponse, MetadataTarget};
+use crate::proto::wallet_provider_client::error::WalletProviderClientError;
 use crate::service::wallet_provider::dto::{
     ActivateWalletUnitRequestDTO, IssueWalletUnitAttestationRequestDTO,
     RegisterWalletUnitRequestDTO, RegisterWalletUnitResponseDTO, WalletProviderMetadataResponseDTO,
@@ -21,11 +22,15 @@ use crate::service::wallet_provider::dto::{
 impl WalletProviderClient for HTTPWalletProviderClient {
     async fn get_wallet_provider_metadata(
         &self,
-        wallet_provider_metadata_url: &str,
+        target: MetadataTarget,
     ) -> Result<WalletProviderMetadataResponseDTO, WalletProviderClientError> {
+        if target.r#type != WalletProviderType::ProcivisOne {
+            return Err(WalletProviderClientError::UnsupportedType(target.r#type));
+        }
+
         let response: WalletProviderMetadataResponseRestDTO = async {
             self.http_client
-                .get(wallet_provider_metadata_url)
+                .get(&target.metadata_url)
                 .send()
                 .await?
                 .error_for_status()?

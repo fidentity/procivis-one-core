@@ -114,7 +114,7 @@ impl WalletUnitService {
             .ascii_serialization();
         let metadata = self
             .wallet_provider_client
-            .get_wallet_provider_metadata(&request.wallet_provider.url)
+            .get_wallet_provider_metadata(request.wallet_provider.to_owned().into())
             .await
             .error_while("getting wallet provider metadata")?;
         let provider_info = WalletProviderInfo {
@@ -155,7 +155,7 @@ impl WalletUnitService {
             id: Uuid::new_v4().into(),
             status,
             wallet_provider_url,
-            wallet_provider_type: request.wallet_provider.r#type.clone(),
+            wallet_provider_type: request.wallet_provider.r#type,
             wallet_provider_name: metadata.name,
             organisation: organisation.clone(),
             authentication_key: registration.key,
@@ -248,22 +248,19 @@ impl WalletUnitService {
             .error_while("getting holder wallet unit")?
             .ok_or(HolderWalletUnitError::HolderWalletUnitNotFound(id))?;
 
-        let organisation = unit
-            .organisation
-            .ok_or(HolderWalletUnitError::MappingError(
-                "Missing organisation".to_string(),
-            ))?;
+        let organisation =
+            unit.organisation
+                .to_owned()
+                .ok_or(HolderWalletUnitError::MappingError(
+                    "Missing organisation".to_string(),
+                ))?;
 
         throw_if_org_not_matching_session(&organisation.id, &*self.session_provider)
             .error_while("checking session")?;
 
-        let wallet_provider_metadata_url = format!(
-            "{}/ssi/wallet-provider/v1/{}",
-            unit.wallet_provider_url, unit.wallet_provider_name
-        );
         let metadata = self
             .wallet_provider_client
-            .get_wallet_provider_metadata(&wallet_provider_metadata_url)
+            .get_wallet_provider_metadata(unit.into())
             .await
             .error_while("getting wallet provider metadata")?;
 

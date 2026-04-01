@@ -2,7 +2,7 @@ pub mod dto;
 pub mod error;
 pub mod http_client;
 
-use dto::IssueWalletAttestationResponse;
+use dto::{IssueWalletAttestationResponse, MetadataTarget};
 use error::WalletProviderClientError;
 use shared_types::WalletUnitId;
 
@@ -16,7 +16,7 @@ use crate::service::wallet_provider::dto::{
 pub trait WalletProviderClient: Send + Sync {
     async fn get_wallet_provider_metadata(
         &self,
-        wallet_provider_metadata_url: &str,
+        target: MetadataTarget,
     ) -> Result<WalletProviderMetadataResponseDTO, WalletProviderClientError>;
 
     async fn register(

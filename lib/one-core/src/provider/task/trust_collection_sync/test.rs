@@ -47,8 +47,9 @@ async fn test_sync_trust_collections_wallet() {
     wallet_unit_client
         .expect_get_wallet_provider_metadata()
         .once()
-        .withf(move |url| {
-            url == "https://wallet-provider.org/ssi/wallet-provider/v1/wallet-provider"
+        .withf(|target| {
+            target.metadata_url
+                == "https://wallet-provider.org/ssi/wallet-provider/v1/wallet-provider"
         })
         .returning(move |_| {
             Ok(dummy_wallet_provider_metadata(&[

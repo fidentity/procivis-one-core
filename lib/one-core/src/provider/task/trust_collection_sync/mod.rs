@@ -115,13 +115,10 @@ impl TrustCollectionSyncTask {
                     .await
                     .error_while("loading wallet unit")?
                     .ok_or(TrustCollectionSyncError::WalletUnitNotFound(id))?;
-                let metadata_url = format!(
-                    "{}/ssi/wallet-provider/v1/{}",
-                    holder_wallet_unit.wallet_provider_url, holder_wallet_unit.wallet_provider_name
-                );
+
                 let metadata = self
                     .wallet_unit_client
-                    .get_wallet_provider_metadata(&metadata_url)
+                    .get_wallet_provider_metadata(holder_wallet_unit.to_owned().into())
                     .await
                     .error_while("getting wallet provider metadata")?;
                 let org_id = holder_wallet_unit

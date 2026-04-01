@@ -237,12 +237,7 @@ async fn test_handle_invitation_success() {
             credentials: vec![],
             credential_sets: None,
         }),
-        response_type: None,
-        response_mode: None,
-        client_metadata: None,
-        response_uri: None,
-        state: None,
-        redirect_uri: None,
+        ..Default::default()
     };
     let signed = request_as_signed_jwt(request, &verifier_did, Box::new(auth_fn))
         .await

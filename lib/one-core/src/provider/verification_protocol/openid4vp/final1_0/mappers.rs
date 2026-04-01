@@ -234,6 +234,7 @@ impl TryFrom<AuthorizationRequestQueryParams> for AuthorizationRequest {
             client_metadata: query_params.client_metadata.map(json_parse).transpose()?,
             redirect_uri: query_params.redirect_uri,
             dcql_query: query_params.dcql_query.map(json_parse).transpose()?,
+            verifier_info: vec![],
         })
     }
 }

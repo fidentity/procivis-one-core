@@ -77,7 +77,6 @@ pub(super) enum HolderSubmission {
     V2(DcqlSubmission),
 }
 
-#[expect(clippy::large_enum_variant)]
 pub(super) enum SubmissionData {
     V1 {
         request: OpenID4VP20AuthorizationRequest,

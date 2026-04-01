@@ -39,6 +39,9 @@ pub(crate) fn generate_authorization_request_params_final1_0(
         state: Some(interaction_id.to_string()),
         dcql_query: Some(dcql_query),
         redirect_uri: None,
+        verifier_info: vec![
+            // TODO: ONE-9254
+        ],
     })
 }
 

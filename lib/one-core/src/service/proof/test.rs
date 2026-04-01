@@ -4220,17 +4220,12 @@ async fn test_retract_proof_with_bluetooth_ok() {
                 protocol_data: BLEVerifierProtocolData::V2 {
                     request: AuthorizationRequest {
                         client_id: "did:example:123".to_string(),
-                        response_uri: None,
-                        response_mode: None,
-                        response_type: None,
-                        client_metadata: None,
-                        state: None,
                         nonce: Some("nonce".to_string()),
-                        redirect_uri: None,
                         dcql_query: Some(DcqlQuery {
                             credentials: vec![],
                             credential_sets: None,
                         }),
+                        ..Default::default()
                     },
                     submission: None,
                     dcql_query: DcqlQuery {

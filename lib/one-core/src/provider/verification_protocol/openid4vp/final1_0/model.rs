@@ -1,6 +1,6 @@
 use dcql::DcqlQuery;
 use serde::{Deserialize, Serialize};
-use serde_with::{DurationSeconds, serde_as, skip_serializing_none};
+use serde_with::{DurationSeconds, VecSkipError, serde_as, skip_serializing_none};
 use standardized_types::openid4vp::ResponseMode;
 use time::Duration;
 use url::Url;
@@ -61,6 +61,7 @@ pub(crate) struct AuthorizationRequestQueryParams {
     pub redirect_uri: Option<String>,
 }
 
+#[serde_as]
 #[skip_serializing_none]
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub(crate) struct AuthorizationRequest {
@@ -87,4 +88,23 @@ pub(crate) struct AuthorizationRequest {
 
     #[serde(default)]
     pub redirect_uri: Option<String>,
+
+    #[serde_as(as = "VecSkipError<_>")] // wallets SHOULD ignore any unrecognized or unsupported Verifier Info types
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_info: Vec<VerifierInfoAttestation>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub(crate) struct VerifierInfoAttestation {
+    pub format: VerifierInfoAttestationFormat,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+pub(crate) enum VerifierInfoAttestationFormat {
+    #[serde(rename = "registration_cert")]
+    RegistrationCert,
 }

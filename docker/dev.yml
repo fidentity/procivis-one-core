@@ -12,6 +12,19 @@ services:
       MYSQL_DATABASE: core
     restart: on-failure
 
+  # mysql:
+  #   image: mysql:8.0
+  #   ports:
+  #     - 3306:3306
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: Qpq5nDb5MKD6v9bt8dPD
+  #     MYSQL_PASSWORD: 886eOqVMmlHsayu6Vyxw
+  #     MYSQL_USER: core
+  #     MYSQL_DATABASE: core
+  #   restart: on-failure
+
   core-one:
     image: hub.fity.tech/fidentity/procivis-one-core:0.0.0-dev
     ports:
@@ -19,6 +32,8 @@ services:
     environment:
       ONE_app__databaseUrl: "mysql://core:886eOqVMmlHsayu6Vyxw@mariadb/core"
       ONE_app__coreBaseUrl: "https://fidentity2.ngrok.dev"
+      ONE_app__auth__mode: "UNSAFE_STATIC"
+      ONE_app__auth__staticToken: "test"
       ONE_app__authToken: "test"
       ONE_app__serverPort: "3210"
       ONE_app__enableOpenApi: "true"

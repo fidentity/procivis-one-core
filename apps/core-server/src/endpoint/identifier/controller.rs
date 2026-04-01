@@ -15,7 +15,6 @@ use super::dto::{
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -145,12 +144,11 @@ pub(crate) async fn get_identifier_list(
     WithRejection(Qs(query), _): WithRejection<Qs<GetIdentifierQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetIdentifierListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .identifier_service
-                .get_identifier_list(&organisation_id, query.try_into()?)
+                .get_identifier_list(query.try_into()?)
                 .await
                 .error_while("getting identifier list")?,
         )

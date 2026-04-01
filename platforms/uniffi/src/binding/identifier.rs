@@ -2,13 +2,8 @@ use std::collections::HashMap;
 
 use one_core::model::certificate::{CertificateRole, CertificateState};
 use one_core::model::identifier::{
-    IdentifierFilterValue, IdentifierListQuery, IdentifierState, IdentifierType,
-    SortableIdentifierColumn,
+    ExactIdentifierFilterColumn, IdentifierState, IdentifierType, SortableIdentifierColumn,
 };
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterValue, StringMatch, StringMatchType, ValueComparison,
-};
-use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::certificate::dto::{
     CertificateResponseDTO, CertificateX509AttributesDTO, CertificateX509ExtensionDTO,
     CreateCertificateRequestDTO,
@@ -31,7 +26,6 @@ use one_dto_mapper::{
 use super::common::SortDirection;
 use super::did::{DidTypeBindingEnum, KeyRoleBindingEnum};
 use super::key::{KeyGenerateCSRRequestSubjectBindingDTO, KeyListItemBindingDTO};
-use super::mapper::deserialize_timestamp;
 use crate::OneCore;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, from_id_opt, into_id, into_id_opt, into_timestamp_opt};
@@ -60,119 +54,9 @@ impl OneCore {
     ) -> Result<GetIdentifierListBindingDTO, BindingError> {
         let core = self.use_core().await?;
 
-        let organisation_id = into_id(&query.organisation_id)?;
-        let condition = {
-            let exact = query.exact.unwrap_or_default();
-            let get_string_match_type = |column| {
-                if exact.contains(&column) {
-                    StringMatchType::Equals
-                } else {
-                    StringMatchType::StartsWith
-                }
-            };
-
-            let organisation = IdentifierFilterValue::OrganisationId(organisation_id).condition();
-
-            let name = query.name.map(|name| {
-                IdentifierFilterValue::Name(StringMatch {
-                    r#match: get_string_match_type(ExactIdentifierFilterColumnBindingEnum::Name),
-                    value: name,
-                })
-            });
-
-            let types = query
-                .types
-                .map(|types| IdentifierFilterValue::Types(convert_inner(types)));
-
-            let state = query
-                .states
-                .map(|states| IdentifierFilterValue::States(convert_inner(states)));
-
-            let did_methods = query.did_methods.map(IdentifierFilterValue::DidMethods);
-
-            let is_remote = query.is_remote.map(IdentifierFilterValue::IsRemote);
-
-            let key_algorithms = query
-                .key_algorithms
-                .map(IdentifierFilterValue::KeyAlgorithms);
-
-            let key_roles = query.key_roles.map(|roles| {
-                IdentifierFilterValue::KeyRoles(roles.into_iter().map(Into::into).collect())
-            });
-
-            let key_storages = query.key_storages.map(IdentifierFilterValue::KeyStorages);
-
-            let created_date_after = query
-                .created_date_after
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
-                        comparison: ComparisonType::GreaterThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-            let created_date_before = query
-                .created_date_before
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
-                        comparison: ComparisonType::LessThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-
-            let last_modified_after = query
-                .last_modified_after
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
-                        comparison: ComparisonType::GreaterThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-            let last_modified_before = query
-                .last_modified_before
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
-                        comparison: ComparisonType::LessThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-
-            organisation
-                & name
-                & types
-                & state
-                & did_methods
-                & is_remote
-                & key_algorithms
-                & key_roles
-                & key_storages
-                & created_date_after
-                & created_date_before
-                & last_modified_after
-                & last_modified_before
-        };
-
-        let sorting = query.sort.map(|sort| ListSorting {
-            column: sort.into(),
-            direction: query.sort_direction.map(Into::into),
-        });
-
-        let query = IdentifierListQuery {
-            pagination: Some(ListPagination {
-                page: query.page,
-                page_size: query.page_size,
-            }),
-            sorting,
-            filtering: Some(condition),
-            include: None,
-        };
-
         Ok(core
             .identifier_service
-            .get_identifier_list(&organisation_id, query)
+            .get_identifier_list(query.try_into()?)
             .await?
             .into())
     }
@@ -378,6 +262,7 @@ pub struct IdentifierListQueryBindingDTO {
     pub sort_direction: Option<SortDirection>,
 
     pub organisation_id: String,
+    pub ids: Option<Vec<String>>,
     pub name: Option<String>,
     pub types: Option<Vec<IdentifierTypeBindingEnum>>,
     pub states: Option<Vec<IdentifierStateBindingEnum>>,
@@ -404,8 +289,9 @@ pub enum SortableIdentifierColumnBindingEnum {
     State,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, uniffi::Enum, Into)]
 #[uniffi(name = "IdentifierListQueryExactColumn")]
+#[into(ExactIdentifierFilterColumn)]
 pub enum ExactIdentifierFilterColumnBindingEnum {
     Name,
 }

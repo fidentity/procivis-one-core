@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use one_core::model::identifier::{IdentifierState, IdentifierType, SortableIdentifierColumn};
+use one_core::model::identifier::{
+    ExactIdentifierFilterColumn, IdentifierState, IdentifierType, SortableIdentifierColumn,
+};
 use one_core::provider::trust_list_subscriber::TrustEntityResponse;
 use one_core::service::certificate::dto::{
     CreateCertificateCaDTO, CreateCertificateContentDTO, CreateCertificateRequestDTO,
@@ -13,8 +15,8 @@ use one_core::service::identifier::dto::{
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
-    GetIdentifierListResponseDTO, GetIdentifierResponseDTO, ResolveTrustEntriesRequestDTO,
-    ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
+    GetIdentifierListResponseDTO, GetIdentifierResponseDTO, IdentifierFilterParamsDTO,
+    ResolveTrustEntriesRequestDTO, ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
     ResolvedTrustEntrySourceResponseDTO,
 };
 use one_core::service::trust_entity::dto::{
@@ -310,74 +312,91 @@ pub(crate) enum SortableIdentifierColumnRest {
     State,
 }
 
-#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetIdentifierQuery
+#[try_into(T = IdentifierFilterParamsDTO, Error = ServiceError)]
 pub(crate) struct IdentifierFilterQueryParamsRestDTO {
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<IdentifierId>>,
     /// Return only identifiers with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by one or more identifier types.
     #[param(rename = "types[]", nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub types: Option<Vec<IdentifierTypeRest>>,
     /// Filter by one or more identifier states.
     #[param(rename = "states[]", nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub states: Option<Vec<IdentifierStateRest>>,
     /// Filter by one or more DID methods.
     #[param(rename = "didMethods[]", nullable = false)]
+    #[try_into(infallible)]
     pub did_methods: Option<Vec<String>>,
     /// If true, return only identifiers from interactions with external
     /// actors. If false, return only identifiers local to the system.
     #[param(inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner)]
     pub is_remote: Option<Boolean>,
     /// Return keys or DIDs whose keys use the specified algorithm. Check the
     /// `keyAlgorithm` object of the configuration for supported options.
     #[param(rename = "keyAlgorithms[]", nullable = false)]
+    #[try_into(infallible)]
     pub key_algorithms: Option<Vec<String>>,
     /// Return keys used as one or more verification methods of a DID.
     #[param(rename = "keyRoles[]", inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub key_roles: Option<Vec<KeyRoleRestEnum>>,
     /// Return keys or DIDs whose keys use the specified storage type. Check the
     /// `keyStorage` object of the configuration for supported options.
     #[param(rename = "keyStorages[]", nullable = false)]
+    #[try_into(infallible)]
     pub key_storages: Option<Vec<String>>,
 
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub exact: Option<Vec<ExactIdentifierFilterColumnRestEnum>>,
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
 
     /// Return only identifiers created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only identifiers created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only identifiers last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only identifiers last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
+#[into(ExactIdentifierFilterColumn)]
 pub(crate) enum ExactIdentifierFilterColumnRestEnum {
     Name,
 }

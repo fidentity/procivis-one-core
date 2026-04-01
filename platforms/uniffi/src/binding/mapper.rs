@@ -1,3 +1,4 @@
+use one_core::model::identifier::SortableIdentifierColumn;
 use one_core::model::list_filter::{
     ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
     ValueComparison,
@@ -9,6 +10,7 @@ use one_core::provider::verification_protocol::dto::{
     ApplicableCredentialOrFailureHintEnum, PresentationDefinitionFieldDTO,
     PresentationDefinitionRequestedCredentialResponseDTO,
 };
+use one_core::service::common_dto::ListQueryDTO;
 use one_core::service::credential::dto::{
     CredentialDetailResponseDTO, CredentialListItemResponseDTO,
     DetailCredentialClaimValueResponseDTO, DetailCredentialSchemaResponseDTO,
@@ -21,7 +23,7 @@ use one_core::service::did::dto::{CreateDidRequestDTO, CreateDidRequestKeysDTO};
 use one_core::service::error::ServiceError;
 use one_core::service::history::dto::{HistoryMetadataResponse, HistoryResponseDTO};
 use one_core::service::identifier::dto::{
-    CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO,
+    CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, IdentifierFilterParamsDTO,
 };
 use one_core::service::key::dto::KeyRequestDTO;
 use one_core::service::organisation::dto::{
@@ -59,7 +61,7 @@ use super::did::{DidRequestBindingDTO, DidRequestKeysBindingDTO};
 use super::history::{
     HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryMetadataBinding,
 };
-use super::identifier::CreateIdentifierDidRequestBindingDTO;
+use super::identifier::{CreateIdentifierDidRequestBindingDTO, IdentifierListQueryBindingDTO};
 use super::interaction::{HandleInvitationResponseBindingEnum, InitiateIssuanceRequestBindingDTO};
 use super::key::KeyRequestBindingDTO;
 use super::organisation::{
@@ -86,7 +88,9 @@ use super::trust_entity::{
 use super::verifier_instance::EditVerifierInstanceRequestBindingDTO;
 use super::wallet_unit::{EditHolderWalletUnitRequestBindingDTO, TrustCollectionInfoBindingDTO};
 use crate::error::ErrorResponseBindingDTO;
-use crate::utils::{TimestampFormat, into_id, into_id_opt, into_timestamp};
+use crate::utils::{
+    TimestampFormat, into_id, into_id_opt, into_id_opt_vec, into_timestamp, into_timestamp_opt,
+};
 
 impl<IN: Into<ClaimBindingDTO>> From<CredentialDetailResponseDTO<IN>>
     for CredentialDetailBindingDTO
@@ -1168,5 +1172,39 @@ impl From<TrustCollectionInfoDTO> for TrustCollectionInfoBindingDTO {
             display_name: convert_inner(value.collection.display_name),
             description: convert_inner(value.collection.description),
         }
+    }
+}
+
+impl TryFrom<IdentifierListQueryBindingDTO>
+    for ListQueryDTO<SortableIdentifierColumn, IdentifierFilterParamsDTO>
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: IdentifierListQueryBindingDTO) -> Result<Self, Self::Error> {
+        let organisation_id = into_id(&value.organisation_id)?;
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: IdentifierFilterParamsDTO {
+                ids: into_id_opt_vec(&value.ids)?,
+                name: value.name,
+                types: convert_inner_of_inner(value.types),
+                states: convert_inner_of_inner(value.states),
+                did_methods: value.did_methods,
+                is_remote: value.is_remote,
+                key_algorithms: value.key_algorithms,
+                key_roles: convert_inner_of_inner(value.key_roles),
+                key_storages: value.key_storages,
+                exact: convert_inner_of_inner(value.exact),
+                organisation_id,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
+            include: None,
+        })
     }
 }

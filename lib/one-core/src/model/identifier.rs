@@ -73,6 +73,11 @@ pub enum SortableIdentifierColumn {
     State,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactIdentifierFilterColumn {
+    Name,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Display, AsRefStr, Into)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[into(config::core_config::IdentifierType)]

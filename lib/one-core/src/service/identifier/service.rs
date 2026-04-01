@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use itertools::Itertools;
-use shared_types::{IdentifierId, OrganisationId, TrustCollectionId};
+use shared_types::{IdentifierId, TrustCollectionId};
 use tracing::warn;
 use url::Url;
 
 use super::IdentifierService;
 use super::dto::{
     CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO, GetIdentifierListResponseDTO,
-    GetIdentifierResponseDTO, ResolveTrustEntriesRequestDTO, ResolvedTrustEntriesResponseDTO,
-    ResolvedTrustEntryResponseDTO,
+    GetIdentifierResponseDTO, IdentifierFilterParamsDTO, ResolveTrustEntriesRequestDTO,
+    ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
 };
 use super::error::IdentifierServiceError;
 use super::mapper::to_create_did_request;
@@ -19,7 +19,7 @@ use crate::config::core_config;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::model::certificate::CertificateRelations;
 use crate::model::did::DidRelations;
-use crate::model::identifier::{Identifier, IdentifierListQuery, IdentifierRelations};
+use crate::model::identifier::{Identifier, IdentifierRelations, SortableIdentifierColumn};
 use crate::model::key::KeyRelations;
 use crate::model::list_filter::{ListFilterCondition, ListFilterValue};
 use crate::model::organisation::OrganisationRelations;
@@ -35,6 +35,7 @@ use crate::provider::trust_list_subscriber::{
     Feature, TrustEntityResponse, TrustListSubscriber, TrustListSubscriberCapabilities,
 };
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::validator::{
     throw_if_org_not_matching_session, throw_if_org_relation_not_matching_session,
 };
@@ -89,14 +90,16 @@ impl IdentifierService {
     /// * `query` - query parameters
     pub async fn get_identifier_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: IdentifierListQuery,
+        filter_params: ListQueryDTO<SortableIdentifierColumn, IdentifierFilterParamsDTO>,
     ) -> Result<GetIdentifierListResponseDTO, IdentifierServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
         Ok(self
             .identifier_repository
-            .get_identifier_list(query)
+            .get_identifier_list(filter_params.into())
             .await
             .error_while("getting identifiers")?
             .into())

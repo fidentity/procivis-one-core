@@ -7,7 +7,8 @@ use shared_types::{
 use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
-use crate::model::identifier::{IdentifierState, IdentifierType};
+use crate::model::did::KeyRole;
+use crate::model::identifier::{ExactIdentifierFilterColumn, IdentifierState, IdentifierType};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::TrustListSubscriptionState;
 use crate::provider::trust_list_subscriber::TrustEntityResponse;
@@ -30,6 +31,25 @@ pub struct GetIdentifierResponseDTO {
     pub key: Option<KeyResponseDTO>,
     pub certificates: Option<Vec<CertificateResponseDTO>>,
     pub certificate_authorities: Option<Vec<CertificateResponseDTO>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IdentifierFilterParamsDTO {
+    pub ids: Option<Vec<IdentifierId>>,
+    pub name: Option<String>,
+    pub types: Option<Vec<IdentifierType>>,
+    pub states: Option<Vec<IdentifierState>>,
+    pub did_methods: Option<Vec<String>>,
+    pub is_remote: Option<bool>,
+    pub key_algorithms: Option<Vec<String>>,
+    pub key_roles: Option<Vec<KeyRole>>,
+    pub key_storages: Option<Vec<String>>,
+    pub exact: Option<Vec<ExactIdentifierFilterColumn>>,
+    pub organisation_id: OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
 }
 
 #[skip_serializing_none]

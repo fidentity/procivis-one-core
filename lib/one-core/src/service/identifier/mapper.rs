@@ -3,11 +3,18 @@ use shared_types::OrganisationId;
 
 use super::dto::{
     CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, GetIdentifierListResponseDTO,
-    GetIdentifierResponseDTO, ResolvedTrustEntrySourceResponseDTO,
+    GetIdentifierResponseDTO, IdentifierFilterParamsDTO, ResolvedTrustEntrySourceResponseDTO,
 };
 use super::error::IdentifierServiceError;
 use crate::error::ContextWithErrorCode;
-use crate::model::identifier::{GetIdentifierList, Identifier, IdentifierType};
+use crate::model::identifier::{
+    ExactIdentifierFilterColumn, GetIdentifierList, Identifier, IdentifierFilterValue,
+    IdentifierType,
+};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::trust_list_subscription::TrustListSubscription;
 use crate::service::did::dto::CreateDidRequestDTO;
 
@@ -152,5 +159,86 @@ impl TryFrom<TrustListSubscription> for ResolvedTrustEntrySourceResponseDTO {
                 IdentifierServiceError::MappingError("missing trust collection".to_string()),
             )?,
         })
+    }
+}
+
+impl From<IdentifierFilterParamsDTO> for ListFilterCondition<IdentifierFilterValue> {
+    fn from(value: IdentifierFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            IdentifierFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            IdentifierFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(ExactIdentifierFilterColumn::Name),
+                value: name,
+            })
+        });
+
+        let ids = value.ids.map(IdentifierFilterValue::Ids);
+        let types = value
+            .types
+            .map(|types| IdentifierFilterValue::Types(convert_inner(types)));
+        let state = value
+            .states
+            .map(|states| IdentifierFilterValue::States(convert_inner(states)));
+        let did_methods = value.did_methods.map(IdentifierFilterValue::DidMethods);
+        let is_remote = value.is_remote.map(IdentifierFilterValue::IsRemote);
+        let key_algorithms = value
+            .key_algorithms
+            .map(IdentifierFilterValue::KeyAlgorithms);
+        let key_roles = value
+            .key_roles
+            .map(|key_roles| IdentifierFilterValue::KeyRoles(convert_inner(key_roles)));
+        let key_storages = value.key_storages.map(IdentifierFilterValue::KeyStorages);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            IdentifierFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            IdentifierFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            IdentifierFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            IdentifierFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & ids
+            & types
+            & state
+            & did_methods
+            & is_remote
+            & key_algorithms
+            & key_roles
+            & key_storages
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

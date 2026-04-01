@@ -6,7 +6,7 @@ use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::identifier::{Identifier, IdentifierListQuery, IdentifierType};
+use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::trust_collection::{GetTrustCollectionList, TrustCollection};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{
@@ -23,8 +23,11 @@ use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
 use crate::repository::trust_list_subscription_repository::MockTrustListSubscriptionRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::identifier::IdentifierService;
-use crate::service::identifier::dto::{CreateIdentifierRequestDTO, ResolveTrustEntriesRequestDTO};
+use crate::service::identifier::dto::{
+    CreateIdentifierRequestDTO, IdentifierFilterParamsDTO, ResolveTrustEntriesRequestDTO,
+};
 use crate::service::test_utilities::{
     dummy_identifier, dummy_organisation, generic_config, get_dummy_date,
 };
@@ -105,15 +108,30 @@ async fn test_get_identifier_list_session_org_mismatch() {
     let service = setup_service_simple(None);
 
     let result = service
-        .get_identifier_list(
-            &Uuid::new_v4().into(),
-            IdentifierListQuery {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_identifier_list(ListQueryDTO {
+            page: 0,
+            page_size: 0,
+            sort: None,
+            sort_direction: None,
+            filter: IdentifierFilterParamsDTO {
+                ids: None,
+                name: None,
+                types: None,
+                states: None,
+                did_methods: None,
+                is_remote: None,
+                key_algorithms: None,
+                key_roles: None,
+                key_storages: None,
+                exact: None,
+                organisation_id: Uuid::new_v4().into(),
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);

@@ -133,6 +133,7 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VCIFinal1_0 {
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         }),
         "OPENID4VCI_FINAL1".to_string(),
@@ -386,6 +387,7 @@ async fn test_generate_share_credentials_offer_by_value() {
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         }),
         ..Default::default()
@@ -1271,6 +1273,7 @@ async fn test_holder_reject_credential() {
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         }),
         ..Default::default()
@@ -2099,6 +2102,7 @@ fn test_params(issuance_url_scheme: &str) -> OpenID4VCIFinal1Params {
         nonce: None,
         oauth_attestation_leeway: 60,
         key_attestation_leeway: 60,
+        request_signed_metadata: false,
         common: CommonParams { webhook_task: None },
     }
 }

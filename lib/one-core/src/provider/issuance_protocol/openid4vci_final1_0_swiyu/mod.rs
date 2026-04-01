@@ -65,6 +65,7 @@ pub(crate) struct OpenID4VCISwiyuParams {
     pub nonce: Option<OpenID4VCNonceParams>,
     pub oauth_attestation_leeway: u64,
     pub key_attestation_leeway: u64,
+    pub request_signed_metadata: bool,
 
     #[serde(flatten)]
     pub common: CommonParams,
@@ -83,6 +84,7 @@ impl From<OpenID4VCISwiyuParams> for OpenID4VCIFinal1Params {
             nonce: value.nonce,
             oauth_attestation_leeway: value.oauth_attestation_leeway,
             key_attestation_leeway: value.key_attestation_leeway,
+            request_signed_metadata: value.request_signed_metadata,
             common: value.common,
         }
     }

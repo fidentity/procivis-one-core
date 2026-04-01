@@ -131,6 +131,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: swiyu
+        requestSignedMetadata: false
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
@@ -147,6 +148,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: openid-credential-offer
+        requestSignedMetadata: true
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
@@ -165,6 +167,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: haip-vci
+        requestSignedMetadata: false
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300

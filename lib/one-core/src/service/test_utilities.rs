@@ -121,6 +121,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 type: 'OPENID4VCI_FINAL1'
                 params:
                     public:
+                        requestSignedMetadata: false
                         oauthAttestationLeeway: 60
                         keyAttestationLeeway: 60
                         preAuthorizedCodeExpiresIn: 300

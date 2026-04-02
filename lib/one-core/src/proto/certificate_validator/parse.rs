@@ -373,7 +373,7 @@ fn connect_chains<'a>(
             .error_while("parsing authority key identifier")?
         {
             Some(authority_key_identifier) => {
-                authority_key_identifier == first_ca_subject_key_identifier
+                format!("{authority_key_identifier:x}") == first_ca_subject_key_identifier
             }
             None => {
                 // no authority key identifier was provided, we have to check by attempting to verify the signature

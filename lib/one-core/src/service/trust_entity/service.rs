@@ -1014,7 +1014,7 @@ fn prepare_batch(
             let trust_entity_keys = pem_chain_to_authority_key_identifiers(&certificate.chain)
                 .error_while("parsing PEM chain")?
                 .into_iter()
-                .map(TrustEntityKey::from)
+                .map(|aki| TrustEntityKey::from(format!("{aki:x}")))
                 .collect();
             let batch = TrustEntityKeyBatch {
                 batch_id: certificate.id.to_string(),

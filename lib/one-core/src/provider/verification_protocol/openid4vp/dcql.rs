@@ -14,7 +14,7 @@ use standardized_types::x509::AuthorityKeyIdentifier;
 use crate::config::core_config::{CoreConfig, FormatType};
 use crate::error::ContextWithErrorCode;
 use crate::mapper::credential_schema_claim::claim_schema_from_metadata_claim_schema;
-use crate::mapper::x509::get_akis_for_pem_chain;
+use crate::mapper::x509::pem_chain_to_authority_key_identifiers;
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
@@ -321,7 +321,7 @@ fn credential_issuer_in_aki_list(credential: &Credential, list: &[AuthorityKeyId
         return false;
     };
 
-    let Ok(issuer_akis) = get_akis_for_pem_chain(issuer_cert.chain.as_bytes()) else {
+    let Ok(issuer_akis) = pem_chain_to_authority_key_identifiers(&issuer_cert.chain) else {
         return false;
     };
 

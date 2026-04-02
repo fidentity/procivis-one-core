@@ -24,23 +24,6 @@ pub(crate) fn pem_chain_into_x5c(pem_chain: &str) -> Result<Vec<String>, Certifi
         .collect()
 }
 
-/// For each certificate in the chain, retrieve the authority key identifier.
-pub(crate) fn pem_chain_to_authority_key_identifiers(
-    pem_chain: &str,
-) -> Result<Vec<String>, CertificateParsingError> {
-    Pem::iter_from_buffer(pem_chain.as_bytes())
-        .map(|pem| {
-            let pem = pem?;
-            let cert = pem.parse_x509()?;
-            let key_identifier = authority_key_identifier(&cert)?;
-            Ok(key_identifier)
-        })
-        // If the chain goes up to the CA (which is self-signed) then the last entry might not have an authority key identifier
-        // hence filter out the empty values.
-        .filter_map(Result::transpose)
-        .collect()
-}
-
 pub(crate) fn x5c_into_pem_chain(x5c: &[String]) -> Result<String, CertificateParsingError> {
     let der_chain = x5c.iter().try_fold(Vec::new(), |mut aggr, item| {
         aggr.push(Base64::decode_to_vec(item, None)?);
@@ -100,7 +83,7 @@ pub(crate) fn subject_key_identifier(
 
 pub(crate) fn authority_key_identifier(
     cert: &X509Certificate,
-) -> Result<Option<String>, CertificateParsingError> {
+) -> Result<Option<AuthorityKeyIdentifier>, CertificateParsingError> {
     Ok(cert
         .get_extension_unique(&OID_X509_EXT_AUTHORITY_KEY_IDENTIFIER)?
         .map(|ext| ext.parsed_extension())
@@ -116,30 +99,23 @@ pub(crate) fn authority_key_identifier(
                 .ok_or(CertificateParsingError::MissingAuthorityKeyIdentifier)
         })
         .transpose()?
-        .map(|key_id| format!("{key_id:x}")))
+        .map(|key_id| AuthorityKeyIdentifier::from(key_id.0.to_owned())))
 }
 
-pub fn get_akis_for_pem_chain(
-    pem_chain: &[u8],
+/// For each certificate in the chain, retrieve the authority key identifier.
+pub fn pem_chain_to_authority_key_identifiers(
+    pem_chain: &str,
 ) -> Result<Vec<AuthorityKeyIdentifier>, CertificateParsingError> {
-    Pem::iter_from_buffer(pem_chain)
-        .filter_map(|item| match item {
-            Ok(pem) => match pem.parse_x509() {
-                Ok(x509_cert) => x509_cert
-                    .extensions()
-                    .iter()
-                    .filter_map(|ext| match ext.parsed_extension() {
-                        ParsedExtension::AuthorityKeyIdentifier(aki) => Some(aki),
-                        _ => None,
-                    })
-                    .filter_map(|aki| aki.key_identifier.as_ref())
-                    .map(|key_id| AuthorityKeyIdentifier::from(key_id.0.to_owned()))
-                    .next() // RFC 5280 disallows more than 1 instance of an extension
-                    .map(Ok),
-                Err(e) => Some(Err(e.into())),
-            },
-            Err(e) => Some(Err(e.into())),
+    Pem::iter_from_buffer(pem_chain.as_bytes())
+        .map(|pem| {
+            let pem = pem?;
+            let cert = pem.parse_x509()?;
+            let key_identifier = authority_key_identifier(&cert)?;
+            Ok(key_identifier)
         })
+        // If the chain goes up to the CA (which is self-signed) then the last entry might not have an authority key identifier
+        // hence filter out the empty values.
+        .filter_map(Result::transpose)
         .collect()
 }
 
@@ -296,7 +272,7 @@ GsPNAYTwQu1egNMnoBk0k0cwNJCBJmS3zEGaDw==
         let cert = pem.parse_x509().unwrap();
         let identifier = authority_key_identifier(&cert).unwrap().unwrap();
         assert_eq!(
-            identifier,
+            format!("{identifier:x}"),
             "61:20:eb:7e:ae:c1:f4:b5:bc:26:a1:5f:f0:6a:32:a6:2c:75:f5:fb"
         );
     }

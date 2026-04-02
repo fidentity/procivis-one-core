@@ -2327,7 +2327,7 @@ async fn test_get_presentation_definition_dcql_using_multiple_flag() {
 }
 
 mod trusted_authorities {
-    use one_core::mapper::x509::get_akis_for_pem_chain;
+    use one_core::mapper::x509::pem_chain_to_authority_key_identifiers;
     use one_core::model::certificate::Certificate;
     use one_core::model::organisation::Organisation;
     use similar_asserts::assert_eq;
@@ -2370,7 +2370,7 @@ mod trusted_authorities {
     }
 
     fn aki_for_cert(cert: &Certificate) -> AuthorityKeyIdentifier {
-        let vec = get_akis_for_pem_chain(cert.chain.as_bytes()).unwrap();
+        let vec = pem_chain_to_authority_key_identifiers(&cert.chain).unwrap();
         vec.into_iter().next().unwrap()
     }
 

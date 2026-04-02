@@ -50,6 +50,13 @@ impl AuthorityKeyIdentifier {
     }
 }
 
+impl core::fmt::LowerHex for AuthorityKeyIdentifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bytes: Vec<_> = self.0.iter().map(|b| format!("{b:02x}")).collect();
+        f.write_str(&bytes.join(":"))
+    }
+}
+
 // serialization from/into base64url string
 impl Serialize for AuthorityKeyIdentifier {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

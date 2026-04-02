@@ -20,7 +20,7 @@ use super::validator::{
 use crate::config::validator::protocol::validate_protocol_did_compatibility;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::list_response_try_into;
-use crate::model::certificate::CertificateRelations;
+use crate::model::certificate::{CertificateRelations, CertificateRole};
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential::{
@@ -39,7 +39,7 @@ use crate::repository::error::DataLayerError;
 use crate::service::credential_schema::validator::validate_key_storage_security_supported;
 use crate::service::error::MissingProviderError;
 use crate::util::interactions::{add_new_interaction, clear_previous_interaction};
-use crate::util::key_selection::{KeyFilter, KeySelection, SelectedKey};
+use crate::util::key_selection::{CertificateFilter, KeyFilter, KeySelection, SelectedKey};
 use crate::validator::{
     throw_if_credential_schema_not_in_session_org, throw_if_org_not_matching_session,
     throw_if_org_relation_not_matching_session,
@@ -152,12 +152,14 @@ impl CredentialService {
             algorithms: Some(formatter_capabilities.signing_key_algorithms.clone()),
             ..Default::default()
         };
+        let certificate_filter = CertificateFilter::role_filter(CertificateRole::AssertionMethod);
         let selection = issuer_identifier
             .select_key(KeySelection {
                 key: request.issuer_key,
                 did: request.issuer_did,
                 certificate: request.issuer_certificate,
                 key_filter: Some(key_filter),
+                certificate_filter: Some(certificate_filter),
             })
             .error_while("selecting key")?;
 

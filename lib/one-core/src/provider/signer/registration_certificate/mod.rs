@@ -157,7 +157,7 @@ impl Signer for RegistrationCertificate {
                 key,
                 key_filter: Some(KeyFilter::role_filter(KeyRole::AssertionMethod)),
                 certificate,
-                did: None,
+                ..Default::default()
             })
             .error_while("Selecting signing key")?;
 

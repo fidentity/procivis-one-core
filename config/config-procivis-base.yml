@@ -743,6 +743,11 @@ cacheEntities:
     refreshAfter: 300
     cacheRefreshTimeout: 86400
     cacheSize: 1000
+  CREDENTIAL_ISSUER_METADATA:
+    cacheType: DB
+    refreshAfter: 86400
+    cacheRefreshTimeout: 86400
+    cacheSize: 1000
 trustManagement:
   SIMPLE_TRUST_LIST:
     display: "trustManagement.simpleTrustList"

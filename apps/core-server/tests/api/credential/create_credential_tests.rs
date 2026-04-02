@@ -1,4 +1,5 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
+use one_core::model::certificate::CertificateRole;
 use one_core::model::credential::CredentialStateEnum;
 use one_core::model::did::{DidType, KeyRole, RelatedKey};
 use one_core::model::identifier::IdentifierType;
@@ -508,6 +509,7 @@ async fn test_create_credential_with_certificate_identifier() {
             identifier.id,
             TestingCertificateParams {
                 key: Some(key.clone()),
+                roles: Some(vec![CertificateRole::AssertionMethod]),
                 ..Default::default()
             },
         )
@@ -585,6 +587,7 @@ async fn test_create_credential_with_certificate_selection() {
             identifier.id,
             TestingCertificateParams {
                 key: Some(key2),
+                roles: Some(vec![CertificateRole::AssertionMethod]),
                 ..Default::default()
             },
         )
@@ -597,6 +600,7 @@ async fn test_create_credential_with_certificate_selection() {
             identifier.id,
             TestingCertificateParams {
                 key: Some(key.clone()),
+                roles: Some(vec![CertificateRole::AssertionMethod]),
                 ..Default::default()
             },
         )

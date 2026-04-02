@@ -473,6 +473,7 @@ impl ProofService {
                 did: request.verifier_did_id,
                 certificate: request.verifier_certificate,
                 key_filter: Some(KeyFilter::role_filter(KeyRole::Authentication)),
+                ..Default::default()
             })
             .error_while("selecting key")?;
         let (verifier_key, verifier_certificate) = match selection {

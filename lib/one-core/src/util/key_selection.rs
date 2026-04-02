@@ -5,7 +5,7 @@ use x509_parser::prelude::KeyUsage;
 
 use crate::config::core_config::KeyAlgorithmType;
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::certificate::{Certificate, CertificateState};
+use crate::model::certificate::{Certificate, CertificateRole, CertificateState};
 use crate::model::did::{Did, KeyRole, RelatedKey};
 use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::key::Key;
@@ -57,12 +57,33 @@ impl KeyFilter {
     }
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct CertificateFilter {
+    role: Option<CertificateRole>,
+}
+
+impl CertificateFilter {
+    pub fn role_filter(role: CertificateRole) -> Self {
+        Self { role: Some(role) }
+    }
+
+    pub fn matches_certificate(&self, certificate: &Certificate) -> bool {
+        if let Some(role) = self.role
+            && !certificate.roles.contains(&role)
+        {
+            return false;
+        }
+        true
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct KeySelection {
     pub key: Option<KeyId>,
     pub did: Option<DidId>,
     pub certificate: Option<CertificateId>,
     pub key_filter: Option<KeyFilter>,
+    pub certificate_filter: Option<CertificateFilter>,
 }
 
 impl From<KeyFilter> for KeySelection {
@@ -144,6 +165,11 @@ pub enum KeySelectionError {
         key_id: KeyId,
         key_filter: KeyFilter,
     },
+    #[error("Certificate {certificate_id} does not match filter `{certificate_filter:?}`")]
+    CertificateNotMatchingFilter {
+        certificate_id: CertificateId,
+        certificate_filter: CertificateFilter,
+    },
     #[error("Certificate {certificate_id} does not belong to identifier {identifier_id}")]
     CertificateNotFound {
         identifier_id: IdentifierId,
@@ -155,11 +181,12 @@ pub enum KeySelectionError {
         state: CertificateState,
     },
     #[error(
-        "No active certificate available for identifier {identifier_id} matching filter `{key_filter:?}`"
+        "No active certificate matching filters available for `identifier` ({identifier_id}): certificate filter `{certificate_filter:?}`: key filter `{key_filter:?}`"
     )]
     NoActiveMatchingCertificate {
         identifier_id: IdentifierId,
         key_filter: KeyFilter,
+        certificate_filter: CertificateFilter,
     },
     #[error("Key {key_id} does not belong to certificate {certificate_id}")]
     KeyCertificateMismatch {
@@ -176,6 +203,7 @@ impl ErrorCodeMixin for KeySelectionError {
     fn error_code(&self) -> ErrorCode {
         match self {
             Self::MappingError(_) => ErrorCode::BR_0047,
+            Self::CertificateNotMatchingFilter { .. } => ErrorCode::BR_0222,
             _ => ErrorCode::BR_0330,
         }
     }
@@ -334,6 +362,7 @@ impl Identifier {
             }
             IdentifierType::Certificate | IdentifierType::CertificateAuthority => {
                 self.throw_on_did_id(&selection)?;
+                let certificate_filter = selection.certificate_filter.unwrap_or_default();
                 let certs = self
                     .certificates
                     .as_ref()
@@ -361,13 +390,23 @@ impl Identifier {
                     None => certs
                         .iter()
                         .find(|c| {
-                            c.state == CertificateState::Active && c.has_matching_key(&filter)
+                            c.state == CertificateState::Active
+                                && certificate_filter.matches_certificate(c)
+                                && c.has_matching_key(&filter)
                         })
                         .ok_or(KeySelectionError::NoActiveMatchingCertificate {
                             identifier_id: self.id,
                             key_filter: filter.clone(),
+                            certificate_filter: certificate_filter.clone(),
                         })?,
                 };
+                if !certificate_filter.matches_certificate(certificate) {
+                    return Err(KeySelectionError::CertificateNotMatchingFilter {
+                        certificate_id: certificate.id,
+                        certificate_filter,
+                    });
+                }
+
                 let key = certificate
                     .key
                     .as_ref()

@@ -18,6 +18,7 @@ use super::error::CredentialServiceError;
 use super::validator::validate_create_request;
 use crate::config::core_config::CoreConfig;
 use crate::error::{ErrorCode, ErrorCodeMixin};
+use crate::model::certificate::{Certificate, CertificateState};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{
@@ -4705,6 +4706,125 @@ async fn test_create_credential_session_org_mismatch() {
         .await;
 
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
+}
+
+#[tokio::test]
+async fn test_create_credential_invalid_certificate_role() {
+    let mut credential_repository = MockCredentialRepository::default();
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
+    let mut identifier_repository = MockIdentifierRepository::default();
+
+    let organisation = dummy_organisation(None);
+
+    let schema_root = generate_claim_schema("root", "OBJECT", true);
+    let schema_00 = generate_claim_schema("root/00", "STRING", false);
+    let claim_schemas = vec![schema_root.to_owned(), schema_00.to_owned()];
+    let credential_schema = CredentialSchema {
+        id: Uuid::new_v4().into(),
+        deleted_at: None,
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
+        imported_source_url: "CORE_URL".to_string(),
+        name: "str array".to_string(),
+        format: "JWT".into(),
+        revocation_method: None,
+        key_storage_security: None,
+        layout_type: LayoutType::Card,
+        layout_properties: None,
+        schema_id: "".to_string(),
+        claim_schemas: Some(claim_schemas),
+        organisation: Some(organisation.to_owned()),
+        allow_suspension: true,
+        requires_wallet_instance_attestation: false,
+        transaction_code: None,
+    };
+
+    let mut formatter = MockCredentialFormatter::default();
+    formatter
+        .expect_get_capabilities()
+        .once()
+        .return_once(generic_formatter_capabilities);
+
+    let mut formatter_provider = MockCredentialFormatterProvider::default();
+
+    {
+        let credential_schema = credential_schema.clone();
+        credential_schema_repository
+            .expect_get_credential_schema()
+            .return_once(move |_, _| Ok(Some(credential_schema)));
+        formatter_provider
+            .expect_get_credential_formatter()
+            .once()
+            .return_once(move |_| Some(Arc::new(formatter)));
+        credential_repository
+            .expect_create_credential()
+            .return_once(move |_| Ok(Uuid::new_v4().into()));
+    }
+
+    let identifier_id = Uuid::new_v4().into();
+    let certificate_id = Uuid::new_v4().into();
+    let certificate = Certificate {
+        id: certificate_id,
+        identifier_id,
+        organisation_id: Some(organisation.id),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
+        expiry_date: crate::clock::now_utc().add(Duration::days(1)),
+        name: "test".to_string(),
+        chain: "test".to_string(),
+        fingerprint: "test".to_string(),
+        state: CertificateState::Active,
+        roles: vec![],
+        key: Some(dummy_key()),
+    };
+    identifier_repository.expect_get().return_once(move |_, _| {
+        Ok(Some(Identifier {
+            id: identifier_id,
+            certificates: Some(vec![certificate]),
+            r#type: IdentifierType::Certificate,
+            ..dummy_identifier()
+        }))
+    });
+
+    let mut dummy_protocol = MockIssuanceProtocol::default();
+    dummy_protocol
+        .expect_get_capabilities()
+        .once()
+        .returning(generic_capabilities);
+    let mut protocol_provider = MockIssuanceProtocolProvider::default();
+    protocol_provider
+        .expect_get_protocol()
+        .once()
+        .return_once(move |_| Some(Arc::new(dummy_protocol)));
+
+    let service = setup_service(Repositories {
+        credential_repository,
+        credential_schema_repository,
+        identifier_repository,
+        formatter_provider,
+        protocol_provider,
+        config: generic_config().core,
+        ..Default::default()
+    });
+
+    // when
+    let result = service
+        .create_credential(CreateCredentialRequestDTO {
+            credential_schema_id: Uuid::new_v4().into(),
+            issuer: Some(identifier_id),
+            issuer_did: None,
+            issuer_key: None,
+            issuer_certificate: Some(certificate_id),
+            protocol: "OPENID4VCI_DRAFT13".to_string(),
+            claim_values: vec![],
+            redirect_uri: None,
+            profile: None,
+            webhook_destination_url: None,
+        })
+        .await;
+
+    // then
+    assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0222);
 }
 
 #[tokio::test]

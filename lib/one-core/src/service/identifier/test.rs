@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dcql::{CredentialFormat, CredentialMeta};
 use shared_types::TrustCollectionId;
 use similar_asserts::assert_eq;
+use url::Url;
 use uuid::Uuid;
 
 use crate::error::{ErrorCode, ErrorCodeMixin};
@@ -13,13 +15,20 @@ use crate::model::trust_list_subscription::{
     GetTrustListSubscriptionList, TrustListSubscription, TrustListSubscriptionState,
 };
 use crate::proto::identifier_creator::MockIdentifierCreator;
+use crate::proto::jwt::mapper::string_to_b64url_string;
 use crate::proto::session_provider::test::StaticSessionProvider;
+use crate::proto::transaction_manager::NoTransactionManager;
+use crate::provider::blob_storage_provider::{MockBlobStorage, MockBlobStorageProvider};
+use crate::provider::signer::registration_certificate::model::{
+    Credential, Payload, SupervisoryAuthority, WRPRegistrationCertificatePayload,
+};
 use crate::provider::trust_list_subscriber::provider::MockTrustListSubscriberProvider;
 use crate::provider::trust_list_subscriber::{
     Feature, MockTrustListSubscriber, TrustEntityResponse, TrustListSubscriberCapabilities,
 };
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::identifier_repository::MockIdentifierRepository;
+use crate::repository::identifier_trust_information_repository::MockIdentifierTrustInformationRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::proof_schema_repository::MockProofSchemaRepository;
@@ -28,11 +37,12 @@ use crate::repository::trust_list_subscription_repository::MockTrustListSubscrip
 use crate::service::common_dto::ListQueryDTO;
 use crate::service::identifier::IdentifierService;
 use crate::service::identifier::dto::{
-    CertificateRolesMatchMode, CreateIdentifierRequestDTO, IdentifierFilterParamsDTO,
-    ResolveTrustEntriesRequestDTO,
+    CertificateRolesMatchMode, CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO,
+    CreateIdentifierTrustInformationRequestDTO, IdentifierFilterParamsDTO,
+    IdentifierTrustInformationType, ResolveTrustEntriesRequestDTO,
 };
 use crate::service::test_utilities::{
-    dummy_identifier, dummy_organisation, generic_config, get_dummy_date,
+    dummy_identifier, dummy_key, dummy_organisation, generic_config, get_dummy_date,
 };
 
 #[derive(Default)]
@@ -47,6 +57,8 @@ struct Mocks {
     identifier_creator: MockIdentifierCreator,
     session_provider: StaticSessionProvider,
     trust_list_subscriber_provider: MockTrustListSubscriberProvider,
+    identifier_trust_information_repository: MockIdentifierTrustInformationRepository,
+    blob_storage_provider: MockBlobStorageProvider,
 }
 
 fn setup_service(mocks: Mocks) -> IdentifierService {
@@ -58,10 +70,15 @@ fn setup_service(mocks: Mocks) -> IdentifierService {
         proof_schema_repository: Arc::new(mocks.proof_schema_repository),
         trust_collection_repository: Arc::new(mocks.trust_collection_repository),
         trust_list_subscription_repository: Arc::new(mocks.trust_list_subscription_repository),
+        identifier_trust_information_repository: Arc::new(
+            mocks.identifier_trust_information_repository,
+        ),
+        blob_storage_provider: Arc::new(mocks.blob_storage_provider),
         config: Arc::new(generic_config().core),
         identifier_creator: Arc::new(mocks.identifier_creator),
         session_provider: Arc::new(mocks.session_provider),
         trust_list_subscriber_provider: Arc::new(mocks.trust_list_subscriber_provider),
+        transaction_manager: Arc::new(NoTransactionManager),
     }
 }
 
@@ -161,6 +178,7 @@ async fn test_create_identifier_session_org_mismatch() {
             certificates: None,
             certificate_authorities: None,
             organisation_id: Uuid::new_v4().into(),
+            trust_information: vec![],
         })
         .await;
 
@@ -574,4 +592,131 @@ async fn test_resolve_trust_entries_filters_key_type() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].identifier.id, identifier_id);
     assert_eq!(result[0].trust_entries.len(), 0);
+}
+
+#[tokio::test]
+async fn test_create_identifier_with_trust_information() {
+    let reg_cert = dummy_reg_cert();
+    let session_provider = StaticSessionProvider::new_random();
+    let mut organisation_repository = MockOrganisationRepository::default();
+    let mut key_repository = MockKeyRepository::default();
+    let dummy_key = dummy_key();
+    let key_id = dummy_key.id;
+    key_repository
+        .expect_get_key()
+        .returning(move |_, _| Ok(Some(dummy_key.clone())));
+    let mut identifier_creator = MockIdentifierCreator::default();
+    let mut identifier_trust_information_repository =
+        MockIdentifierTrustInformationRepository::default();
+    identifier_trust_information_repository
+        .expect_create()
+        .once()
+        .returning(|_| Ok(Uuid::new_v4().into()));
+    let mut blob_storage = MockBlobStorage::default();
+    blob_storage.expect_create().once().returning(|_| Ok(()));
+    let blob_storage = Arc::new(blob_storage);
+    let mut blob_storage_provider = MockBlobStorageProvider::default();
+    blob_storage_provider
+        .expect_get_blob_storage()
+        .once()
+        .returning(move |_| Some(blob_storage.clone()));
+
+    let organisation_id = session_provider.0.organisation_id.unwrap();
+    organisation_repository
+        .expect_get_organisation()
+        .returning(move |_, _| Ok(Some(dummy_organisation(Some(organisation_id)))));
+
+    let identifier_id = Uuid::new_v4().into();
+    let mut identifier = dummy_identifier();
+    identifier.id = identifier_id;
+    identifier.organisation = Some(dummy_organisation(Some(organisation_id)));
+
+    identifier_creator
+        .expect_create_local_identifier()
+        .returning(move |_, _, _| Ok(identifier.clone()));
+
+    let service = setup_service(Mocks {
+        organisation_repository,
+        key_repository,
+        identifier_creator,
+        identifier_trust_information_repository,
+        blob_storage_provider,
+        session_provider,
+        ..Default::default()
+    });
+
+    let result = service
+        .create_identifier(CreateIdentifierRequestDTO {
+            name: "test identifier".to_string(),
+            did: None,
+            key: Some(CreateIdentifierKeyRequestDTO { key_id }),
+            key_id: None,
+            certificates: None,
+            certificate_authorities: None,
+            organisation_id,
+            trust_information: vec![CreateIdentifierTrustInformationRequestDTO {
+                data: reg_cert,
+                r#type: IdentifierTrustInformationType::RegistrationCertificate,
+            }],
+        })
+        .await;
+
+    assert!(result.is_ok());
+}
+
+const REG_CERT_HEADER: &str = "eyJhbGciOiJFZERTQSIsInR5cCI6InJjLXdycCtqd3QiLCJ4NWMiOlsiTUlJRHNqQ0NBMW1nQXdJQkFnSVVkN3dSVU1UMEhWclNSS0VoOEx6YUFVaFBCcE13Q2dZSUtvWkl6ajBFQXdJd2dZd3hFakFRQmdOVkJBTU1DV3h2WTJGc2FHOXpkREVVTUJJR0ExVUVDZ3dMVUhKdlkybDJhWE1nUVVjeEhqQWNCZ05WQkFzTUZVTmxjblJwWm1sallYUmxJRUYxZEdodmNtbDBlVEVQTUEwR0ExVUVCd3dHV25WeWFXTm9NUXN3Q1FZRFZRUUdFd0pEU0RFaU1DQUdDU3FHU0liM0RRRUpBUllUYzNWd2NHOXlkRUJ3Y205amFYWnBjeTVqYURBZUZ3MHlOakF5TWpRd056VTJNREJhRncweU56QXlNalF3TURBd01EQmFNSUdPTVFzd0NRWURWUVFHRXdKRFNERVBNQTBHQTFVRUJ3d0dXblZ5YVdOb01SUXdFZ1lEVlFRS0RBdFFjbTlqYVhacGN5QkJSekVlTUJ3R0ExVUVDd3dWUTJWeWRHbG1hV05oZEdVZ1FYVjBhRzl5YVhSNU1SUXdFZ1lEVlFRRERBdHdjbTlqYVhacGN5NWphREVpTUNBR0NTcUdTSWIzRFFFSkFSWVRjM1Z3Y0c5eWRFQndjbTlqYVhacGN5NWphREFxTUFVR0F5dGxjQU1oQUVUZExiZmMyekZjU3kvWEtZYmMrNzRVQkc2ZEpqeWRiTk5QVUxOMEttazJvNElCd2pDQ0FiNHdId1lEVlIwakJCZ3dGb0FVN2ZUdEQ5M05udi81WlJUYTJad2ZGUm5JbEVzd0RBWURWUjBUQVFIL0JBSXdBREFkQmdOVkhRNEVGZ1FVYnhkRnFvQ0c0UGlzNFpXOXJVcjV6anQ4QXFvd2djZ0dDQ3NHQVFVRkJ3RUJCSUc3TUlHNE1Gb0dDQ3NHQVFVRkJ6QUJoazVvZEhSd09pOHZZMkV1WkdWMkxtMWtiQzF3YkhWekxtTnZiUzl2WTNOd0x6SkZPRFl5T1RjMVJrUXdPVEJGTVVZek5VRTJOelJEUlVGQk5FVTJRelUyUlRWQ05qYzNORGd2WTJWeWRDOHdXZ1lJS3dZQkJRVUhNQUtHVG1oMGRIQTZMeTlqWVM1a1pYWXViV1JzTFhCc2RYTXVZMjl0TDJsemMzVmxjaTh5UlRnMk1qazNOVVpFTURrd1JURkdNelZCTmpjMFEwVkJRVFJGTmtNMU5rVTFRalkzTnpRNExtUmxjakJaQmdOVkhSOEVVakJRTUU2Z1RLQktoa2hvZEhSd09pOHZZMkV1WkdWMkxtMWtiQzF3YkhWekxtTnZiUzlqY213dk1rVTROakk1TnpWR1JEQTVNRVV4UmpNMVFUWTNORU5GUVVFMFJUWkROVFpGTlVJMk56YzBPQzh3RlFZRFZSMGxBUUgvQkFzd0NRWUhLSUdNWFFVQkFqQU9CZ05WSFE4QkFmOEVCQU1DQjRBd0lRWURWUjBSQkJvd0dJSVdLaTVrWlhZdWNISnZZMmwyYVhNdGIyNWxMbU52YlRBS0JnZ3Foa2pPUFFRREFnTkhBREJFQWlBQTJxVERXN0lzZGxPcXVVcUZtbHBCK2V2L043cDFpZ0pXQlJPbTVGdGl3Z0lnUlJ5NXZ5RTJka2dBdzUvNmNWNG5wZUFydjYrQkpBSUk1dUdFVHp3L3RBbz0iXX0";
+const DUMMY_SIG: &str =
+    "eBzMCuKJ_SbiFEmt4yiuthWXPe2RUNpyRFD8TPW5cGVnzcVW6jG9aC3GeGREjNpQu2ZNt-xSNL6IxIO69cIsCg";
+fn dummy_reg_cert() -> String {
+    let reg_cert = WRPRegistrationCertificatePayload {
+        issued_at: None,
+        expires_at: None,
+        invalid_before: None,
+        issuer: None,
+        subject: Some("subject".to_string()),
+        audience: None,
+        jwt_id: None,
+        proof_of_possession_key: None,
+        custom: Payload {
+            name: "".to_string(),
+            sub_ln: None,
+            sub_gn: None,
+            sub_fn: None,
+            country: "".to_string(),
+            registry_uri: Url::parse("https://example.com").unwrap(),
+            service_descriptions: vec![],
+            entitlements: vec![],
+            privacy_policy: Url::parse("https://example.com").unwrap(),
+            info_uri: Url::parse("https://example.com").unwrap(),
+            supervisory_authority: SupervisoryAuthority {
+                email: "".to_string(),
+                phone: "".to_string(),
+                uri: "".to_string(),
+            },
+            policy_id: vec![],
+            certificate_policy: Url::parse("https://example.com").unwrap(),
+            status: None,
+            provides_attestations: Some(vec![Credential {
+                format: CredentialFormat::SdJwt,
+                meta: CredentialMeta::SdJwtVc {
+                    vct_values: vec!["https://example.com".to_string()],
+                },
+                claim: None,
+            }]),
+            credentials: Some(vec![Credential {
+                format: CredentialFormat::SdJwt,
+                meta: CredentialMeta::SdJwtVc {
+                    vct_values: vec!["https://example2.com".to_string()],
+                },
+                claim: None,
+            }]),
+            purpose: None,
+            intended_use_id: Some("intended_use_id".to_string()),
+            public_body: None,
+            support_uri: Url::parse("https://example.com").unwrap(),
+            intermediary: None,
+        },
+    };
+    let payload = string_to_b64url_string(&serde_json::to_string(&reg_cert).unwrap()).unwrap();
+    format!("{REG_CERT_HEADER}.{payload}.{DUMMY_SIG}")
 }

@@ -38,8 +38,6 @@ verifierProvider:
           trustEcosystemsEnabled: false
         legacyTrustManagementEnabled: true
 signer:
-  ACCESS_CERTIFICATE:
-    enabled: false
   REGISTRATION_CERTIFICATE:
     params:
       private:

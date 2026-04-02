@@ -883,6 +883,11 @@ pub enum ErrorCode {
     BR_0413,
     #[strum(message = "Invalid filter value: proof schema not found")]
     BR_0414,
+    #[strum(message = "Missing trust information blob")]
+    BR_0415,
+
+    #[strum(message = "Invalid trust information")]
+    BR_0416,
 }
 
 pub trait ErrorCodeMixin: Error + Send + Sync + 'static {

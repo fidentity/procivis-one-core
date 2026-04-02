@@ -1,20 +1,23 @@
-use one_dto_mapper::convert_inner;
+use dcql::CredentialMeta;
+use one_dto_mapper::{convert_inner, try_convert_inner};
 use shared_types::{CredentialSchemaId, OrganisationId, ProofSchemaId};
 
 use super::dto::{
     CertificateRolesMatchMode, CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO,
     GetIdentifierListResponseDTO, GetIdentifierResponseDTO, IdentifierFilterParamsDTO,
+    IdentifierTrustInformationResponseDTO, IdentifierTrustInformationType,
     ResolvedTrustEntrySourceResponseDTO,
 };
 use super::error::IdentifierServiceError;
 use crate::config::core_config::CoreConfig;
 use crate::error::ContextWithErrorCode;
+use crate::model::blob::BlobType;
 use crate::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
 use crate::model::identifier::{
     ExactIdentifierFilterColumn, GetIdentifierList, Identifier, IdentifierFilterValue,
     IdentifierListQuery, IdentifierType, SortableIdentifierColumn,
 };
-use crate::model::identifier_trust_information::SchemaFormat;
+use crate::model::identifier_trust_information::{IdentifierTrustInformation, SchemaFormat};
 use crate::model::list_filter::{
     ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
     ValueComparison,
@@ -22,93 +25,155 @@ use crate::model::list_filter::{
 use crate::model::list_query::{ListPagination, ListQuery, ListSorting};
 use crate::model::proof_schema::{ProofInputSchemaRelations, ProofSchemaRelations};
 use crate::model::trust_list_subscription::TrustListSubscription;
+use crate::provider::blob_storage_provider::{BlobStorageProvider, BlobStorageType};
+use crate::provider::signer::registration_certificate::model::Credential;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::proof_schema_repository::ProofSchemaRepository;
 use crate::service::common_dto::ListQueryDTO;
 use crate::service::did::dto::CreateDidRequestDTO;
+use crate::service::error::MissingProviderError;
 
-impl TryFrom<Identifier> for GetIdentifierResponseDTO {
-    type Error = IdentifierServiceError;
-    fn try_from(value: Identifier) -> Result<Self, Self::Error> {
-        let organisation_id = value.organisation.map(|org| org.id);
+pub(super) async fn identifier_to_response_dto(
+    value: Identifier,
+    blob_storage_provider: &dyn BlobStorageProvider,
+) -> Result<GetIdentifierResponseDTO, IdentifierServiceError> {
+    let organisation_id = value.organisation.map(|org| org.id);
 
-        let mut certificates = None;
-        let mut certificate_authorities = None;
-        match value.r#type {
-            IdentifierType::Did => {
-                if value.did.is_none() {
-                    return Err(IdentifierServiceError::MappingError(
-                        "DID is required for identifier type Did".to_string(),
-                    ));
-                }
-            }
-            IdentifierType::Key => {
-                if value.key.is_none() {
-                    return Err(IdentifierServiceError::MappingError(
-                        "Key is required for identifier type Key".to_string(),
-                    ));
-                }
-            }
-            IdentifierType::Certificate => {
-                let mut certs = vec![];
-                for certificate in
-                    value
-                        .certificates
-                        .ok_or(IdentifierServiceError::MappingError(format!(
-                            "Certificates required for identifier type {}",
-                            value.r#type
-                        )))?
-                {
-                    certs.push(
-                        certificate
-                            .try_into()
-                            .error_while("converting certificate")?,
-                    );
-                }
-                certificates = Some(certs);
-            }
-            IdentifierType::CertificateAuthority => {
-                let mut certs = vec![];
-                for certificate in
-                    value
-                        .certificates
-                        .ok_or(IdentifierServiceError::MappingError(format!(
-                            "Certificates required for identifier type {}",
-                            value.r#type
-                        )))?
-                {
-                    certs.push(
-                        certificate
-                            .try_into()
-                            .error_while("converting certificate")?,
-                    );
-                }
-                certificate_authorities = Some(certs);
+    let mut certificates = None;
+    let mut certificate_authorities = None;
+    match value.r#type {
+        IdentifierType::Did => {
+            if value.did.is_none() {
+                return Err(IdentifierServiceError::MappingError(
+                    "DID is required for identifier type Did".to_string(),
+                ));
             }
         }
+        IdentifierType::Key => {
+            if value.key.is_none() {
+                return Err(IdentifierServiceError::MappingError(
+                    "Key is required for identifier type Key".to_string(),
+                ));
+            }
+        }
+        IdentifierType::Certificate => {
+            let mut certs = vec![];
+            for certificate in value
+                .certificates
+                .ok_or(IdentifierServiceError::MappingError(format!(
+                    "Certificates required for identifier type {}",
+                    value.r#type
+                )))?
+            {
+                certs.push(
+                    certificate
+                        .try_into()
+                        .error_while("converting certificate")?,
+                );
+            }
+            certificates = Some(certs);
+        }
+        IdentifierType::CertificateAuthority => {
+            let mut certs = vec![];
+            for certificate in value
+                .certificates
+                .ok_or(IdentifierServiceError::MappingError(format!(
+                    "Certificates required for identifier type {}",
+                    value.r#type
+                )))?
+            {
+                certs.push(
+                    certificate
+                        .try_into()
+                        .error_while("converting certificate")?,
+                );
+            }
+            certificate_authorities = Some(certs);
+        }
+    }
+    let trust_information = value
+        .trust_information
+        .ok_or(IdentifierServiceError::MappingError(
+            "missing trust information".to_string(),
+        ))?;
+    let trust_information = map_trust_information(blob_storage_provider, trust_information).await?;
 
-        Ok(Self {
-            id: value.id,
-            created_date: value.created_date,
-            last_modified: value.last_modified,
-            name: value.name,
-            organisation_id,
-            r#type: value.r#type,
-            is_remote: value.is_remote,
-            state: value.state,
-            did: value
-                .did
-                .map(TryInto::try_into)
-                .transpose()
-                .error_while("converting DID")?,
-            key: value
-                .key
-                .map(TryInto::try_into)
-                .transpose()
-                .error_while("converting key")?,
-            certificates,
-            certificate_authorities,
+    Ok(GetIdentifierResponseDTO {
+        id: value.id,
+        created_date: value.created_date,
+        last_modified: value.last_modified,
+        name: value.name,
+        organisation_id,
+        r#type: value.r#type,
+        is_remote: value.is_remote,
+        state: value.state,
+        did: value
+            .did
+            .map(TryInto::try_into)
+            .transpose()
+            .error_while("converting DID")?,
+        key: value
+            .key
+            .map(TryInto::try_into)
+            .transpose()
+            .error_while("converting key")?,
+        certificates,
+        certificate_authorities,
+        trust_information,
+    })
+}
+
+async fn map_trust_information(
+    blob_storage_provider: &dyn BlobStorageProvider,
+    trust_information: Vec<IdentifierTrustInformation>,
+) -> Result<Vec<IdentifierTrustInformationResponseDTO>, IdentifierServiceError> {
+    let blob_storage = blob_storage_provider
+        .get_blob_storage(BlobStorageType::Db)
+        .await
+        .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+        .error_while("getting blob storage")?;
+    let mut trust_info_dtos = vec![];
+    for entry in trust_information {
+        let blob = blob_storage
+            .get(&entry.blob_id)
+            .await
+            .error_while("retrieving blob")?
+            .ok_or(IdentifierServiceError::MissingTrustInformationBlob(
+                entry.blob_id,
+            ))?;
+        trust_info_dtos.push(IdentifierTrustInformationResponseDTO {
+            data: std::str::from_utf8(&blob.value)
+                .map_err(|e| IdentifierServiceError::MappingError(e.to_string()))?
+                .to_string(),
+            r#type: blob.r#type.try_into()?,
+            valid_from: entry.valid_from,
+            valid_to: entry.valid_to,
         })
+    }
+    Ok(trust_info_dtos)
+}
+
+impl TryFrom<BlobType> for IdentifierTrustInformationType {
+    type Error = IdentifierServiceError;
+    fn try_from(value: BlobType) -> Result<Self, Self::Error> {
+        match value {
+            BlobType::RegistrationCertificate => {
+                Ok(IdentifierTrustInformationType::RegistrationCertificate)
+            }
+            t => Err(IdentifierServiceError::MappingError(format!(
+                "invalid trust information blob type `{t:?}`"
+            ))),
+        }
+    }
+}
+
+impl From<IdentifierTrustInformationType> for BlobType {
+    fn from(value: IdentifierTrustInformationType) -> Self {
+        match value {
+            IdentifierTrustInformationType::RegistrationCertificate => {
+                BlobType::RegistrationCertificate
+            }
+        }
     }
 }
 
@@ -399,4 +464,34 @@ fn filter_value_from_credential_schema(
         }
     };
     Ok(filter_value)
+}
+
+pub(super) fn map_dcql_credentials(
+    credentials: Vec<Credential>,
+) -> Result<Vec<SchemaFormat>, IdentifierServiceError> {
+    let schema_formats: Vec<Vec<SchemaFormat>> = try_convert_inner(credentials)?;
+    Ok(schema_formats.into_iter().flatten().collect())
+}
+
+impl TryFrom<Credential> for Vec<SchemaFormat> {
+    type Error = IdentifierServiceError;
+
+    fn try_from(value: Credential) -> Result<Self, Self::Error> {
+        let schema_ids = match value.meta {
+            CredentialMeta::MsoMdoc { doctype_value } => vec![doctype_value],
+            CredentialMeta::SdJwtVc { vct_values } => vct_values,
+            CredentialMeta::W3cVc { .. } => {
+                return Err(IdentifierServiceError::InvalidTrustInformation(
+                    "W3C credentials are not supported in trust information".to_string(),
+                ));
+            }
+        };
+        Ok(schema_ids
+            .into_iter()
+            .map(|c| SchemaFormat {
+                format: value.format.clone(),
+                schema_id: c,
+            })
+            .collect())
+    }
 }

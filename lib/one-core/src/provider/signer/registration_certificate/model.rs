@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use dcql::CredentialFormat;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -153,7 +154,7 @@ pub struct Status {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
-    pub format: String,
+    pub format: CredentialFormat,
     pub meta: dcql::CredentialMeta,
     pub claim: Option<Vec<Claim>>,
 }

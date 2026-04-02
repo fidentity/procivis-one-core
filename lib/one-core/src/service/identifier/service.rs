@@ -1,25 +1,35 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures::FutureExt;
 use itertools::Itertools;
 use shared_types::{IdentifierId, TrustCollectionId};
+use time::OffsetDateTime;
 use tracing::warn;
 use url::Url;
+use uuid::Uuid;
 
 use super::IdentifierService;
 use super::dto::{
-    CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO, GetIdentifierListResponseDTO,
+    CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO,
+    CreateIdentifierTrustInformationRequestDTO, GetIdentifierListResponseDTO,
     GetIdentifierResponseDTO, IdentifierFilterParamsDTO, ResolveTrustEntriesRequestDTO,
     ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
 };
 use super::error::IdentifierServiceError;
-use super::mapper::{params_to_query, to_create_did_request};
+use super::mapper::{
+    identifier_to_response_dto, map_dcql_credentials, params_to_query, to_create_did_request,
+};
 use super::validator::validate_identifier_type;
 use crate::config::core_config;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::model::blob::Blob;
 use crate::model::certificate::CertificateRelations;
 use crate::model::did::DidRelations;
 use crate::model::identifier::{Identifier, IdentifierRelations, SortableIdentifierColumn};
+use crate::model::identifier_trust_information::{
+    IdentifierTrustInformation, IdentifierTrustInformationRelations,
+};
 use crate::model::key::KeyRelations;
 use crate::model::list_filter::{ListFilterCondition, ListFilterValue};
 use crate::model::organisation::OrganisationRelations;
@@ -31,11 +41,15 @@ use crate::model::trust_list_subscription::{
     TrustListSubscription, TrustListSubscriptionFilterValue, TrustListSubscriptionListQuery,
 };
 use crate::proto::identifier_creator::CreateLocalIdentifierRequest;
+use crate::proto::transaction_manager::IsolationLevel;
+use crate::provider::blob_storage_provider::BlobStorageType;
+use crate::provider::signer::registration_certificate::model::WRPRegistrationCertificate;
 use crate::provider::trust_list_subscriber::{
     Feature, TrustEntityResponse, TrustListSubscriber, TrustListSubscriberCapabilities,
 };
 use crate::repository::error::DataLayerError;
 use crate::service::common_dto::ListQueryDTO;
+use crate::service::error::MissingProviderError;
 use crate::validator::{
     throw_if_org_not_matching_session, throw_if_org_relation_not_matching_session,
 };
@@ -67,7 +81,7 @@ impl IdentifierService {
                         organisation: Some(OrganisationRelations::default()),
                     }),
                     organisation: Some(Default::default()),
-                    ..Default::default()
+                    trust_information: Some(IdentifierTrustInformationRelations::default()),
                 },
             )
             .await
@@ -80,7 +94,7 @@ impl IdentifierService {
         )
         .error_while("checking session")?;
 
-        identifier.try_into()
+        identifier_to_response_dto(identifier, &*self.blob_storage_provider).await
     }
 
     /// Returns list of identifiers according to query
@@ -138,122 +152,145 @@ impl IdentifierService {
             ));
         }
 
-        let identifier = match (
-            request.did,
-            request.key_id,
-            request.key,
-            request.certificates,
-            request.certificate_authorities,
-        ) {
-            // IdentifierType::Did
-            (Some(did), None, None, None, None) => {
-                validate_identifier_type(
-                    core_config::IdentifierType::Did,
-                    &self.config.identifier,
-                )?;
+        let identifier = self
+            .transaction_manager
+            .tx_with_config(
+                async {
+                    let trust_information = request.trust_information;
+                    let identifier = match (
+                        request.did,
+                        request.key_id,
+                        request.key,
+                        request.certificates,
+                        request.certificate_authorities,
+                    ) {
+                        // IdentifierType::Did
+                        (Some(did), None, None, None, None) => {
+                            validate_identifier_type(
+                                core_config::IdentifierType::Did,
+                                &self.config.identifier,
+                            )?;
 
-                let did_request = to_create_did_request(&request.name, did, organisation.id);
+                            let did_request =
+                                to_create_did_request(&request.name, did, organisation.id);
 
-                self.identifier_creator
-                    .create_local_identifier(
-                        request.name,
-                        CreateLocalIdentifierRequest::Did(did_request),
-                        organisation,
-                    )
-                    .await
-                    .error_while("creating local did identifier")?
-            }
-            // IdentifierType::Key
-            // Deprecated. Use the `key` field instead.
-            (None, Some(key_id), None, None, None) => {
-                warn!("Creating identifier with key_id is deprecated. Use key instead.");
-                validate_identifier_type(
-                    core_config::IdentifierType::Key,
-                    &self.config.identifier,
-                )?;
-                let key = self
-                    .key_repository
-                    .get_key(
-                        &key_id,
-                        &KeyRelations {
-                            organisation: Some(Default::default()),
-                        },
-                    )
-                    .await
-                    .error_while("getting key")?
-                    .ok_or(IdentifierServiceError::MissingKey(key_id))?;
+                            self.identifier_creator
+                                .create_local_identifier(
+                                    request.name,
+                                    CreateLocalIdentifierRequest::Did(did_request),
+                                    organisation,
+                                )
+                                .await
+                                .error_while("creating local did identifier")?
+                        }
+                        // IdentifierType::Key
+                        // Deprecated. Use the `key` field instead.
+                        (None, Some(key_id), None, None, None) => {
+                            warn!(
+                                "Creating identifier with key_id is deprecated. Use key instead."
+                            );
+                            validate_identifier_type(
+                                core_config::IdentifierType::Key,
+                                &self.config.identifier,
+                            )?;
+                            let key = self
+                                .key_repository
+                                .get_key(
+                                    &key_id,
+                                    &KeyRelations {
+                                        organisation: Some(Default::default()),
+                                    },
+                                )
+                                .await
+                                .error_while("getting key")?
+                                .ok_or(IdentifierServiceError::MissingKey(key_id))?;
 
-                self.identifier_creator
-                    .create_local_identifier(
-                        request.name,
-                        CreateLocalIdentifierRequest::Key(key),
-                        organisation,
-                    )
-                    .await
-                    .error_while("creating local key identifier")?
-            }
-            (None, None, Some(CreateIdentifierKeyRequestDTO { key_id }), None, None) => {
-                validate_identifier_type(
-                    core_config::IdentifierType::Key,
-                    &self.config.identifier,
-                )?;
-                let key = self
-                    .key_repository
-                    .get_key(
-                        &key_id,
-                        &KeyRelations {
-                            organisation: Some(Default::default()),
-                        },
-                    )
-                    .await
-                    .error_while("getting key")?
-                    .ok_or(IdentifierServiceError::MissingKey(key_id))?;
+                            self.identifier_creator
+                                .create_local_identifier(
+                                    request.name,
+                                    CreateLocalIdentifierRequest::Key(key),
+                                    organisation,
+                                )
+                                .await
+                                .error_while("creating local key identifier")?
+                        }
+                        (
+                            None,
+                            None,
+                            Some(CreateIdentifierKeyRequestDTO { key_id }),
+                            None,
+                            None,
+                        ) => {
+                            validate_identifier_type(
+                                core_config::IdentifierType::Key,
+                                &self.config.identifier,
+                            )?;
+                            let key = self
+                                .key_repository
+                                .get_key(
+                                    &key_id,
+                                    &KeyRelations {
+                                        organisation: Some(Default::default()),
+                                    },
+                                )
+                                .await
+                                .error_while("getting key")?
+                                .ok_or(IdentifierServiceError::MissingKey(key_id))?;
 
-                self.identifier_creator
-                    .create_local_identifier(
-                        request.name,
-                        CreateLocalIdentifierRequest::Key(key),
-                        organisation,
-                    )
-                    .await
-                    .error_while("creating local key identifier")?
-            }
-            // IdentifierType::Certificate
-            (None, None, None, Some(certificate_requests), None) => {
-                validate_identifier_type(
-                    core_config::IdentifierType::Certificate,
-                    &self.config.identifier,
-                )?;
+                            self.identifier_creator
+                                .create_local_identifier(
+                                    request.name,
+                                    CreateLocalIdentifierRequest::Key(key),
+                                    organisation,
+                                )
+                                .await
+                                .error_while("creating local key identifier")?
+                        }
+                        // IdentifierType::Certificate
+                        (None, None, None, Some(certificate_requests), None) => {
+                            validate_identifier_type(
+                                core_config::IdentifierType::Certificate,
+                                &self.config.identifier,
+                            )?;
 
-                self.identifier_creator
-                    .create_local_identifier(
-                        request.name,
-                        CreateLocalIdentifierRequest::Certificate(certificate_requests),
-                        organisation,
-                    )
-                    .await
-                    .error_while("creating local certificate identifier")?
-            }
-            // IdentifierType::Certificate authority
-            (None, None, None, None, Some(ca_requests)) => {
-                validate_identifier_type(
-                    core_config::IdentifierType::CertificateAuthority,
-                    &self.config.identifier,
-                )?;
+                            self.identifier_creator
+                                .create_local_identifier(
+                                    request.name,
+                                    CreateLocalIdentifierRequest::Certificate(certificate_requests),
+                                    organisation,
+                                )
+                                .await
+                                .error_while("creating local certificate identifier")?
+                        }
+                        // IdentifierType::Certificate authority
+                        (None, None, None, None, Some(ca_requests)) => {
+                            validate_identifier_type(
+                                core_config::IdentifierType::CertificateAuthority,
+                                &self.config.identifier,
+                            )?;
 
-                self.identifier_creator
-                    .create_local_identifier(
-                        request.name,
-                        CreateLocalIdentifierRequest::CertificateAuthority(ca_requests),
-                        organisation,
-                    )
-                    .await
-                    .error_while("creating local CA identifier")?
-            }
-            // invalid input combinations
-            _ => return Err(IdentifierServiceError::InvalidCreationInput),
-        };
-
+                            self.identifier_creator
+                                .create_local_identifier(
+                                    request.name,
+                                    CreateLocalIdentifierRequest::CertificateAuthority(ca_requests),
+                                    organisation,
+                                )
+                                .await
+                                .error_while("creating local CA identifier")?
+                        }
+                        // invalid input combinations
+                        _ => return Err(IdentifierServiceError::InvalidCreationInput),
+                    };
+                    self.create_trust_information(trust_information, &identifier)
+                        .await?;
+                    Ok(identifier)
+                }
+                .boxed(),
+                Some(IsolationLevel::ReadCommitted),
+                None,
+            )
+            .await
+            .error_while("creating identifier")??;
         tracing::info!(
             "Created identifier `{}` ({}) with type `{}`",
             identifier.name,
@@ -261,6 +298,66 @@ impl IdentifierService {
             identifier.r#type
         );
         Ok(identifier.id)
+    }
+
+    async fn create_trust_information(
+        &self,
+        trust_information: Vec<CreateIdentifierTrustInformationRequestDTO>,
+        identifier: &Identifier,
+    ) -> Result<(), IdentifierServiceError> {
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+        let now = OffsetDateTime::now_utc();
+        for trust_info in trust_information {
+            // TODO ONE-9252: Validate reg cert and consistency with access certs, if any
+            let registration_cert =
+                WRPRegistrationCertificate::decompose_token(trust_info.data.as_str())
+                    .error_while("parsing trust information")?;
+            let blob_id = Uuid::new_v4().into();
+            blob_storage
+                .create(Blob {
+                    id: blob_id,
+                    created_date: now,
+                    last_modified: now,
+                    value: trust_info.data.into_bytes(),
+                    r#type: trust_info.r#type.into(),
+                })
+                .await
+                .error_while("saving trust information blob")?;
+
+            self.identifier_trust_information_repository
+                .create(IdentifierTrustInformation {
+                    id: Uuid::new_v4().into(),
+                    created_date: now,
+                    last_modified: now,
+                    valid_from: registration_cert.payload.invalid_before,
+                    valid_to: registration_cert.payload.expires_at,
+                    intended_use: registration_cert.payload.custom.intended_use_id,
+                    allowed_issuance_types: map_dcql_credentials(
+                        registration_cert
+                            .payload
+                            .custom
+                            .provides_attestations
+                            .unwrap_or_default(),
+                    )?,
+                    allowed_verification_types: map_dcql_credentials(
+                        registration_cert
+                            .payload
+                            .custom
+                            .credentials
+                            .unwrap_or_default(),
+                    )?,
+                    identifier_id: identifier.id,
+                    blob_id,
+                })
+                .await
+                .error_while("creating trust information")?;
+        }
+        Ok(())
     }
 
     /// Deletes an identifier

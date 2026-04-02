@@ -256,7 +256,8 @@ pub(crate) fn error_code_to_http_status(code: ErrorCode) -> StatusCode {
         | ErrorCode::BR_0411
         | ErrorCode::BR_0412
         | ErrorCode::BR_0413
-        | ErrorCode::BR_0414 => StatusCode::BAD_REQUEST,
+        | ErrorCode::BR_0414
+        | ErrorCode::BR_0416 => StatusCode::BAD_REQUEST,
         ErrorCode::BR_0000
         | ErrorCode::BR_0038
         | ErrorCode::BR_0039
@@ -292,7 +293,8 @@ pub(crate) fn error_code_to_http_status(code: ErrorCode) -> StatusCode {
         | ErrorCode::BR_0384
         | ErrorCode::BR_0393
         | ErrorCode::BR_0397
-        | ErrorCode::BR_0401 => StatusCode::INTERNAL_SERVER_ERROR,
+        | ErrorCode::BR_0401
+        | ErrorCode::BR_0415 => StatusCode::INTERNAL_SERVER_ERROR,
         ErrorCode::BR_0178 => StatusCode::FORBIDDEN,
         ErrorCode::BR_0358 => StatusCode::UNAUTHORIZED,
     }

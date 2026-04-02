@@ -11,11 +11,13 @@ use one_core::service::error::ServiceError;
 use one_core::service::identifier::dto::{
     CertificateRolesMatchMode, CreateCertificateAuthorityRequestDTO, CreateIdentifierDidRequestDTO,
     CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO,
+    CreateIdentifierTrustInformationRequestDTO,
     CreateSelfSignedCertificateAuthorityContentRequestDTO,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
     GetIdentifierListResponseDTO, GetIdentifierResponseDTO, IdentifierFilterParamsDTO,
+    IdentifierTrustInformationResponseDTO, IdentifierTrustInformationType,
     ResolveTrustEntriesRequestDTO, ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
     ResolvedTrustEntrySourceResponseDTO,
 };
@@ -52,7 +54,7 @@ use crate::endpoint::trust_collection::dto::{
 };
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::mapper::MapperError;
-use crate::serialize::front_time;
+use crate::serialize::{front_time, front_time_option};
 
 #[options_not_nullable]
 #[derive(Debug, Deserialize, ToSchema, Validate, TryInto)]
@@ -86,6 +88,26 @@ pub(crate) struct CreateIdentifierRequestRestDTO {
     /// or self-signed CA configuration.
     #[try_into(with_fn = convert_inner_of_inner, infallible)]
     pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestRestDTO>>,
+    #[serde(default)]
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub trust_information: Vec<CreateIdentifierTrustInformationRequestRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Debug, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[into(CreateIdentifierTrustInformationRequestDTO)]
+pub(crate) struct CreateIdentifierTrustInformationRequestRestDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeRestEnum,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into(IdentifierTrustInformationType)]
+#[from(IdentifierTrustInformationType)]
+pub(crate) enum IdentifierTrustInformationTypeRestEnum {
+    RegistrationCertificate,
 }
 
 #[options_not_nullable]
@@ -278,6 +300,9 @@ pub(crate) struct GetIdentifierResponseRestDTO {
     pub r#type: IdentifierTypeRest,
     #[try_from(infallible)]
     pub is_remote: bool,
+    #[try_from(infallible, with_fn = "convert_inner")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trust_information: Vec<IdentifierTrustInformationResponseRestDTO>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, From, Into)]
@@ -310,6 +335,20 @@ pub(crate) enum SortableIdentifierColumnRest {
     CreatedDate,
     Type,
     State,
+}
+
+#[options_not_nullable]
+#[derive(Debug, Serialize, ToSchema, From)]
+#[from(IdentifierTrustInformationResponseDTO)]
+pub(crate) struct IdentifierTrustInformationResponseRestDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeRestEnum,
+    #[serde(serialize_with = "front_time_option")]
+    #[schema(nullable = false, example = "2023-06-09T14:19:57.000Z")]
+    pub valid_from: Option<OffsetDateTime>,
+    #[schema(nullable = false, example = "2023-06-09T14:19:57.000Z")]
+    #[serde(serialize_with = "front_time_option")]
+    pub valid_to: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]

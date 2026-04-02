@@ -11,11 +11,13 @@ use one_core::service::certificate::dto::{
 use one_core::service::did::dto::{DidResponseDTO, DidResponseKeysDTO};
 use one_core::service::identifier::dto::{
     CertificateRolesMatchMode, CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
-    CreateIdentifierRequestDTO, CreateSelfSignedCertificateAuthorityContentRequestDTO,
+    CreateIdentifierRequestDTO, CreateIdentifierTrustInformationRequestDTO,
+    CreateSelfSignedCertificateAuthorityContentRequestDTO,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
-    GetIdentifierListResponseDTO, GetIdentifierResponseDTO,
+    GetIdentifierListResponseDTO, GetIdentifierResponseDTO, IdentifierTrustInformationResponseDTO,
+    IdentifierTrustInformationType,
 };
 use one_core::service::key::dto::KeyResponseDTO;
 use one_dto_mapper::{
@@ -27,6 +29,7 @@ use super::common::SortDirection;
 use super::did::{DidTypeBindingEnum, KeyRoleBindingEnum};
 use super::key::{KeyGenerateCSRRequestSubjectBindingDTO, KeyListItemBindingDTO};
 use crate::OneCore;
+use crate::binding::mapper::optional_time;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, from_id_opt, into_id, into_id_opt, into_timestamp_opt};
 
@@ -111,6 +114,28 @@ pub struct GetIdentifierBindingDTO {
     pub key: Option<KeyResponseBindingDTO>,
     #[from(with_fn = convert_inner_of_inner )]
     pub certificates: Option<Vec<CertificateResponseBindingDTO>>,
+    #[from(with_fn = convert_inner)]
+    pub trust_information: Vec<IdentifierTrustInformationResponseBindingDTO>,
+}
+
+#[derive(Clone, Debug, From, uniffi::Record)]
+#[from(IdentifierTrustInformationResponseDTO)]
+#[uniffi(name = "IdentifierTrustInformationResponseDTO")]
+pub(crate) struct IdentifierTrustInformationResponseBindingDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeBindingEnum,
+    #[from(with_fn = optional_time)]
+    pub valid_from: Option<String>,
+    #[from(with_fn = optional_time)]
+    pub valid_to: Option<String>,
+}
+
+#[derive(Clone, Debug, Into, From, uniffi::Enum)]
+#[into(IdentifierTrustInformationType)]
+#[from(IdentifierTrustInformationType)]
+#[uniffi(name = "IdentifierTrustInformationType")]
+pub enum IdentifierTrustInformationTypeBindingEnum {
+    RegistrationCertificate,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
@@ -348,6 +373,16 @@ pub struct CreateIdentifierRequestBindingDTO {
     pub certificates: Option<Vec<CreateCertificateRequestBindingDTO>>,
     #[try_into(with_fn = try_convert_inner_of_inner)]
     pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestBindingDTO>>,
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub trust_information: Vec<CreateIdentifierTrustInformationRequestBindingDTO>,
+}
+
+#[derive(Clone, Debug, Into, uniffi::Record)]
+#[into(CreateIdentifierTrustInformationRequestDTO)]
+#[uniffi(name = "CreateIdentifierTrustInformationRequest")]
+pub struct CreateIdentifierTrustInformationRequestBindingDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeBindingEnum,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]

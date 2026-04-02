@@ -32,6 +32,20 @@ pub struct GetIdentifierResponseDTO {
     pub key: Option<KeyResponseDTO>,
     pub certificates: Option<Vec<CertificateResponseDTO>>,
     pub certificate_authorities: Option<Vec<CertificateResponseDTO>>,
+    pub trust_information: Vec<IdentifierTrustInformationResponseDTO>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IdentifierTrustInformationResponseDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationType,
+    pub valid_from: Option<OffsetDateTime>,
+    pub valid_to: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
+pub enum IdentifierTrustInformationType {
+    RegistrationCertificate,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +104,13 @@ pub struct CreateIdentifierRequestDTO {
     pub certificates: Option<Vec<CreateCertificateRequestDTO>>,
     pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestDTO>>,
     pub organisation_id: OrganisationId,
+    pub trust_information: Vec<CreateIdentifierTrustInformationRequestDTO>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateIdentifierTrustInformationRequestDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationType,
 }
 
 #[derive(Clone, Debug)]

@@ -55,6 +55,7 @@ async fn test_uninitialize_core_dont_delete_data() {
             }),
             certificates: None,
             certificate_authorities: None,
+            trust_information: vec![],
         })
         .await
         .unwrap();

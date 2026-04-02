@@ -1,5 +1,6 @@
 use shared_types::{
-    CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId, TrustListSubscriberId,
+    BlobId, CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId,
+    TrustListSubscriberId,
 };
 
 use crate::config::core_config::IdentifierType;
@@ -22,6 +23,10 @@ pub enum IdentifierServiceError {
     OrganisationDeactivated(OrganisationId),
     #[error("Key `{0}` not found")]
     MissingKey(KeyId),
+    #[error("Trust information blob `{0}` not found")]
+    MissingTrustInformationBlob(BlobId),
+    #[error("Invalid trust information: {0}")]
+    InvalidTrustInformation(String),
 
     #[error("Mapping error: `{0}`")]
     MappingError(String),
@@ -50,6 +55,8 @@ impl ErrorCodeMixin for IdentifierServiceError {
             Self::ProofSchemaNotFound(_) => ErrorCode::BR_0414,
             Self::Nested(nested) => nested.error_code(),
             Self::MissingTrustListSubscriber(_) => ErrorCode::BR_0388,
+            Self::MissingTrustInformationBlob(_) => ErrorCode::BR_0415,
+            Self::InvalidTrustInformation(_) => ErrorCode::BR_0416,
         }
     }
 }

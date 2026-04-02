@@ -158,6 +158,8 @@ pub enum HistoryActionBindingEnum {
     InteractionErrored,
     InteractionExpired,
     Delivered,
+    WrpAcReceived,
+    WrpRcReceived,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, From, Into, uniffi::Enum)]
@@ -205,6 +207,7 @@ pub enum HistoryMetadataBinding {
         value: HistoryErrorMetadataBindingDTO,
     },
     WalletUnitJWT(String),
+    Certificate(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

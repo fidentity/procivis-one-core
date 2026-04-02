@@ -123,6 +123,10 @@ pub enum HistoryAction {
     InteractionExpired,
     #[sea_orm(string_value = "DELIVERED")]
     Delivered,
+    #[sea_orm(string_value = "WRP_AC_RECEIVED")]
+    WrpAcReceived,
+    #[sea_orm(string_value = "WRP_RC_RECEIVED")]
+    WrpRcReceived,
 }
 
 impl From<&HistoryAction> for SimpleExpr {

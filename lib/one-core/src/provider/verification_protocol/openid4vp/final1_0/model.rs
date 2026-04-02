@@ -8,8 +8,8 @@ use url::Url;
 use crate::provider::verification_protocol::model::CommonParams;
 use crate::provider::verification_protocol::openid4vp::mapper::deserialize_with_serde_json;
 use crate::provider::verification_protocol::openid4vp::model::{
-    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
-    OpenID4VPClientMetadata, default_presentation_url_scheme,
+    ClientIdScheme, OpenID4VCRedirectUriParams, OpenID4VPClientMetadata,
+    default_presentation_url_scheme,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,12 +23,25 @@ pub(crate) struct Params {
     #[serde(default = "default_presentation_url_scheme")]
     pub url_scheme: String,
 
-    pub holder: OpenID4VCPresentationHolderParams,
+    pub holder: HolderParams,
     pub verifier: PresentationVerifierParams,
     pub redirect_uri: OpenID4VCRedirectUriParams,
 
     #[serde(flatten)]
     pub common: CommonParams,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HolderParams {
+    pub supported_client_id_schemes: Vec<ClientIdScheme>,
+
+    #[serde(default = "default_true")]
+    pub trust_ecosystems_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[serde_as]

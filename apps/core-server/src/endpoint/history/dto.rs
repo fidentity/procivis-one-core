@@ -98,6 +98,7 @@ pub(crate) enum HistoryMetadataRestEnum {
     UnexportableEntities(UnexportableEntitiesResponseRestDTO),
     ErrorMetadata(#[try_from(infallible)] HistoryErrorMetadataRestDTO),
     WalletUnitJWT(#[try_from(infallible)] String),
+    Certificate(#[try_from(infallible)] String),
     External(#[try_from(infallible)] serde_json::Value),
 }
 
@@ -166,6 +167,8 @@ pub enum HistoryAction {
     InteractionErrored,
     InteractionExpired,
     Delivered,
+    WrpAcReceived,
+    WrpRcReceived,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]

@@ -26,12 +26,15 @@ use crate::proto::http_client::HttpClient;
 use crate::proto::identifier_creator::IdentifierCreator;
 use crate::proto::mqtt_client::MqttClient;
 use crate::proto::nfc::hce::NfcHce;
+use crate::proto::session_provider::SessionProvider;
+use crate::proto::wrp_validator::WRPValidator;
 use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::presentation_formatter::provider::PresentationFormatterProvider;
+use crate::repository::history_repository::HistoryRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::repository::proof_repository::ProofRepository;
 
@@ -91,6 +94,9 @@ pub(crate) fn verification_protocol_provider_from_config(
     openid_metadata_cache: Arc<dyn OpenIDMetadataFetcher>,
     mqtt_client: Option<Arc<dyn MqttClient>>,
     nfc_hce: Option<Arc<dyn NfcHce>>,
+    history_repository: Arc<dyn HistoryRepository>,
+    session_provider: Arc<dyn SessionProvider>,
+    wrp_validator: Arc<dyn WRPValidator>,
 ) -> Result<Arc<dyn VerificationProtocolProvider>, ConfigValidationError> {
     let mut protocols: HashMap<String, Arc<dyn VerificationProtocol>> = HashMap::new();
 
@@ -117,6 +123,9 @@ pub(crate) fn verification_protocol_provider_from_config(
                     key_algorithm_provider.clone(),
                     key_provider.clone(),
                     certificate_validator.clone(),
+                    history_repository.clone(),
+                    session_provider.clone(),
+                    wrp_validator.clone(),
                     client.clone(),
                     params.clone(),
                     core_config.clone(),

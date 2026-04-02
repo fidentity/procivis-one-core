@@ -1,33 +1,32 @@
 use core::str;
 use std::collections::BTreeSet;
-use std::str::FromStr;
-use std::sync::Arc;
 
 use serde_json::json;
-use shared_types::DidValue;
+use shared_types::{DidValue, OrganisationId, ProofId};
 use standardized_types::openid4vp::PresentationFormat;
 use url::Url;
+use uuid::Uuid;
 
 use super::mappers::decode_client_id_with_scheme;
-use super::model::{AuthorizationRequest, AuthorizationRequestQueryParams, Params};
-use crate::error::ContextWithErrorCode;
-use crate::mapper::x509::x5c_into_pem_chain;
+use super::model::{AuthorizationRequest, AuthorizationRequestQueryParams};
+use super::{OpenID4VPFinal1_0, encode_client_id_with_scheme};
+use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::mapper::x509::{pem_chain_into_x5c, x5c_into_pem_chain};
 use crate::model::did::KeyRole;
-use crate::proto::certificate_validator::{
-    CertificateValidationOptions, CertificateValidator, ParsedCertificate,
+use crate::model::history::{
+    History, HistoryAction, HistoryEntityType, HistoryMetadata, HistorySource,
 };
-use crate::proto::http_client::HttpClient;
+use crate::proto::certificate_validator::{CertificateValidationOptions, ParsedCertificate};
 use crate::proto::jwt::Jwt;
 use crate::proto::jwt::model::DecomposedJwt;
 use crate::proto::key_verification::KeyVerification;
+use crate::proto::session_provider::SessionExt;
+use crate::proto::wrp_validator::error::WRPValidatorError;
 use crate::provider::credential_formatter::model::{
     CertificateDetails, IdentifierDetails, TokenVerifier,
 };
 use crate::provider::did_method::error::DidMethodError;
-use crate::provider::did_method::provider::DidMethodProvider;
-use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::verification_protocol::openid4vp::VerificationProtocolError;
-use crate::provider::verification_protocol::openid4vp::final1_0::encode_client_id_with_scheme;
 use crate::provider::verification_protocol::openid4vp::model::{
     ClientIdScheme, OpenID4VCVerifierAttestationPayload, OpenID4VPClientMetadata,
     OpenID4VPHolderInteractionData,
@@ -38,452 +37,511 @@ use crate::provider::verification_protocol::openid4vp::validator::{
 };
 use crate::validator::x509::is_dns_name_matching;
 
-async fn parse_referenced_data_from_x509_san_dns_token(
-    request_token: DecomposedJwt<AuthorizationRequest>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-) -> Result<(AuthorizationRequest, CertificateDetails), VerificationProtocolError> {
-    let x5c = request_token
-        .header
-        .x5c
-        .ok_or(VerificationProtocolError::Failed("x5c missing".to_string()))?;
+impl OpenID4VPFinal1_0 {
+    async fn parse_referenced_data_from_x509_san_dns_token(
+        &self,
+        request_token: DecomposedJwt<AuthorizationRequest>,
+    ) -> Result<(AuthorizationRequest, CertificateDetails), VerificationProtocolError> {
+        let x5c = request_token
+            .header
+            .x5c
+            .ok_or(VerificationProtocolError::Failed("x5c missing".to_string()))?;
 
-    let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+        let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
 
-    let pem_chain = x5c_into_pem_chain(&x5c).error_while("parsing x5c")?;
+        let pem_chain = x5c_into_pem_chain(&x5c).error_while("parsing x5c")?;
 
-    let ParsedCertificate {
-        public_key,
-        attributes,
-        subject_common_name,
-        ..
-    } = certificate_validator
-        .parse_pem_chain(
-            &pem_chain,
-            CertificateValidationOptions::signature_and_revocation(None),
-        )
-        .await
-        .error_while("parsing PEM chain")?;
-
-    public_key
-        .signature()
-        .ok_or(VerificationProtocolError::Failed(
-            "Signature key missing".to_string(),
-        ))?
-        .public()
-        .verify(
-            request_token.unverified_jwt.as_bytes(),
-            &request_token.signature,
-        )
-        .error_while("verifying signature")?;
-
-    // x509 SAN must match client_id
-    validate_san_dns_matching_client_id(&attributes, &client_id)?;
-
-    // The response_uri must match client_id
-    // https://openid.net/specs/openid-4-verifiable-presentations-1_0-20.html#section-5.7-12.2.1
-    if request_token
-        .payload
-        .custom
-        .response_uri
-        .as_ref()
-        .is_none_or(|response_uri| {
-            !response_uri.domain().is_some_and(|response_domain| {
-                client_id == response_domain
-                    || is_dns_name_matching(&format!("*.{client_id}"), response_domain)
-            })
-        })
-    {
-        return Err(VerificationProtocolError::Failed(
-            "response_uri client_id mismatch".to_string(),
-        ));
-    }
-
-    Ok((
-        request_token.payload.custom,
-        CertificateDetails {
-            chain: pem_chain,
-            fingerprint: attributes.fingerprint,
-            expiry: attributes.not_after,
+        let ParsedCertificate {
+            public_key,
+            attributes,
             subject_common_name,
-        },
-    ))
-}
+            ..
+        } = self
+            .certificate_validator
+            .parse_pem_chain(
+                &pem_chain,
+                CertificateValidationOptions::signature_and_revocation(None),
+            )
+            .await
+            .error_while("parsing PEM chain")?;
 
-async fn parse_referenced_data_from_x509_hash_token(
-    request_token: DecomposedJwt<AuthorizationRequest>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-) -> Result<(AuthorizationRequest, CertificateDetails), VerificationProtocolError> {
-    let x5c = request_token
-        .header
-        .x5c
-        .ok_or(VerificationProtocolError::Failed("x5c missing".to_string()))?;
+        public_key
+            .signature()
+            .ok_or(VerificationProtocolError::Failed(
+                "Signature key missing".to_string(),
+            ))?
+            .public()
+            .verify(
+                request_token.unverified_jwt.as_bytes(),
+                &request_token.signature,
+            )
+            .error_while("verifying signature")?;
 
-    let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+        // x509 SAN must match client_id
+        validate_san_dns_matching_client_id(&attributes, &client_id)?;
 
-    let pem_chain = x5c_into_pem_chain(&x5c).error_while("parsing x5c")?;
-
-    let ParsedCertificate {
-        public_key,
-        attributes,
-        subject_common_name,
-        ..
-    } = certificate_validator
-        .parse_pem_chain(
-            &pem_chain,
-            CertificateValidationOptions::signature_and_revocation(None),
-        )
-        .await
-        .error_while("parsing PEM chain")?;
-
-    public_key
-        .signature()
-        .ok_or(VerificationProtocolError::Failed(
-            "Signature key missing".to_string(),
-        ))?
-        .public()
-        .verify(
-            request_token.unverified_jwt.as_bytes(),
-            &request_token.signature,
-        )
-        .error_while("verifying signature")?;
-
-    // client_id hash must match certificate fingerprint
-    validate_x509_hash_matching_client_id(&attributes, &client_id)?;
-
-    Ok((
-        request_token.payload.custom,
-        CertificateDetails {
-            chain: pem_chain,
-            fingerprint: attributes.fingerprint,
-            expiry: attributes.not_after,
-            subject_common_name,
-        },
-    ))
-}
-
-async fn parse_referenced_data_from_did_signed_token(
-    request_token: DecomposedJwt<AuthorizationRequest>,
-    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
-    did_method_provider: &Arc<dyn DidMethodProvider>,
-) -> Result<(AuthorizationRequest, DidValue), VerificationProtocolError> {
-    let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
-
-    let Some(kid) = request_token.header.key_id.clone() else {
-        return Err(VerificationProtocolError::Failed(
-            "JOSE header missing kid".to_string(),
-        ));
-    };
-
-    let verifier_did = client_id
-        .parse()
-        .map_err(DidMethodError::DidValueError)
-        .error_while("parsing verifier DID")?;
-
-    let did_document = did_method_provider
-        .resolve(&verifier_did)
-        .await
-        .error_while("resolving verifier DID")?;
-
-    let (_alg_id, alg) = key_algorithm_provider
-        .key_algorithm_from_jose_alg(&request_token.header.algorithm)
-        .ok_or(VerificationProtocolError::Failed(format!(
-            "Missing algorithm: {}",
-            request_token.header.algorithm
-        )))?;
-
-    let key = did_document
-        .find_verification_method(Some(&kid), Some(KeyRole::Authentication))
-        .or_else(|| {
-            did_document.find_verification_method(Some(&kid), Some(KeyRole::AssertionMethod))
-        })
-        .ok_or(VerificationProtocolError::Failed(
-            "Missing key in did".to_string(),
-        ))?
-        .public_key_jwk
-        .clone();
-
-    alg.parse_jwk(&key)
-        .error_while("parsing JWK")?
-        .signature()
-        .ok_or(VerificationProtocolError::Failed(
-            "signature missing".to_string(),
-        ))?
-        .public()
-        .verify(
-            request_token.unverified_jwt.as_bytes(),
-            &request_token.signature,
-        )
-        .error_while("verifying signature")?;
-
-    Ok((request_token.payload.custom, verifier_did))
-}
-
-async fn parse_referenced_data_from_verifier_attestation_token(
-    request_token: DecomposedJwt<AuthorizationRequest>,
-    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
-    did_method_provider: &Arc<dyn DidMethodProvider>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-) -> Result<(AuthorizationRequest, Option<String>), VerificationProtocolError> {
-    let attestation_jwt = request_token
-        .header
-        .jwt
-        .ok_or(VerificationProtocolError::Failed(
-            "attestation JWT missing".to_string(),
-        ))?;
-
-    let key_verification: Box<dyn TokenVerifier> = Box::new(KeyVerification {
-        key_algorithm_provider: key_algorithm_provider.to_owned(),
-        did_method_provider: did_method_provider.to_owned(),
-        key_role: KeyRole::AssertionMethod,
-        certificate_validator: certificate_validator.to_owned(),
-    });
-
-    /*
-     * TODO(ONE-3846): this should be created by some trusted entity, not by current verifier.
-     *     Key verification function should only allow trusted entity keys
-     */
-    let attestation_jwt = Jwt::<OpenID4VCVerifierAttestationPayload>::build_from_token(
-        &attestation_jwt,
-        Some(&key_verification),
-        None,
-    )
-    .await
-    .error_while("parsing attestation JWT")?;
-
-    let (_alg_id, alg) = key_algorithm_provider
-        .key_algorithm_from_jose_alg(&request_token.header.algorithm)
-        .ok_or(VerificationProtocolError::Failed(format!(
-            "Missing algorithm: {}",
-            request_token.header.algorithm
-        )))?;
-
-    let public_key_cnf = attestation_jwt
-        .payload
-        .proof_of_possession_key
-        .ok_or(VerificationProtocolError::Failed(
-            "missing `cnf` in attestation JWT token".to_string(),
-        ))?
-        .jwk
-        .jwk()
-        .to_owned();
-
-    alg.parse_jwk(&public_key_cnf)
-        .error_while("parsing JWK")?
-        .signature()
-        .ok_or(VerificationProtocolError::Failed(
-            "Signature key missing".to_string(),
-        ))?
-        .public()
-        .verify(
-            request_token.unverified_jwt.as_bytes(),
-            &request_token.signature,
-        )
-        .error_while("verifying signature")?;
-
-    validate_against_redirect_uris(
-        &attestation_jwt.payload.custom.redirect_uris,
-        request_token.payload.custom.redirect_uri.as_deref(),
-    )?;
-    validate_against_redirect_uris(
-        &attestation_jwt.payload.custom.redirect_uris,
-        request_token
+        // The response_uri must match client_id
+        // https://openid.net/specs/openid-4-verifiable-presentations-1_0-20.html#section-5.7-12.2.1
+        if request_token
             .payload
             .custom
             .response_uri
             .as_ref()
-            .map(|url| url.as_str()),
-    )?;
+            .is_none_or(|response_uri| {
+                !response_uri.domain().is_some_and(|response_domain| {
+                    client_id == response_domain
+                        || is_dns_name_matching(&format!("*.{client_id}"), response_domain)
+                })
+            })
+        {
+            return Err(VerificationProtocolError::Failed(
+                "response_uri client_id mismatch".to_string(),
+            ));
+        }
 
-    let client_id_without_prefix =
-        attestation_jwt
-            .payload
-            .subject
+        Ok((
+            request_token.payload.custom,
+            CertificateDetails {
+                chain: pem_chain,
+                fingerprint: attributes.fingerprint,
+                expiry: attributes.not_after,
+                subject_common_name,
+            },
+        ))
+    }
+
+    async fn parse_referenced_data_from_x509_hash_token(
+        &self,
+        request_token: DecomposedJwt<AuthorizationRequest>,
+    ) -> Result<(AuthorizationRequest, CertificateDetails), VerificationProtocolError> {
+        let x5c = request_token
+            .header
+            .x5c
+            .ok_or(VerificationProtocolError::Failed("x5c missing".to_string()))?;
+
+        let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+
+        let pem_chain = x5c_into_pem_chain(&x5c).error_while("parsing x5c")?;
+
+        let ParsedCertificate {
+            public_key,
+            attributes,
+            subject_common_name,
+            ..
+        } = self
+            .certificate_validator
+            .parse_pem_chain(
+                &pem_chain,
+                CertificateValidationOptions::signature_and_revocation(None),
+            )
+            .await
+            .error_while("parsing PEM chain")?;
+
+        public_key
+            .signature()
             .ok_or(VerificationProtocolError::Failed(
-                "missing `sub` in attestation JWT token".to_string(),
+                "Signature key missing".to_string(),
+            ))?
+            .public()
+            .verify(
+                request_token.unverified_jwt.as_bytes(),
+                &request_token.signature,
+            )
+            .error_while("verifying signature")?;
+
+        // client_id hash must match certificate fingerprint
+        validate_x509_hash_matching_client_id(&attributes, &client_id)?;
+
+        Ok((
+            request_token.payload.custom,
+            CertificateDetails {
+                chain: pem_chain,
+                fingerprint: attributes.fingerprint,
+                expiry: attributes.not_after,
+                subject_common_name,
+            },
+        ))
+    }
+
+    async fn parse_referenced_data_from_did_signed_token(
+        &self,
+        request_token: DecomposedJwt<AuthorizationRequest>,
+    ) -> Result<(AuthorizationRequest, DidValue), VerificationProtocolError> {
+        let (client_id, _) = decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+
+        let Some(kid) = request_token.header.key_id.clone() else {
+            return Err(VerificationProtocolError::Failed(
+                "JOSE header missing kid".to_string(),
+            ));
+        };
+
+        let verifier_did = client_id
+            .parse()
+            .map_err(DidMethodError::DidValueError)
+            .error_while("parsing verifier DID")?;
+
+        let did_document = self
+            .did_method_provider
+            .resolve(&verifier_did)
+            .await
+            .error_while("resolving verifier DID")?;
+
+        let (_, alg) = self
+            .key_algorithm_provider
+            .key_algorithm_from_jose_alg(&request_token.header.algorithm)
+            .ok_or(VerificationProtocolError::Failed(format!(
+                "Missing algorithm: {}",
+                request_token.header.algorithm
+            )))?;
+
+        let key = did_document
+            .find_verification_method(Some(&kid), Some(KeyRole::Authentication))
+            .or_else(|| {
+                did_document.find_verification_method(Some(&kid), Some(KeyRole::AssertionMethod))
+            })
+            .ok_or(VerificationProtocolError::Failed(
+                "Missing key in did".to_string(),
+            ))?
+            .public_key_jwk
+            .clone();
+
+        alg.parse_jwk(&key)
+            .error_while("parsing JWK")?
+            .signature()
+            .ok_or(VerificationProtocolError::Failed(
+                "signature missing".to_string(),
+            ))?
+            .public()
+            .verify(
+                request_token.unverified_jwt.as_bytes(),
+                &request_token.signature,
+            )
+            .error_while("verifying signature")?;
+
+        Ok((request_token.payload.custom, verifier_did))
+    }
+
+    async fn parse_referenced_data_from_verifier_attestation_token(
+        &self,
+        request_token: DecomposedJwt<AuthorizationRequest>,
+    ) -> Result<(AuthorizationRequest, Option<DidValue>), VerificationProtocolError> {
+        let attestation_jwt = request_token
+            .header
+            .jwt
+            .ok_or(VerificationProtocolError::Failed(
+                "attestation JWT missing".to_string(),
             ))?;
 
-    Ok((
-        AuthorizationRequest {
-            client_id: encode_client_id_with_scheme(
-                client_id_without_prefix,
-                ClientIdScheme::VerifierAttestation,
-            ),
-            ..request_token.payload.custom
-        },
-        attestation_jwt.payload.issuer,
-    ))
-}
+        let key_verification: Box<dyn TokenVerifier> = Box::new(KeyVerification {
+            key_algorithm_provider: self.key_algorithm_provider.to_owned(),
+            did_method_provider: self.did_method_provider.to_owned(),
+            key_role: KeyRole::AssertionMethod,
+            certificate_validator: self.certificate_validator.to_owned(),
+        });
 
-async fn retrieve_authorization_params_by_reference(
-    query_params: AuthorizationRequestQueryParams,
-    url: Url,
-    client: &Arc<dyn HttpClient>,
-    did_method_provider: &Arc<dyn DidMethodProvider>,
-    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-    params: &Params,
-) -> Result<(AuthorizationRequest, Option<IdentifierDetails>), VerificationProtocolError> {
-    let response = async {
-        client
-            .get(url.as_str())
-            .header("Accept", "application/oauth-authz-req+jwt")
-            .send()
-            .await?
-            .error_for_status()
+        /*
+         * TODO(ONE-3846): this should be created by some trusted entity, not by current verifier.
+         *     Key verification function should only allow trusted entity keys
+         */
+        let attestation_jwt = Jwt::<OpenID4VCVerifierAttestationPayload>::build_from_token(
+            &attestation_jwt,
+            Some(&key_verification),
+            None,
+        )
+        .await
+        .error_while("parsing attestation JWT")?;
+
+        let (_, alg) = self
+            .key_algorithm_provider
+            .key_algorithm_from_jose_alg(&request_token.header.algorithm)
+            .ok_or(VerificationProtocolError::Failed(format!(
+                "Missing algorithm: {}",
+                request_token.header.algorithm
+            )))?;
+
+        let public_key_cnf = attestation_jwt
+            .payload
+            .proof_of_possession_key
+            .ok_or(VerificationProtocolError::Failed(
+                "missing `cnf` in attestation JWT token".to_string(),
+            ))?
+            .jwk
+            .jwk()
+            .to_owned();
+
+        alg.parse_jwk(&public_key_cnf)
+            .error_while("parsing JWK")?
+            .signature()
+            .ok_or(VerificationProtocolError::Failed(
+                "Signature key missing".to_string(),
+            ))?
+            .public()
+            .verify(
+                request_token.unverified_jwt.as_bytes(),
+                &request_token.signature,
+            )
+            .error_while("verifying signature")?;
+
+        validate_against_redirect_uris(
+            &attestation_jwt.payload.custom.redirect_uris,
+            request_token.payload.custom.redirect_uri.as_deref(),
+        )?;
+        validate_against_redirect_uris(
+            &attestation_jwt.payload.custom.redirect_uris,
+            request_token
+                .payload
+                .custom
+                .response_uri
+                .as_ref()
+                .map(|url| url.as_str()),
+        )?;
+
+        let client_id_without_prefix =
+            attestation_jwt
+                .payload
+                .subject
+                .ok_or(VerificationProtocolError::Failed(
+                    "missing `sub` in attestation JWT token".to_string(),
+                ))?;
+
+        Ok((
+            AuthorizationRequest {
+                client_id: encode_client_id_with_scheme(
+                    client_id_without_prefix,
+                    ClientIdScheme::VerifierAttestation,
+                ),
+                ..request_token.payload.custom
+            },
+            attestation_jwt
+                .payload
+                .issuer
+                .map(DidValue::try_from)
+                .transpose()
+                .map_err(DidMethodError::DidValueError)
+                .error_while("parsing verifier DID")?,
+        ))
     }
-    .await
-    .error_while("fetching authorization request")?;
 
-    let token = String::from_utf8(response.body)
-        .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
-
-    let request_token: DecomposedJwt<AuthorizationRequest> =
-        Jwt::decompose_token(&token).error_while("parsing request JWT")?;
-
-    if let Some(audience) = &request_token.payload.audience {
-        if audience.len() != 1 {
-            tracing::warn!("Invalid `aud` claim, {} items", audience.len());
-        } else {
-            let aud = audience.first();
-            if aud != Some(&"https://self-issued.me/v2".to_string()) {
-                tracing::warn!("Invalid `aud` claim: {aud:?}");
-            }
+    async fn retrieve_authorization_params_by_reference(
+        &self,
+        query_params: AuthorizationRequestQueryParams,
+        url: Url,
+        proof_id: ProofId,
+        organisation_id: OrganisationId,
+    ) -> Result<(AuthorizationRequest, Option<IdentifierDetails>), VerificationProtocolError> {
+        let response = async {
+            self.client
+                .get(url.as_str())
+                .header("Accept", "application/oauth-authz-req+jwt")
+                .send()
+                .await?
+                .error_for_status()
         }
-    } else {
-        tracing::warn!("`aud` claim missing in request JWT payload");
-    }
+        .await
+        .error_while("fetching authorization request")?;
 
-    let (_, client_id_scheme) =
-        decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+        let token = String::from_utf8(response.body)
+            .map_err(|e| VerificationProtocolError::Failed(e.to_string()))?;
 
-    if !params
-        .holder
-        .supported_client_id_schemes
-        .contains(&client_id_scheme)
-    {
-        return Err(VerificationProtocolError::InvalidRequest(
-            "Unsupported client_id_scheme".into(),
-        ));
-    }
+        let request_token: DecomposedJwt<AuthorizationRequest> =
+            Jwt::decompose_token(&token).error_while("parsing request JWT")?;
 
-    let (referenced_params, verifier_details): (AuthorizationRequest, Option<IdentifierDetails>) =
-        match client_id_scheme {
+        if let Some(audience) = &request_token.payload.audience {
+            if audience.len() != 1 {
+                tracing::warn!("Invalid `aud` claim, {} items", audience.len());
+            } else {
+                let aud = audience.first();
+                if aud != Some(&"https://self-issued.me/v2".to_string()) {
+                    tracing::warn!("Invalid `aud` claim: {aud:?}");
+                }
+            }
+        } else {
+            tracing::warn!("`aud` claim missing in request JWT payload");
+        }
+
+        let (_, client_id_scheme) =
+            decode_client_id_with_scheme(&request_token.payload.custom.client_id)?;
+
+        if !self
+            .params
+            .holder
+            .supported_client_id_schemes
+            .contains(&client_id_scheme)
+        {
+            return Err(VerificationProtocolError::InvalidRequest(format!(
+                "Unsupported client_id_scheme: {client_id_scheme}"
+            )));
+        }
+
+        let (referenced_params, verifier_details): (
+            AuthorizationRequest,
+            Option<IdentifierDetails>,
+        ) = match client_id_scheme {
             ClientIdScheme::VerifierAttestation => {
-                let (request, did) = parse_referenced_data_from_verifier_attestation_token(
-                    request_token,
-                    key_algorithm_provider,
-                    did_method_provider,
-                    certificate_validator,
-                )
-                .await?;
-                (
-                    request,
-                    did.as_deref()
-                        .map(DidValue::from_str)
-                        .transpose()
-                        .map_err(DidMethodError::DidValueError)
-                        .error_while("parsing verifier DID")?
-                        .map(IdentifierDetails::Did),
-                )
+                let (request, did) = self
+                    .parse_referenced_data_from_verifier_attestation_token(request_token)
+                    .await?;
+                (request, did.map(IdentifierDetails::Did))
             }
             ClientIdScheme::RedirectUri => (request_token.payload.custom, None),
             ClientIdScheme::X509SanDns => {
-                let (params, certificate) = parse_referenced_data_from_x509_san_dns_token(
-                    request_token,
-                    certificate_validator,
-                )
-                .await?;
+                let (params, certificate) = self
+                    .parse_referenced_data_from_x509_san_dns_token(request_token)
+                    .await?;
                 (params, Some(IdentifierDetails::Certificate(certificate)))
             }
             ClientIdScheme::X509Hash => {
-                let (params, certificate) = parse_referenced_data_from_x509_hash_token(
-                    request_token,
-                    certificate_validator,
-                )
-                .await?;
+                let (params, certificate) = self
+                    .parse_referenced_data_from_x509_hash_token(request_token)
+                    .await?;
                 (params, Some(IdentifierDetails::Certificate(certificate)))
             }
             ClientIdScheme::Did => {
-                let (request, did) = parse_referenced_data_from_did_signed_token(
-                    request_token,
-                    key_algorithm_provider,
-                    did_method_provider,
-                )
-                .await?;
+                let (request, did) = self
+                    .parse_referenced_data_from_did_signed_token(request_token)
+                    .await?;
                 (request, Some(IdentifierDetails::Did(did)))
             }
         };
 
-    // client_id from the query params must match client_id inisde the token
-    if referenced_params.client_id != query_params.client_id {
-        return Err(VerificationProtocolError::InvalidRequest(
-            "client_id mismatch with the request token".to_string(),
-        ));
+        // client_id from the query params must match client_id inisde the token
+        if referenced_params.client_id != query_params.client_id {
+            return Err(VerificationProtocolError::InvalidRequest(
+                "client_id mismatch with the request token".to_string(),
+            ));
+        }
+
+        if self.params.holder.trust_ecosystems_enabled {
+            // check access certificate trust
+            if let Some(IdentifierDetails::Certificate(access_certificate)) = &verifier_details {
+                self.handle_access_certificate(access_certificate, proof_id, organisation_id)
+                    .await?;
+            }
+        }
+
+        Ok((referenced_params, verifier_details))
     }
 
-    Ok((referenced_params, verifier_details))
-}
+    pub(super) async fn request_from_openid4vp_query(
+        &self,
+        query: &str,
+        proof_id: ProofId,
+        organisation_id: OrganisationId,
+    ) -> Result<(AuthorizationRequest, Option<IdentifierDetails>), VerificationProtocolError> {
+        let query_params: AuthorizationRequestQueryParams = serde_qs::from_str(query)
+            .map_err(|e| VerificationProtocolError::InvalidRequest(e.to_string()))?;
 
-pub(crate) async fn interaction_data_from_openid4vp_query(
-    query: &str,
-    client: &Arc<dyn HttpClient>,
-    allow_insecure_http_transport: bool,
-    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
-    did_method_provider: &Arc<dyn DidMethodProvider>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-    params: &Params,
-) -> Result<(AuthorizationRequest, Option<IdentifierDetails>), VerificationProtocolError> {
-    let query_params: AuthorizationRequestQueryParams = serde_qs::from_str(query)
-        .map_err(|e| VerificationProtocolError::InvalidRequest(e.to_string()))?;
-
-    let (authorization_request, verifier_details) =
-        match (&query_params.request_uri, &query_params.request) {
-            (Some(_), Some(_)) => {
-                return Err(VerificationProtocolError::InvalidRequest(
-                    "request and request_uri cannot be set together".to_string(),
-                ));
-            }
-            (Some(request_uri), None) => {
-                let request_uri = Url::parse(request_uri)
-                    .map_err(|e| VerificationProtocolError::InvalidRequest(e.to_string()))?;
-
-                if !allow_insecure_http_transport && request_uri.scheme() != "https" {
+        let (authorization_request, verifier_details) =
+            match (&query_params.request_uri, &query_params.request) {
+                (Some(_), Some(_)) => {
                     return Err(VerificationProtocolError::InvalidRequest(
-                        "request_uri must use HTTPS scheme".to_string(),
+                        "request and request_uri cannot be set together".to_string(),
                     ));
                 }
+                (Some(request_uri), None) => {
+                    let request_uri = Url::parse(request_uri)
+                        .map_err(|e| VerificationProtocolError::InvalidRequest(e.to_string()))?;
 
-                Ok::<_, VerificationProtocolError>(
-                    retrieve_authorization_params_by_reference(
-                        query_params,
-                        request_uri,
-                        client,
-                        did_method_provider,
-                        key_algorithm_provider,
-                        certificate_validator,
-                        params,
+                    if !self.params.allow_insecure_http_transport && request_uri.scheme() != "https"
+                    {
+                        return Err(VerificationProtocolError::InvalidRequest(
+                            "request_uri must use HTTPS scheme".to_string(),
+                        ));
+                    }
+
+                    Ok::<_, VerificationProtocolError>(
+                        self.retrieve_authorization_params_by_reference(
+                            query_params,
+                            request_uri,
+                            proof_id,
+                            organisation_id,
+                        )
+                        .await?,
                     )
-                    .await?,
-                )
-            }
-            (None, Some(request)) => {
-                let authorization_request = serde_json::from_str(request).map_err(|e| {
-                    VerificationProtocolError::InvalidRequest(format!(
-                        "Failed to parse request: {e}"
-                    ))
-                })?;
-                Ok((authorization_request, None))
-            }
-            (None, None) => {
-                return Err(VerificationProtocolError::InvalidRequest(
-                    "request or request_uri is required".to_string(),
-                ));
-            }
-        }?;
-    Ok((authorization_request, verifier_details))
+                }
+                (None, Some(request)) => {
+                    let authorization_request = serde_json::from_str(request).map_err(|e| {
+                        VerificationProtocolError::InvalidRequest(format!(
+                            "Failed to parse request: {e}"
+                        ))
+                    })?;
+                    Ok((authorization_request, None))
+                }
+                (None, None) => {
+                    return Err(VerificationProtocolError::InvalidRequest(
+                        "request or request_uri is required".to_string(),
+                    ));
+                }
+            }?;
+        Ok((authorization_request, verifier_details))
+    }
+
+    async fn handle_access_certificate(
+        &self,
+        certificate: &CertificateDetails,
+        proof_id: ProofId,
+        organisation_id: OrganisationId,
+    ) -> Result<(), VerificationProtocolError> {
+        if let Err(err) = self
+            .wrp_validator
+            .get_access_certificate_trust(&certificate.chain, organisation_id)
+            .await
+        {
+            return match err {
+                WRPValidatorError::TrustManagementDisabled => {
+                    // trust management disabled, skipping checks and history creation
+                    Ok(())
+                }
+                err => Err(err.error_while("checking access certificate trust").into()),
+            };
+        };
+
+        let certificate = pem_chain_into_x5c(&certificate.chain)
+            .error_while("PEM chain conversion")?
+            .into_iter()
+            .next()
+            .ok_or(VerificationProtocolError::Failed("Empty x5c".to_string()))?;
+
+        self.store_certificate_history_event(
+            HistoryAction::WrpAcReceived,
+            proof_id,
+            organisation_id,
+            certificate,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    async fn store_certificate_history_event(
+        &self,
+        action: HistoryAction,
+        proof_id: ProofId,
+        organisation_id: OrganisationId,
+        certificate_content: String,
+    ) -> Result<(), VerificationProtocolError> {
+        self.history_repository
+            .create_history(History {
+                id: Uuid::new_v4().into(),
+                created_date: crate::clock::now_utc(),
+                action,
+                name: Default::default(),
+                target: None,
+                source: HistorySource::Core,
+                entity_id: Some(proof_id.into()),
+                entity_type: HistoryEntityType::Proof,
+                metadata: Some(HistoryMetadata::Certificate(certificate_content)),
+                organisation_id: Some(organisation_id),
+                user: self.session_provider.session().user(),
+            })
+            .await
+            .error_while("storing history")?;
+
+        Ok(())
+    }
 }
 
-pub(crate) fn validate_interaction_data(
+pub(super) fn validate_interaction_data(
     interaction_data: &OpenID4VPHolderInteractionData,
 ) -> Result<(), VerificationProtocolError> {
     if interaction_data.redirect_uri.is_some() {

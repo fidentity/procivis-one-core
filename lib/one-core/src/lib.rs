@@ -380,7 +380,6 @@ impl OneCore {
             data_provider.get_remote_entity_cache_repository(),
         )?;
 
-        #[expect(unused)] // TODO: ONE-9264
         let wrp_validator = Arc::new(WRPValidatorImpl::new(
             data_provider.get_trust_collection_repository(),
             data_provider.get_trust_list_subscription_repository(),
@@ -448,6 +447,9 @@ impl OneCore {
             openid_metadata_cache,
             Some(mqtt_client),
             nfc_hce.clone(),
+            data_provider.get_history_repository(),
+            session_provider.clone(),
+            wrp_validator,
         )?;
 
         let config = Arc::new(config);

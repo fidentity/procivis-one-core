@@ -345,8 +345,7 @@ verificationProtocol:
               x509_san_dns,
               x509_hash,
             ]
-          # EUDI compatibility flag for non-standard compliant vp_token formatting
-          dcqlVpTokenSinglePresentation: true
+          trustEcosystemsEnabled: false
         redirectUri:
           enabled: true
           allowedSchemes: ["https"]

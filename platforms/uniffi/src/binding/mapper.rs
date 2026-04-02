@@ -324,6 +324,9 @@ fn convert_history_metadata(
             HistoryMetadataResponse::WalletUnitJWT(value) => {
                 Some(HistoryMetadataBinding::WalletUnitJWT(value))
             }
+            HistoryMetadataResponse::Certificate(value) => {
+                Some(HistoryMetadataBinding::Certificate(value))
+            }
             // external metadata only used in REST API
             HistoryMetadataResponse::External(_) => None,
         },

@@ -1200,6 +1200,11 @@ impl TryFrom<IdentifierListQueryBindingDTO>
                 key_algorithms: value.key_algorithms,
                 key_roles: convert_inner_of_inner(value.key_roles),
                 key_storages: value.key_storages,
+                certificate_roles: convert_inner_of_inner(value.certificate_roles),
+                certificate_roles_match_mode: convert_inner(value.certificate_roles_match_mode)
+                    .unwrap_or_default(),
+                trust_issuance_schema_id: into_id_opt(value.trust_issuance_schema_id)?,
+                trust_verification_schema_id: into_id_opt(value.trust_verification_schema_id)?,
                 exact: convert_inner_of_inner(value.exact),
                 organisation_id,
                 created_date_after: into_timestamp_opt(value.created_date_after)?,

@@ -1,6 +1,6 @@
 use crate::transaction_context::TransactionManagerImpl;
 
-mod mapper;
+pub(crate) mod mapper;
 mod repository;
 #[cfg(test)]
 mod test;

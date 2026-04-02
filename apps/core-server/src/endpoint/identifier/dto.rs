@@ -9,7 +9,7 @@ use one_core::service::certificate::dto::{
 };
 use one_core::service::error::ServiceError;
 use one_core::service::identifier::dto::{
-    CreateCertificateAuthorityRequestDTO, CreateIdentifierDidRequestDTO,
+    CertificateRolesMatchMode, CreateCertificateAuthorityRequestDTO, CreateIdentifierDidRequestDTO,
     CreateIdentifierKeyRequestDTO, CreateIdentifierRequestDTO,
     CreateSelfSignedCertificateAuthorityContentRequestDTO,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
@@ -30,8 +30,8 @@ use one_dto_mapper::{
 use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    CertificateId, IdentifierId, KeyId, OrganisationId, TrustCollectionId, TrustListSubscriberId,
-    TrustListSubscriptionId,
+    CertificateId, CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId,
+    TrustCollectionId, TrustListSubscriberId, TrustListSubscriptionId,
 };
 use standardized_types::etsi_119_602::TrustedEntityInformation;
 use time::OffsetDateTime;
@@ -356,6 +356,19 @@ pub(crate) struct IdentifierFilterQueryParamsRestDTO {
     #[param(rename = "keyStorages[]", nullable = false)]
     #[try_into(infallible)]
     pub key_storages: Option<Vec<String>>,
+    #[param(rename = "certificateRoles[]", nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
+    pub certificate_roles: Option<Vec<CertificateRoleRestEnum>>,
+    #[param(nullable = false)]
+    #[try_into(infallible)]
+    #[serde(default)]
+    pub certificate_roles_match_mode: CertificateRolesMatchModeRestEnum,
+    #[param(nullable = false)]
+    #[try_into(infallible)]
+    pub trust_issuance_schema_id: Option<CredentialSchemaId>,
+    #[param(nullable = false)]
+    #[try_into(infallible)]
+    pub trust_verification_schema_id: Option<ProofSchemaId>,
 
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
@@ -399,6 +412,16 @@ pub(crate) struct IdentifierFilterQueryParamsRestDTO {
 #[into(ExactIdentifierFilterColumn)]
 pub(crate) enum ExactIdentifierFilterColumnRestEnum {
     Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into(CertificateRolesMatchMode)]
+/// The mode used to match certificate roles. Default any.
+pub(crate) enum CertificateRolesMatchModeRestEnum {
+    All,
+    #[default]
+    Any,
 }
 
 pub(crate) type GetIdentifierQuery =

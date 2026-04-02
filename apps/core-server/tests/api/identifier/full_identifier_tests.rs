@@ -1,10 +1,19 @@
+use dcql::CredentialFormat;
+use one_core::model::blob::BlobType;
+use one_core::model::identifier_trust_information::SchemaFormat;
 use shared_types::IdentifierId;
 use similar_asserts::assert_eq;
+use uuid::Uuid;
 
 use crate::api_oidc_tests::common::eddsa_key_2;
-use crate::fixtures::TestingKeyParams;
+use crate::fixtures::{
+    TestingKeyParams, create_credential_schema_with_claims, create_proof_schema,
+};
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::blobs::TestingBlobParams;
+use crate::utils::db_clients::identifier_trust_information::TestingIdentifierTrustInformationParams;
 use crate::utils::db_clients::keys::{ecdsa_testing_params, eddsa_testing_params};
+use crate::utils::db_clients::proof_schemas::CreateProofInputSchema;
 
 #[tokio::test]
 async fn test_key_identifier_success() {
@@ -371,4 +380,83 @@ async fn test_identifier_with_remote_key_fails() {
     assert_eq!(result.status(), 400);
     let resp = result.json_value().await;
     assert_eq!(resp["code"].as_str().unwrap(), "BR_0076");
+}
+
+#[tokio::test]
+async fn test_identifier_filter_proof_schema_success() {
+    let (context, organisation, identifier, ..) =
+        TestContext::new_with_certificate_identifier(None).await;
+
+    let new_claim_schemas: Vec<(Uuid, &str, bool, &str, bool)> =
+        vec![(Uuid::new_v4(), "cat1", true, "STRING", false)];
+    let credential_schema = create_credential_schema_with_claims(
+        &context.db.db_conn,
+        "NewCredentialSchema",
+        &organisation,
+        None,
+        &new_claim_schemas,
+    )
+    .await;
+    let new_claim_schemas2: Vec<(Uuid, &str, bool, &str, bool)> =
+        vec![(Uuid::new_v4(), "cat2", true, "STRING", false)];
+    let credential_schema2 = create_credential_schema_with_claims(
+        &context.db.db_conn,
+        "NewCredentialSchema2",
+        &organisation,
+        None,
+        &new_claim_schemas2,
+    )
+    .await;
+    let proof_schema = create_proof_schema(
+        &context.db.db_conn,
+        "Schema1",
+        &organisation,
+        &[
+            CreateProofInputSchema::from((&new_claim_schemas[..], &credential_schema)),
+            CreateProofInputSchema::from((&new_claim_schemas2[..], &credential_schema2)),
+        ],
+    )
+    .await;
+
+    let blob = context
+        .db
+        .blobs
+        .create(TestingBlobParams {
+            r#type: Some(BlobType::RegistrationCertificate),
+            ..Default::default()
+        })
+        .await;
+    context
+        .db
+        .identifier_trust_information
+        .create(
+            identifier.id,
+            blob.id,
+            TestingIdentifierTrustInformationParams {
+                allowed_verification_types: Some(vec![
+                    SchemaFormat {
+                        format: CredentialFormat::JwtVc,
+                        schema_id: credential_schema.schema_id,
+                    },
+                    SchemaFormat {
+                        format: CredentialFormat::JwtVc,
+                        schema_id: credential_schema2.schema_id,
+                    },
+                ]),
+                ..Default::default()
+            },
+        )
+        .await;
+    let result = context
+        .api
+        .identifiers
+        .list(
+            &organisation.id,
+            Some(format!("trustVerificationSchemaId={}", proof_schema.id)),
+        )
+        .await;
+    assert_eq!(result.status(), 200);
+    let resp = result.json_value().await;
+    assert_eq!(resp["totalItems"], 1);
+    assert_eq!(resp["values"][0]["id"], identifier.id.to_string());
 }

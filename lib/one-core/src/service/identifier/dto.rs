@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 use shared_types::{
-    IdentifierId, KeyId, OrganisationId, TrustCollectionId, TrustListSubscriberId,
-    TrustListSubscriptionId,
+    CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId, TrustCollectionId,
+    TrustListSubscriberId, TrustListSubscriptionId,
 };
 use time::OffsetDateTime;
 
+use crate::model::certificate::CertificateRole;
 use crate::model::common::GetListResponse;
 use crate::model::did::KeyRole;
 use crate::model::identifier::{ExactIdentifierFilterColumn, IdentifierState, IdentifierType};
@@ -44,12 +45,23 @@ pub struct IdentifierFilterParamsDTO {
     pub key_algorithms: Option<Vec<String>>,
     pub key_roles: Option<Vec<KeyRole>>,
     pub key_storages: Option<Vec<String>>,
+    pub certificate_roles: Option<Vec<CertificateRole>>,
+    pub certificate_roles_match_mode: CertificateRolesMatchMode,
+    pub trust_issuance_schema_id: Option<CredentialSchemaId>,
+    pub trust_verification_schema_id: Option<ProofSchemaId>,
     pub exact: Option<Vec<ExactIdentifierFilterColumn>>,
     pub organisation_id: OrganisationId,
     pub created_date_after: Option<OffsetDateTime>,
     pub created_date_before: Option<OffsetDateTime>,
     pub last_modified_after: Option<OffsetDateTime>,
     pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub enum CertificateRolesMatchMode {
+    All,
+    #[default]
+    Any,
 }
 
 #[skip_serializing_none]

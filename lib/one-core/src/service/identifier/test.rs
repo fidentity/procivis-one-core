@@ -18,15 +18,18 @@ use crate::provider::trust_list_subscriber::provider::MockTrustListSubscriberPro
 use crate::provider::trust_list_subscriber::{
     Feature, MockTrustListSubscriber, TrustEntityResponse, TrustListSubscriberCapabilities,
 };
+use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::repository::proof_schema_repository::MockProofSchemaRepository;
 use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
 use crate::repository::trust_list_subscription_repository::MockTrustListSubscriptionRepository;
 use crate::service::common_dto::ListQueryDTO;
 use crate::service::identifier::IdentifierService;
 use crate::service::identifier::dto::{
-    CreateIdentifierRequestDTO, IdentifierFilterParamsDTO, ResolveTrustEntriesRequestDTO,
+    CertificateRolesMatchMode, CreateIdentifierRequestDTO, IdentifierFilterParamsDTO,
+    ResolveTrustEntriesRequestDTO,
 };
 use crate::service::test_utilities::{
     dummy_identifier, dummy_organisation, generic_config, get_dummy_date,
@@ -37,6 +40,8 @@ struct Mocks {
     identifier_repository: MockIdentifierRepository,
     key_repository: MockKeyRepository,
     organisation_repository: MockOrganisationRepository,
+    credential_schema_repository: MockCredentialSchemaRepository,
+    proof_schema_repository: MockProofSchemaRepository,
     trust_collection_repository: MockTrustCollectionRepository,
     trust_list_subscription_repository: MockTrustListSubscriptionRepository,
     identifier_creator: MockIdentifierCreator,
@@ -49,6 +54,8 @@ fn setup_service(mocks: Mocks) -> IdentifierService {
         identifier_repository: Arc::new(mocks.identifier_repository),
         key_repository: Arc::new(mocks.key_repository),
         organisation_repository: Arc::new(mocks.organisation_repository),
+        credential_schema_repository: Arc::new(mocks.credential_schema_repository),
+        proof_schema_repository: Arc::new(mocks.proof_schema_repository),
         trust_collection_repository: Arc::new(mocks.trust_collection_repository),
         trust_list_subscription_repository: Arc::new(mocks.trust_list_subscription_repository),
         config: Arc::new(generic_config().core),
@@ -123,6 +130,10 @@ async fn test_get_identifier_list_session_org_mismatch() {
                 key_algorithms: None,
                 key_roles: None,
                 key_storages: None,
+                certificate_roles: None,
+                certificate_roles_match_mode: CertificateRolesMatchMode::default(),
+                trust_issuance_schema_id: None,
+                trust_verification_schema_id: None,
                 exact: None,
                 organisation_id: Uuid::new_v4().into(),
                 created_date_after: None,

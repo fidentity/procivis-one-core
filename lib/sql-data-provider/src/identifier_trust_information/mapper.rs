@@ -8,25 +8,34 @@ use sea_orm::Set;
 use crate::entity::identifier_trust_information;
 use crate::entity::identifier_trust_information::ActiveModel;
 
-const ESCAPED_PERCENT: &str = "%25";
-const ESCAPED_COMMA: &str = "%2C";
-const ESCAPED_PIPE: &str = "%7C";
+// Escaping similar to URL encoding, but use ~ as the escape character.
+// The reason is that % is the wildcard character in SQL.
+// Also escape _ because it matches any single character in SQL.
+const ESCAPED_TILDE: &str = "~01";
+const ESCAPED_COMMA: &str = "~2C";
+const ESCAPED_PIPE: &str = "~7C";
+const ESCAPED_PERCENT: &str = "~25";
+const ESCAPED_UNDERSCORE: &str = "~02";
 
 fn escape_schema_id(schema_id: &str) -> String {
     schema_id
-        .replace("%", ESCAPED_PERCENT)
+        .replace("~", ESCAPED_TILDE)
         .replace(",", ESCAPED_COMMA)
         .replace("|", ESCAPED_PIPE)
+        .replace("%", ESCAPED_PERCENT)
+        .replace("_", ESCAPED_UNDERSCORE)
 }
 
 fn unescape_schema_id(schema_id: &str) -> String {
     schema_id
+        .replace(ESCAPED_UNDERSCORE, "_")
+        .replace(ESCAPED_PERCENT, "%")
         .replace(ESCAPED_PIPE, "|")
         .replace(ESCAPED_COMMA, ",")
-        .replace(ESCAPED_PERCENT, "%")
+        .replace(ESCAPED_TILDE, "~")
 }
 
-fn serialize_schema_format(schema_format: &SchemaFormat) -> String {
+pub(crate) fn serialize_schema_format(schema_format: &SchemaFormat) -> String {
     format!(
         "{}|{}",
         escape_schema_id(&schema_format.schema_id),
@@ -34,7 +43,7 @@ fn serialize_schema_format(schema_format: &SchemaFormat) -> String {
     )
 }
 
-fn deserialize_schema_format(serialized: &str) -> Result<SchemaFormat, DataLayerError> {
+pub fn deserialize_schema_format(serialized: &str) -> Result<SchemaFormat, DataLayerError> {
     let splits = serialized.split("|").collect::<Vec<_>>();
     if splits.len() != 2 {
         return Err(DataLayerError::MappingError);
@@ -120,7 +129,7 @@ mod test {
 
     #[test]
     fn escape_schema_id_test() {
-        let test_cases = ["simple", "test,%25|%%%2C7C%7Cescaping"];
+        let test_cases = ["simple", "test,~25|%~~2C7C~7Cesca_ping"];
 
         for test_case in test_cases {
             let escaped = escape_schema_id(test_case);

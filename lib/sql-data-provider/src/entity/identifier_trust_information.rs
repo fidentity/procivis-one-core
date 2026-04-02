@@ -37,3 +37,9 @@ pub enum Relation {
     )]
     Identifier,
 }
+
+impl Related<super::identifier::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Identifier.def()
+    }
+}

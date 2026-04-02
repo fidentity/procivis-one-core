@@ -1,11 +1,14 @@
 use one_core::model::identifier::{Identifier, IdentifierFilterValue, SortableIdentifierColumn};
-use one_core::model::list_filter::ListFilterCondition;
+use one_core::model::identifier_trust_information::SchemaFormat;
+use one_core::model::list_filter::{ListFilterCondition, StringMatch, StringMatchType};
 use one_core::model::organisation::Organisation;
 use sea_orm::sea_query::{Alias, ColumnRef, ExprTrait, IntoCondition, IntoIden, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, IntoSimpleExpr, JoinType, RelationTrait, Set};
+use time::OffsetDateTime;
 
 use crate::entity::identifier::ActiveModel;
-use crate::entity::{self, certificate, did, identifier, key, key_did};
+use crate::entity::{certificate, did, identifier, identifier_trust_information, key, key_did};
+use crate::identifier_trust_information::mapper::serialize_schema_format;
 use crate::list_query_generic::{
     IntoFilterCondition, IntoJoinRelations, IntoSortingColumn, JoinRelation,
     get_comparison_condition, get_equals_condition, get_string_match_condition,
@@ -75,6 +78,7 @@ impl IntoSortingColumn for SortableIdentifierColumn {
 
 impl IntoFilterCondition for IdentifierFilterValue {
     fn get_condition(self, _entire_filter: &ListFilterCondition<Self>) -> Condition {
+        let now = OffsetDateTime::now_utc();
         match self {
             Self::Ids(ids) => identifier::Column::Id.is_in(ids).into_condition(),
             Self::Name(string_match) => {
@@ -94,7 +98,7 @@ impl IntoFilterCondition for IdentifierFilterValue {
             Self::OrganisationId(organisation_id) => {
                 get_equals_condition(identifier::Column::OrganisationId, organisation_id)
             }
-            Self::DidMethods(did_methods) => entity::did::Column::Method
+            Self::DidMethods(did_methods) => did::Column::Method
                 .is_in(did_methods)
                 .or(identifier::Column::Type.ne(identifier::IdentifierType::Did))
                 .into_condition(),
@@ -149,6 +153,23 @@ impl IntoFilterCondition for IdentifierFilterValue {
                 )
                 .is_in(key_ids))
                 .into_condition(),
+            Self::CertificateRole(role) => get_string_match_condition(
+                certificate::Column::Roles,
+                StringMatch {
+                    r#match: StringMatchType::Contains,
+                    value: role.to_string(),
+                },
+            ),
+            Self::TrustAllowedIssuanceTypes(schema_format) => trust_info_condition(
+                now,
+                &schema_format,
+                identifier_trust_information::Column::AllowedIssuanceTypes,
+            ),
+            Self::TrustAllowedVerificationTypes(schema_format) => trust_info_condition(
+                now,
+                &schema_format,
+                identifier_trust_information::Column::AllowedVerificationTypes,
+            ),
             Self::CreatedDate(value) => {
                 get_comparison_condition(identifier::Column::CreatedDate, value)
             }
@@ -157,6 +178,31 @@ impl IntoFilterCondition for IdentifierFilterValue {
             }
         }
     }
+}
+
+fn trust_info_condition(
+    now: OffsetDateTime,
+    schema_format: &SchemaFormat,
+    column: identifier_trust_information::Column,
+) -> Condition {
+    get_string_match_condition(
+        column,
+        StringMatch {
+            r#match: StringMatchType::Contains,
+            value: serialize_schema_format(schema_format),
+        },
+    )
+    .and(
+        identifier_trust_information::Column::ValidFrom
+            .lte(now)
+            .or(identifier_trust_information::Column::ValidFrom.is_null()),
+    )
+    .and(
+        identifier_trust_information::Column::ValidTo
+            .gte(now)
+            .or(identifier_trust_information::Column::ValidTo.is_null()),
+    )
+    .into_condition()
 }
 
 impl IntoJoinRelations for IdentifierFilterValue {
@@ -221,6 +267,21 @@ impl IntoJoinRelations for IdentifierFilterValue {
                         alias: Some(Alias::new("certificate_key").into_iden()),
                     },
                 ]
+            }
+            IdentifierFilterValue::CertificateRole(_) => {
+                vec![JoinRelation {
+                    join_type: JoinType::LeftJoin,
+                    relation_def: identifier::Relation::Certificate.def(),
+                    alias: None,
+                }]
+            }
+            IdentifierFilterValue::TrustAllowedIssuanceTypes(_)
+            | IdentifierFilterValue::TrustAllowedVerificationTypes(_) => {
+                vec![JoinRelation {
+                    join_type: JoinType::LeftJoin,
+                    relation_def: identifier::Relation::TrustInformation.def(),
+                    alias: None,
+                }]
             }
             _ => vec![],
         }

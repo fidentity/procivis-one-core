@@ -5,7 +5,7 @@ use strum::{AsRefStr, Display};
 use time::OffsetDateTime;
 use url::Url;
 
-use super::certificate::{Certificate, CertificateRelations, CertificateState};
+use super::certificate::{Certificate, CertificateRelations, CertificateRole, CertificateState};
 use super::common::GetListResponse;
 use super::did::{Did, DidRelations, KeyRole};
 use super::key::{Key, KeyRelations};
@@ -14,7 +14,7 @@ use super::list_query::ListQuery;
 use super::organisation::{Organisation, OrganisationRelations};
 use crate::config;
 use crate::model::identifier_trust_information::{
-    IdentifierTrustInformation, IdentifierTrustInformationRelations,
+    IdentifierTrustInformation, IdentifierTrustInformationRelations, SchemaFormat,
 };
 use crate::model::list_filter::ValueComparison;
 
@@ -124,6 +124,9 @@ pub enum IdentifierFilterValue {
     KeyRoles(Vec<KeyRole>),
     KeyStorages(Vec<String>),
     KeyIds(Vec<KeyId>),
+    CertificateRole(CertificateRole),
+    TrustAllowedIssuanceTypes(SchemaFormat),
+    TrustAllowedVerificationTypes(SchemaFormat),
     CreatedDate(ValueComparison<OffsetDateTime>),
     LastModified(ValueComparison<OffsetDateTime>),
 }

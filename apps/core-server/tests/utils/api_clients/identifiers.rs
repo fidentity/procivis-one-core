@@ -271,6 +271,20 @@ impl IdentifiersApi {
             .await
     }
 
+    pub async fn list(
+        &self,
+        organisation_id: &OrganisationId,
+        additional_filters: Option<String>,
+    ) -> Response {
+        let mut path =
+            format!("/api/identifier/v1?page=0&pageSize=30&organisationId={organisation_id}");
+        if let Some(additional_filters) = additional_filters {
+            path.push('&');
+            path.push_str(&additional_filters);
+        }
+        self.client.get(&path).await
+    }
+
     pub async fn list_by_key_storage_type(
         &self,
         key_storage_type: &str,

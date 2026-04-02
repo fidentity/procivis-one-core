@@ -13,7 +13,7 @@ use super::dto::{
     ResolvedTrustEntriesResponseDTO, ResolvedTrustEntryResponseDTO,
 };
 use super::error::IdentifierServiceError;
-use super::mapper::to_create_did_request;
+use super::mapper::{params_to_query, to_create_did_request};
 use super::validator::validate_identifier_type;
 use crate::config::core_config;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
@@ -97,9 +97,16 @@ impl IdentifierService {
             &*self.session_provider,
         )
         .error_while("checking session")?;
+        let query = params_to_query(
+            filter_params,
+            &*self.credential_schema_repository,
+            &*self.proof_schema_repository,
+            &self.config,
+        )
+        .await?;
         Ok(self
             .identifier_repository
-            .get_identifier_list(filter_params.into())
+            .get_identifier_list(query)
             .await
             .error_while("getting identifiers")?
             .into())

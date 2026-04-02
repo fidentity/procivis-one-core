@@ -793,6 +793,8 @@ impl OneCore {
                 data_provider.get_identifier_repository(),
                 data_provider.get_key_repository(),
                 data_provider.get_organisation_repository(),
+                data_provider.get_credential_schema_repository(),
+                data_provider.get_proof_schema_repository(),
                 data_provider.get_trust_collection_repository(),
                 data_provider.get_trust_list_subscription_repository(),
                 identifier_creator,

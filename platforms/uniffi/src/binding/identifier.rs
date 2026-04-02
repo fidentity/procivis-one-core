@@ -10,7 +10,7 @@ use one_core::service::certificate::dto::{
 };
 use one_core::service::did::dto::{DidResponseDTO, DidResponseKeysDTO};
 use one_core::service::identifier::dto::{
-    CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
+    CertificateRolesMatchMode, CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
     CreateIdentifierRequestDTO, CreateSelfSignedCertificateAuthorityContentRequestDTO,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
@@ -272,6 +272,10 @@ pub struct IdentifierListQueryBindingDTO {
     pub key_algorithms: Option<Vec<String>>,
     pub key_roles: Option<Vec<KeyRoleBindingEnum>>,
     pub key_storages: Option<Vec<String>>,
+    pub certificate_roles: Option<Vec<CertificateRoleBindingEnum>>,
+    pub certificate_roles_match_mode: Option<CertificateRolesMatchModeBindingEnum>,
+    pub trust_issuance_schema_id: Option<String>,
+    pub trust_verification_schema_id: Option<String>,
 
     pub created_date_after: Option<String>,
     pub created_date_before: Option<String>,
@@ -294,6 +298,15 @@ pub enum SortableIdentifierColumnBindingEnum {
 #[into(ExactIdentifierFilterColumn)]
 pub enum ExactIdentifierFilterColumnBindingEnum {
     Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum, Into)]
+#[uniffi(name = "CertificateRolesMatchMode")]
+#[into(CertificateRolesMatchMode)]
+/// The mode used to match certificate roles. Default any.
+pub enum CertificateRolesMatchModeBindingEnum {
+    All,
+    Any,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]

@@ -7,10 +7,10 @@ use super::TrustEntityService;
 use super::dto::{
     CreateTrustEntityFromDidPublisherRequestDTO, CreateTrustEntityParamsDTO,
     CreateTrustEntityRequestDTO, CreateTrustEntityTypeDTO, GetTrustEntitiesResponseDTO,
-    GetTrustEntityResponseDTO, ListTrustEntitiesQueryDTO, ResolveTrustEntitiesRequestDTO,
-    ResolveTrustEntitiesResponseDTO, ResolveTrustEntityRequestDTO,
-    ResolvedIdentifierTrustEntityResponseDTO, TrustEntityCertificateResponseDTO,
-    TrustEntityContent, UpdateTrustEntityActionFromDidRequestDTO,
+    GetTrustEntityResponseDTO, ResolveTrustEntitiesRequestDTO, ResolveTrustEntitiesResponseDTO,
+    ResolveTrustEntityRequestDTO, ResolvedIdentifierTrustEntityResponseDTO,
+    SortableTrustEntityColumnEnum, TrustEntityCertificateResponseDTO, TrustEntityContent,
+    TrustEntityFilterParamsDTO, UpdateTrustEntityActionFromDidRequestDTO,
     UpdateTrustEntityFromDidRequestDTO,
 };
 use super::error::TrustEntityServiceError;
@@ -42,6 +42,7 @@ use crate::provider::credential_formatter::model::IdentifierDetails;
 use crate::provider::trust_management::model::TrustEntityByEntityKey;
 use crate::provider::trust_management::{TrustEntityKeyBatch, TrustOperation};
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::error::MissingProviderError;
 use crate::service::trust_anchor::dto::{ListTrustAnchorsQueryDTO, TrustAnchorFilterValue};
 
@@ -478,11 +479,11 @@ impl TrustEntityService {
 
     pub async fn list_trust_entities(
         &self,
-        filters: ListTrustEntitiesQueryDTO,
+        filter_params: ListQueryDTO<SortableTrustEntityColumnEnum, TrustEntityFilterParamsDTO>,
     ) -> Result<GetTrustEntitiesResponseDTO, TrustEntityServiceError> {
         Ok(self
             .trust_entity_repository
-            .list(filters)
+            .list(filter_params.into())
             .await
             .error_while("getting trust entities")?)
     }

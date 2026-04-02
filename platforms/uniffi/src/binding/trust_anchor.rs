@@ -1,3 +1,4 @@
+use one_core::model::trust_anchor::ExactTrustAnchorFilterColumn;
 use one_core::service::trust_anchor::dto::{
     CreateTrustAnchorRequestDTO, GetTrustAnchorDetailResponseDTO, GetTrustAnchorsResponseDTO,
     SortableTrustAnchorColumn, TrustAnchorsListItemResponseDTO,
@@ -100,7 +101,8 @@ pub enum SortableTrustAnchorColumnBindings {
     Type,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, Eq, PartialEq, Into, uniffi::Enum)]
+#[into(ExactTrustAnchorFilterColumn)]
 #[uniffi(name = "TrustAnchorListQueryExactColumn")]
 pub enum ExactTrustAnchorFilterColumnBindings {
     Name,

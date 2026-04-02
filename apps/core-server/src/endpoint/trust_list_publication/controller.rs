@@ -14,7 +14,6 @@ use super::dto::{
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -117,26 +116,18 @@ pub(crate) async fn get_trust_list_publications(
     >,
 ) -> OkOrErrorResponse<GetTrustListPublicationListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)
-            .error_while("fallback organisation id")?;
-        state
-            .core
-            .trust_list_publication_service
-            .get_trust_list_publication_list(
-                organisation_id,
-                query.try_into().error_while("mapping query")?,
-            )
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_list_publication_service
+                .get_trust_list_publication_list(query.try_into()?)
+                .await
+                .error_while("getting trust list publications")?,
+        )
     }
     .await;
 
-    match result {
-        Err(error) => {
-            tracing::error!("Error while getting trust list publications: {:?}", error);
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => OkOrErrorResponse::ok(GetTrustListPublicationListResponseRestDTO::from(value)),
-    }
+    OkOrErrorResponse::from_result(result, state, "getting trust list publications")
 }
 
 #[endpoint(
@@ -330,23 +321,16 @@ pub(crate) async fn get_trust_list_publication_entries(
     >,
 ) -> OkOrErrorResponse<GetTrustEntryListResponseRestDTO> {
     let result = async {
-        let query = query.try_into().error_while("mapping query")?;
-        state
-            .core
-            .trust_list_publication_service
-            .get_trust_entry_list(id, query)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_list_publication_service
+                .get_trust_entry_list(id, query.try_into()?)
+                .await
+                .error_while("getting trust list publication entries")?,
+        )
     }
     .await;
 
-    match result {
-        Err(error) => {
-            tracing::error!(
-                "Error while getting trust list publication entries: {:?}",
-                error
-            );
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => OkOrErrorResponse::ok(GetTrustEntryListResponseRestDTO::from(value)),
-    }
+    OkOrErrorResponse::from_result(result, state, "getting trust list publication entries")
 }

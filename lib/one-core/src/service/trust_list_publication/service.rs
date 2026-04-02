@@ -11,19 +11,20 @@ use crate::model::certificate::CertificateRelations;
 use crate::model::identifier::{Identifier, IdentifierRelations};
 use crate::model::key::KeyRelations;
 use crate::model::organisation::OrganisationRelations;
-use crate::model::trust_entry::{TrustEntry, TrustEntryListQuery, TrustEntryRelations};
+use crate::model::trust_entry::{SortableTrustEntryColumn, TrustEntry, TrustEntryRelations};
 use crate::model::trust_list_publication::{
-    TrustListPublication, TrustListPublicationListQuery, TrustListPublicationRelations,
+    SortableTrustListPublicationColumn, TrustListPublication, TrustListPublicationRelations,
 };
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::provider::trust_list_publisher::{
     CreateTrustListRequest, TrustListContent, TrustListPublisher, TrustListPublisherCapabilities,
 };
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::trust_list_publication::TrustListPublicationService;
 use crate::service::trust_list_publication::dto::{
     CreateTrustEntryRequestDTO, CreateTrustListPublicationRequestDTO, GetTrustEntryListResponseDTO,
     GetTrustListPublicationListResponseDTO, GetTrustListPublicationResponseDTO,
-    UpdateTrustEntryRequestDTO,
+    TrustEntryFilterParamsDTO, TrustListPublicationFilterParamsDTO, UpdateTrustEntryRequestDTO,
 };
 use crate::service::trust_list_publication::error::TrustListPublicationServiceError;
 use crate::util::key_selection::{KeySelection, SelectedKey};
@@ -198,14 +199,17 @@ impl TrustListPublicationService {
 
     pub async fn get_trust_list_publication_list(
         &self,
-        organisation_id: OrganisationId,
-        query: TrustListPublicationListQuery,
+        query: ListQueryDTO<
+            SortableTrustListPublicationColumn,
+            TrustListPublicationFilterParamsDTO,
+        >,
     ) -> Result<GetTrustListPublicationListResponseDTO, TrustListPublicationServiceError> {
-        throw_if_org_not_matching_session(&organisation_id, &*self.session_provider)
+        throw_if_org_not_matching_session(&query.filter.organisation_id, &*self.session_provider)
             .error_while("checking session")?;
+
         let trust_list_publication_list = self
             .trust_list_publication_repository
-            .list(query)
+            .list(query.into())
             .await
             .error_while("getting trust list publications")?;
         Ok(list_response_into(trust_list_publication_list))
@@ -214,7 +218,7 @@ impl TrustListPublicationService {
     pub async fn get_trust_entry_list(
         &self,
         trust_list_publication_id: TrustListPublicationId,
-        query: TrustEntryListQuery,
+        query: ListQueryDTO<SortableTrustEntryColumn, TrustEntryFilterParamsDTO>,
     ) -> Result<GetTrustEntryListResponseDTO, TrustListPublicationServiceError> {
         let trust_list_publication = self
             .fetch_trust_list_publication(trust_list_publication_id)
@@ -224,9 +228,10 @@ impl TrustListPublicationService {
             &*self.session_provider,
         )
         .error_while("validating organisation")?;
+
         let result = self
             .trust_entry_repository
-            .list(trust_list_publication_id, query)
+            .list(trust_list_publication_id, query.into())
             .await
             .error_while("getting trust entries")?;
         list_response_try_into(result)

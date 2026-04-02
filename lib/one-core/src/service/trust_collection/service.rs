@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use shared_types::{
-    OrganisationId, TrustCollectionId, TrustListSubscriberId, TrustListSubscriptionId,
-};
+use shared_types::{TrustCollectionId, TrustListSubscriberId, TrustListSubscriptionId};
 use tracing::info;
 
 use super::TrustCollectionService;
 use super::dto::{
     CreateTrustCollectionRequestDTO, CreateTrustListSubscriptionRequestDTO,
     GetTrustCollectionListResponseDTO, GetTrustCollectionResponseDTO,
-    GetTrustListSubscriptionListResponseDTO, TrustCollectionPublicResponseDTO,
+    GetTrustListSubscriptionListResponseDTO, TrustCollectionFilterParamsDTO,
+    TrustCollectionPublicResponseDTO, TrustListSubscriptionFilterParamsDTO,
 };
 use super::error::TrustCollectionServiceError;
 use super::mapper::{
@@ -18,17 +17,17 @@ use super::mapper::{
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::list_response_into;
 use crate::model::list_filter::ListFilterValue;
-use crate::model::list_query::ListQuery;
-use crate::model::trust_collection::{TrustCollection, TrustCollectionListQuery};
+use crate::model::trust_collection::{SortableTrustCollectionColumn, TrustCollection};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{
-    TrustListSubscription, TrustListSubscriptionFilterValue, TrustListSubscriptionListQuery,
-    TrustListSubscriptionRelations, TrustListSubscriptionState,
+    SortableTrustListSubscriptionColumn, TrustListSubscription, TrustListSubscriptionFilterValue,
+    TrustListSubscriptionListQuery, TrustListSubscriptionRelations, TrustListSubscriptionState,
 };
 use crate::provider::trust_list_subscriber::{
     TrustListSubscriber, TrustListSubscriberCapabilities, TrustListValidationSuccess,
 };
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::validator::throw_if_org_not_matching_session;
 
 impl TrustCollectionService {
@@ -86,14 +85,14 @@ impl TrustCollectionService {
 
     pub async fn get_trust_collection_list(
         &self,
-        organisation_id: OrganisationId,
-        query: TrustCollectionListQuery,
+        query: ListQueryDTO<SortableTrustCollectionColumn, TrustCollectionFilterParamsDTO>,
     ) -> Result<GetTrustCollectionListResponseDTO, TrustCollectionServiceError> {
-        throw_if_org_not_matching_session(&organisation_id, &*self.session_provider)
+        throw_if_org_not_matching_session(&query.filter.organisation_id, &*self.session_provider)
             .error_while("validating organisation")?;
+
         let trust_collection_list = self
             .trust_collection_repository
-            .list(query)
+            .list(query.into())
             .await
             .error_while("getting trust list publications")?;
         Ok(list_response_into(trust_collection_list))
@@ -184,7 +183,10 @@ impl TrustCollectionService {
     pub async fn get_trust_list_subscription_list(
         &self,
         trust_collection_id: TrustCollectionId,
-        query: TrustListSubscriptionListQuery,
+        query: ListQueryDTO<
+            SortableTrustListSubscriptionColumn,
+            TrustListSubscriptionFilterParamsDTO,
+        >,
     ) -> Result<GetTrustListSubscriptionListResponseDTO, TrustCollectionServiceError> {
         let trust_collection = self.fetch_trust_collection(&trust_collection_id).await?;
         throw_if_org_not_matching_session(
@@ -192,15 +194,18 @@ impl TrustCollectionService {
             &*self.session_provider,
         )
         .error_while("validating organisation")?;
+
+        let list_query: TrustListSubscriptionListQuery = query.into();
+        let filtering = list_query.filtering.unwrap_or_default()
+            & TrustListSubscriptionFilterValue::TrustCollectionId(vec![trust_collection_id]);
+
         let trust_list_subscription_list = self
             .trust_list_subscription_repository
-            .list(ListQuery {
-                filtering: query.filtering.map(|f| {
-                    f & TrustListSubscriptionFilterValue::TrustCollectionId(vec![
-                        trust_collection_id,
-                    ])
-                }),
-                ..query
+            .list(TrustListSubscriptionListQuery {
+                pagination: list_query.pagination,
+                sorting: list_query.sorting,
+                filtering: Some(filtering),
+                include: None,
             })
             .await
             .error_while("getting trust list subscriptions")?;

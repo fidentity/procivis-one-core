@@ -3,11 +3,19 @@ use uuid::Uuid;
 
 use super::dto::{
     CreateTrustCollectionRequestDTO, CreateTrustListSubscriptionRequestDTO,
-    TrustCollectionPublicResponseDTO,
+    TrustCollectionFilterParamsDTO, TrustCollectionPublicResponseDTO,
+    TrustListSubscriptionExactColumn, TrustListSubscriptionFilterParamsDTO,
 };
-use crate::model::trust_collection::TrustCollection;
+use crate::model::common::ExactColumn;
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
+use crate::model::trust_collection::{TrustCollection, TrustCollectionFilterValue};
 use crate::model::trust_list_role::TrustListRoleEnum;
-use crate::model::trust_list_subscription::{TrustListSubscription, TrustListSubscriptionState};
+use crate::model::trust_list_subscription::{
+    TrustListSubscription, TrustListSubscriptionFilterValue, TrustListSubscriptionState,
+};
 use crate::proto::clock::Clock;
 use crate::service::trust_collection::error::TrustCollectionServiceError;
 
@@ -57,5 +65,137 @@ pub(super) fn get_public_dto(
     TrustCollectionPublicResponseDTO {
         name: collection.name,
         trust_lists: convert_inner(trust_lists),
+    }
+}
+
+impl From<TrustCollectionFilterParamsDTO> for ListFilterCondition<TrustCollectionFilterValue> {
+    fn from(value: TrustCollectionFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            TrustCollectionFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            TrustCollectionFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(ExactColumn::Name),
+                value: name,
+            })
+        });
+
+        let ids = value.ids.map(TrustCollectionFilterValue::Ids);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            TrustCollectionFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            TrustCollectionFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            TrustCollectionFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            TrustCollectionFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & ids
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+    }
+}
+
+impl From<TrustListSubscriptionFilterParamsDTO>
+    for ListFilterCondition<TrustListSubscriptionFilterValue>
+{
+    fn from(value: TrustListSubscriptionFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let name = value.name.map(|name| {
+            TrustListSubscriptionFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(TrustListSubscriptionExactColumn::Name),
+                value: name,
+            })
+        });
+
+        let reference = value.reference.map(|reference| {
+            TrustListSubscriptionFilterValue::Reference(StringMatch {
+                r#match: get_string_match_type(TrustListSubscriptionExactColumn::Reference),
+                value: reference,
+            })
+        });
+
+        let ids = value.ids.map(TrustListSubscriptionFilterValue::Ids);
+
+        let roles = value.roles.map(TrustListSubscriptionFilterValue::Role);
+        let states = value.states.map(TrustListSubscriptionFilterValue::State);
+        let types = value.types.map(TrustListSubscriptionFilterValue::Type);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            TrustListSubscriptionFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            TrustListSubscriptionFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            TrustListSubscriptionFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            TrustListSubscriptionFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        ListFilterCondition::<TrustListSubscriptionFilterValue>::default()
+            & name
+            & reference
+            & roles
+            & states
+            & types
+            & ids
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

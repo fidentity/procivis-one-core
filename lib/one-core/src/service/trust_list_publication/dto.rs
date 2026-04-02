@@ -101,6 +101,36 @@ pub struct TrustEntryListItemResponseDTO {
 
 pub type GetTrustEntryListResponseDTO = GetListResponse<TrustEntryListItemResponseDTO>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTrustListFilterColumn {
+    Name,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustListPublicationFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactTrustListFilterColumn>>,
+    pub organisation_id: OrganisationId,
+    pub ids: Option<Vec<TrustListPublicationId>>,
+    pub types: Option<Vec<TrustListPublisherId>>,
+    pub roles: Option<Vec<TrustListRoleEnum>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustEntryFilterParamsDTO {
+    pub ids: Option<Vec<TrustEntryId>>,
+    pub identifier_ids: Option<Vec<IdentifierId>>,
+    pub states: Option<Vec<TrustEntryStateEnum>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
 fn map_identifier(
     identifier: Option<Identifier>,
 ) -> Result<GetIdentifierListItemResponseDTO, TrustListPublicationServiceError> {

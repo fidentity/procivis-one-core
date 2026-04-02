@@ -3,11 +3,12 @@ use one_core::model::trust_list_publication::SortableTrustListPublicationColumn;
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use one_core::service::error::ServiceError;
 use one_core::service::trust_list_publication::dto::{
-    CreateTrustEntryRequestDTO, CreateTrustListPublicationRequestDTO,
-    GetTrustListPublicationResponseDTO, TrustEntryListItemResponseDTO,
-    TrustListPublicationListItemResponseDTO, UpdateTrustEntryRequestDTO,
+    CreateTrustEntryRequestDTO, CreateTrustListPublicationRequestDTO, ExactTrustListFilterColumn,
+    GetTrustListPublicationResponseDTO, TrustEntryFilterParamsDTO, TrustEntryListItemResponseDTO,
+    TrustListPublicationFilterParamsDTO, TrustListPublicationListItemResponseDTO,
+    UpdateTrustEntryRequestDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner};
+use one_dto_mapper::{From, Into, TryInto, convert_inner, convert_inner_of_inner};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{
@@ -18,7 +19,7 @@ use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, GetListResponseRestDTO, ListQueryParamsRest};
+use crate::dto::common::{GetListResponseRestDTO, ListQueryParamsRest};
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::identifier::dto::GetIdentifierListItemResponseRestDTO;
 use crate::serialize::{front_time, front_time_option};
@@ -184,49 +185,60 @@ pub(crate) type ListTrustListPublicationsEntitiesQuery = ListQueryParamsRest<
     SortableTrustListPublicationColumnRestEnum,
 >;
 
-#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
+#[try_into(T = TrustListPublicationFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetTrustListQuery
 pub(crate) struct TrustListPublicationFilterQueryParamsRestDTO {
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<TrustListPublicationId>>,
     /// Return only trust lists with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by one or more trust list types.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "types[]", nullable = false)]
     pub types: Option<Vec<String>>,
     /// Filter by one or more trust list roles.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "roles[]", nullable = false)]
     pub roles: Option<Vec<TrustListRoleRestEnum>>,
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Set which filters apply in an exact way.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactTrustListFilterColumnRestEnum>>,
     /// Return only trust lists created after this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only trust lists created before this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only trust lists last modified after this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only trust lists last modified before this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
@@ -241,8 +253,9 @@ pub(crate) enum SortableTrustListPublicationColumnRestEnum {
     CreatedDate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
+#[into(ExactTrustListFilterColumn)]
 pub(crate) enum ExactTrustListFilterColumnRestEnum {
     Name,
 }
@@ -250,60 +263,56 @@ pub(crate) enum ExactTrustListFilterColumnRestEnum {
 pub(crate) type ListTrustEntryEntitiesQuery =
     ListQueryParamsRest<TrustEntryFilterQueryParamsRestDTO, SortableTrustEntryColumnRestEnum>;
 
-#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
+#[try_into(T = TrustEntryFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TrustEntryFilterQueryParamsRestDTO {
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<TrustEntryId>>,
     /// Filter by one or more identifier UUIDs.
     #[param(rename = "identifierIds[]", nullable = false)]
+    #[try_into(infallible)]
     pub identifier_ids: Option<Vec<IdentifierId>>,
     /// Filter by one or more trust entry states.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "states[]", nullable = false)]
     pub states: Option<Vec<TrustEntryStateRestEnum>>,
     /// Return only trust entries created after this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only trust entries created before this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only trust entries last modified after this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only trust entries last modified before this time.
     /// Timestamp in RFC3339 format (for example '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[into(SortableTrustEntryColumn)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SortableTrustEntryColumnRestEnum {
     Identifier,
     State,
     LastModified,
     CreatedDate,
-}
-
-impl From<SortableTrustEntryColumnRestEnum> for SortableTrustEntryColumn {
-    fn from(value: SortableTrustEntryColumnRestEnum) -> Self {
-        match value {
-            SortableTrustEntryColumnRestEnum::State => SortableTrustEntryColumn::State,
-            SortableTrustEntryColumnRestEnum::LastModified => {
-                SortableTrustEntryColumn::LastModified
-            }
-            SortableTrustEntryColumnRestEnum::CreatedDate => SortableTrustEntryColumn::CreatedDate,
-            SortableTrustEntryColumnRestEnum::Identifier => SortableTrustEntryColumn::Identifier,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]

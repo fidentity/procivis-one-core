@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use one_core::service::trust_entity::error::TrustEntityServiceError;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
 use proc_macros::endpoint;
 use shared_types::{DidId, Permission, TrustEntityId};
 
@@ -139,13 +140,14 @@ pub(crate) async fn get_trust_entities(
     WithRejection(Qs(query), _): WithRejection<Qs<ListTrustEntitiesQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetTrustEntityListResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .trust_entity_service
-            .list_trust_entities(query.try_into().map_err(|e: std::convert::Infallible| {
-                TrustEntityServiceError::MappingError(e.to_string())
-            })?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_entity_service
+                .list_trust_entities(query.try_into()?)
+                .await
+                .error_while("listing trust entities")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "listing trust entities")

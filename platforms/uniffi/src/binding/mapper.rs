@@ -2,10 +2,6 @@ use one_core::model::credential::{CredentialListIncludeEntityTypeEnum, SortableC
 use one_core::model::credential_schema::SortableCredentialSchemaColumn;
 use one_core::model::did::SortableDidColumn;
 use one_core::model::identifier::SortableIdentifierColumn;
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterCondition, StringMatch, StringMatchType, ValueComparison,
-};
-use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::model::proof::SortableProofColumn;
 use one_core::model::proof_schema::SortableProofSchemaColumn;
 use one_core::proto::bluetooth_low_energy::low_level::dto::DeviceInfo;
@@ -42,16 +38,16 @@ use one_core::service::proof_schema::dto::{
     ImportProofSchemaClaimSchemaDTO, ProofSchemaFilterParamsDTO,
 };
 use one_core::service::ssi_holder::dto::{HandleInvitationResultDTO, InitiateIssuanceRequestDTO};
-use one_core::service::trust_anchor::dto::{ListTrustAnchorsQueryDTO, TrustAnchorFilterValue};
+use one_core::service::trust_anchor::dto::{SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO};
 use one_core::service::trust_entity::dto::{
-    ListTrustEntitiesQueryDTO, ResolvedIdentifierTrustEntityResponseDTO, TrustEntityFilterValue,
-    TrustListLogo, UpdateTrustEntityFromDidRequestDTO,
+    ResolvedIdentifierTrustEntityResponseDTO, SortableTrustEntityColumnEnum,
+    TrustEntityFilterParamsDTO, TrustListLogo, UpdateTrustEntityFromDidRequestDTO,
 };
 use one_core::service::verifier_instance::dto::EditVerifierInstanceRequestDTO;
 use one_core::service::wallet_unit::dto::{EditHolderWalletUnitRequestDTO, TrustCollectionInfoDTO};
 use one_dto_mapper::{convert_inner, convert_inner_of_inner, try_convert_inner};
 use serde_json::json;
-use shared_types::{KeyId, TrustEntityKey};
+use shared_types::KeyId;
 use time::OffsetDateTime;
 
 use super::ble::DeviceInfoBindingDTO;
@@ -80,10 +76,9 @@ use super::proof::{
     ProofRequestClaimValueBindingDTO, ProofResponseBindingDTO,
 };
 use super::proof_schema::ImportProofSchemaClaimSchemaBindingDTO;
-use super::trust_anchor::{ExactTrustAnchorFilterColumnBindings, ListTrustAnchorsFiltersBindings};
+use super::trust_anchor::ListTrustAnchorsFiltersBindings;
 use super::trust_entity::{
-    ExactTrustEntityFilterColumnBindings, ListTrustEntitiesFiltersBindings,
-    ResolvedIdentifierTrustEntityResponseBindingDTO,
+    ListTrustEntitiesFiltersBindings, ResolvedIdentifierTrustEntityResponseBindingDTO,
     UpdateRemoteTrustEntityFromDidRequestBindingDTO,
 };
 use super::verifier_instance::EditVerifierInstanceRequestBindingDTO;
@@ -373,205 +368,58 @@ impl From<CredentialSchemaListItemResponseDTO> for CredentialSchemaBindingDTO {
     }
 }
 
-impl TryFrom<ListTrustAnchorsFiltersBindings> for ListTrustAnchorsQueryDTO {
+impl TryFrom<ListTrustAnchorsFiltersBindings>
+    for ListQueryDTO<SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO>
+{
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: ListTrustAnchorsFiltersBindings) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-        let get_string_match_type = |column| {
-            if exact.contains(&column) {
-                StringMatchType::Equals
-            } else {
-                StringMatchType::StartsWith
-            }
-        };
-
-        let name = value.name.map(|name| {
-            TrustAnchorFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactTrustAnchorFilterColumnBindings::Name),
-                value: name,
-            })
-        });
-
-        let is_publisher = value.is_publisher.map(TrustAnchorFilterValue::IsPublisher);
-
-        let r#type = value.r#type.map(|r#type| {
-            TrustAnchorFilterValue::Type(StringMatch {
-                r#match: get_string_match_type(ExactTrustAnchorFilterColumnBindings::Type),
-                value: r#type,
-            })
-        });
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = ListFilterCondition::<TrustAnchorFilterValue>::from(name)
-            & is_publisher
-            & r#type
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before;
-
         Ok(Self {
-            pagination: Some(ListPagination {
-                page: value.page,
-                page_size: value.page_size,
-            }),
-            sorting: value.sort.map(|column| ListSorting {
-                column: column.into(),
-                direction: convert_inner(value.sort_direction),
-            }),
-            filtering: Some(filtering),
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: TrustAnchorFilterParamsDTO {
+                name: value.name,
+                is_publisher: value.is_publisher,
+                r#type: value.r#type,
+                exact: convert_inner_of_inner(value.exact),
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
             include: None,
         })
     }
 }
 
-impl TryFrom<ListTrustEntitiesFiltersBindings> for ListTrustEntitiesQueryDTO {
+impl TryFrom<ListTrustEntitiesFiltersBindings>
+    for ListQueryDTO<SortableTrustEntityColumnEnum, TrustEntityFilterParamsDTO>
+{
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: ListTrustEntitiesFiltersBindings) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-        let get_string_match_type = |column| {
-            if exact.contains(&column) {
-                StringMatchType::Equals
-            } else {
-                StringMatchType::StartsWith
-            }
-        };
-
-        let name = value.name.map(|name| {
-            TrustEntityFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactTrustEntityFilterColumnBindings::Name),
-                value: name,
-            })
-        });
-
-        let role = value
-            .role
-            .map(|role| Ok::<_, ServiceError>(TrustEntityFilterValue::Role(role.into())))
-            .transpose()?;
-
-        let trust_anchor = value
-            .trust_anchor
-            .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::TrustAnchor(into_id(&id)?)))
-            .transpose()?;
-
-        let organisation_id = value
-            .organisation_id
-            .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::OrganisationId(into_id(&id)?)))
-            .transpose()?;
-
-        let types = value
-            .types
-            .map(convert_inner)
-            .map(TrustEntityFilterValue::Types);
-
-        let states = value
-            .states
-            .map(convert_inner)
-            .map(TrustEntityFilterValue::States);
-
-        let entity_key = value
-            .entity_key
-            .map(|k| TrustEntityFilterValue::EntityKey(TrustEntityKey::from(k)));
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = ListFilterCondition::<TrustEntityFilterValue>::from(name)
-            & role
-            & trust_anchor
-            & organisation_id
-            & types
-            & entity_key
-            & states
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before;
-
         Ok(Self {
-            pagination: Some(ListPagination {
-                page: value.page,
-                page_size: value.page_size,
-            }),
-            sorting: value.sort.map(|column| ListSorting {
-                column: column.into(),
-                direction: convert_inner(value.sort_direction),
-            }),
-            filtering: Some(filtering),
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: TrustEntityFilterParamsDTO {
+                name: value.name,
+                exact: convert_inner_of_inner(value.exact),
+                role: convert_inner(value.role),
+                did_id: None,
+                trust_anchor: into_id_opt(value.trust_anchor)?,
+                organisation_id: into_id_opt(value.organisation_id)?,
+                types: convert_inner_of_inner(value.types),
+                states: convert_inner_of_inner(value.states),
+                entity_key: convert_inner(value.entity_key),
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
             include: None,
         })
     }

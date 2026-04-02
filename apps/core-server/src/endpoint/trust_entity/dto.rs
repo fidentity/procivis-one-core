@@ -1,10 +1,15 @@
-use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
+use one_core::model::trust_entity::{
+    ExactTrustEntityFilterColumn, TrustEntityRole, TrustEntityState, TrustEntityType,
+};
 use one_core::service::error::ServiceError;
 use one_core::service::trust_entity::dto::{
     CreateRemoteTrustEntityRequestDTO, GetRemoteTrustEntityResponseDTO, GetTrustEntityResponseDTO,
     SortableTrustEntityColumnEnum, TrustEntitiesResponseItemDTO, TrustEntityCertificateResponseDTO,
+    TrustEntityFilterParamsDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{
@@ -14,7 +19,7 @@ use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::common::ListQueryParamsRest;
 use crate::endpoint::certificate::dto::{CertificateStateRest, CertificateX509ExtensionRestDTO};
 use crate::endpoint::did::dto::DidListItemResponseRestDTO;
 use crate::endpoint::identifier::dto::GetIdentifierListItemResponseRestDTO;
@@ -183,33 +188,43 @@ pub(crate) enum SortableTrustEntityColumnRestEnum {
 pub(crate) type ListTrustEntitiesQuery =
     ListQueryParamsRest<TrustEntityFilterQueryParamsRestDto, SortableTrustEntityColumnRestEnum>;
 
-#[derive(Clone, Debug, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Deserialize, IntoParams, TryInto)]
+#[try_into(T = TrustEntityFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside ListTrustEntitiesQuery
 pub(crate) struct TrustEntityFilterQueryParamsRestDto {
     /// Return only entities with a name starting with this string. Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by one or more trust entity types.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "types[]", inline, nullable = false)]
     pub types: Option<Vec<TrustEntityTypeRest>>,
     /// Specify entities to return by their DID value or their certificate `subject`.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub entity_key: Option<TrustEntityKey>,
     /// Filter by role.
+    #[try_into(infallible, with_fn = convert_inner)]
     #[param(nullable = false)]
     pub role: Option<TrustEntityRoleRest>,
     /// Return only entities from the specified trust anchor.
+    #[try_into(infallible, rename = "trust_anchor")]
     #[param(nullable = false)]
     pub trust_anchor_id: Option<TrustAnchorId>,
     /// Filter by specific DID UUIDs.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub did_id: Option<DidId>,
     /// Set which filters apply in an exact way.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactTrustEntityFilterColumnRestEnum>>,
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub organisation_id: Option<OrganisationId>,
     /// Filter by one or more states.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "states[]", inline, nullable = false)]
     pub states: Option<Vec<TrustEntityStateRest>>,
 
@@ -217,22 +232,33 @@ pub(crate) struct TrustEntityFilterQueryParamsRestDto {
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only entities created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only entities last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only entities last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
+#[into(ExactTrustEntityFilterColumn)]
+pub(crate) enum ExactTrustEntityFilterColumnRestEnum {
+    Name,
 }
 
 #[options_not_nullable]

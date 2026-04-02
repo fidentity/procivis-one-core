@@ -71,3 +71,8 @@ pub struct UpdateTrustEntityRequest {
     pub role: Option<TrustEntityRole>,
     pub content: Option<TrustEntityContent>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTrustEntityFilterColumn {
+    Name,
+}

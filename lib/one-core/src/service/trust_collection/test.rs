@@ -10,13 +10,10 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::common::GetListResponse;
 use crate::model::identifier::IdentifierType;
 use crate::model::organisation::OrganisationRelations;
-use crate::model::trust_collection::{
-    TrustCollection, TrustCollectionListQuery, TrustCollectionRelations,
-};
+use crate::model::trust_collection::{TrustCollection, TrustCollectionRelations};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{
-    TrustListSubscription, TrustListSubscriptionListQuery, TrustListSubscriptionRelations,
-    TrustListSubscriptionState,
+    TrustListSubscription, TrustListSubscriptionRelations, TrustListSubscriptionState,
 };
 use crate::proto::clock::MockClock;
 use crate::proto::session_provider::test::StaticSessionProvider;
@@ -28,10 +25,12 @@ use crate::repository::error::DataLayerError;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
 use crate::repository::trust_list_subscription_repository::MockTrustListSubscriptionRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{dummy_organisation, get_dummy_date};
 use crate::service::trust_collection::TrustCollectionService;
 use crate::service::trust_collection::dto::{
     CreateTrustCollectionRequestDTO, CreateTrustListSubscriptionRequestDTO,
+    TrustCollectionFilterParamsDTO, TrustListSubscriptionFilterParamsDTO,
 };
 use crate::service::trust_collection::error::TrustCollectionServiceError;
 
@@ -317,7 +316,23 @@ async fn test_get_trust_collection_list_success() {
     let session_provider = StaticSessionProvider::new_random();
     let organisation_id = session_provider.0.organisation_id.unwrap();
 
-    let query = TrustCollectionListQuery::default();
+    let query = ListQueryDTO {
+        page: 0,
+        page_size: 30,
+        sort: None,
+        sort_direction: None,
+        filter: TrustCollectionFilterParamsDTO {
+            name: None,
+            ids: None,
+            exact: None,
+            organisation_id,
+            created_date_after: None,
+            created_date_before: None,
+            last_modified_after: None,
+            last_modified_before: None,
+        },
+        include: None,
+    };
 
     trust_collection_repository.expect_list().returning(|_| {
         Ok(crate::model::common::GetListResponse {
@@ -334,9 +349,7 @@ async fn test_get_trust_collection_list_success() {
     });
 
     // when
-    let result = service
-        .get_trust_collection_list(organisation_id, query)
-        .await;
+    let result = service.get_trust_collection_list(query).await;
 
     // then
     assert!(result.is_ok());
@@ -346,14 +359,28 @@ async fn test_get_trust_collection_list_success() {
 async fn test_get_trust_collection_list_org_mismatch() {
     // given
     let other_organisation_id = Uuid::new_v4().into();
-    let query = TrustCollectionListQuery::default();
+    let query = ListQueryDTO {
+        page: 0,
+        page_size: 30,
+        sort: None,
+        sort_direction: None,
+        filter: TrustCollectionFilterParamsDTO {
+            name: None,
+            ids: None,
+            exact: None,
+            organisation_id: other_organisation_id,
+            created_date_after: None,
+            created_date_before: None,
+            last_modified_after: None,
+            last_modified_before: None,
+        },
+        include: None,
+    };
 
     let service = mock_service(Default::default());
 
     // when
-    let result = service
-        .get_trust_collection_list(other_organisation_id, query)
-        .await;
+    let result = service.get_trust_collection_list(query).await;
 
     // then
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
@@ -659,7 +686,26 @@ async fn test_get_trust_list_subscription_list_success() {
     let mut trust_list_subscription_repository = MockTrustListSubscriptionRepository::new();
 
     let trust_collection_id = Uuid::new_v4().into();
-    let query = TrustListSubscriptionListQuery::default();
+    let query = ListQueryDTO {
+        page: 0,
+        page_size: 30,
+        sort: None,
+        sort_direction: None,
+        filter: TrustListSubscriptionFilterParamsDTO {
+            name: None,
+            reference: None,
+            ids: None,
+            roles: None,
+            states: None,
+            types: None,
+            exact: None,
+            created_date_after: None,
+            created_date_before: None,
+            last_modified_after: None,
+            last_modified_before: None,
+        },
+        include: None,
+    };
 
     trust_list_subscription_repository
         .expect_list()

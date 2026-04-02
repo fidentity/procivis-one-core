@@ -6,10 +6,11 @@ use one_core::model::trust_list_subscription::{
 use one_core::service::error::ServiceError;
 use one_core::service::trust_collection::dto::{
     CreateTrustCollectionRequestDTO, CreateTrustListSubscriptionRequestDTO,
-    GetTrustCollectionResponseDTO, TrustCollectionListItemResponseDTO,
-    TrustListSubscriptionListItemResponseDTO,
+    GetTrustCollectionResponseDTO, TrustCollectionFilterParamsDTO,
+    TrustCollectionListItemResponseDTO, TrustListSubscriptionExactColumn,
+    TrustListSubscriptionFilterParamsDTO, TrustListSubscriptionListItemResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner};
+use one_dto_mapper::{From, Into, TryInto, convert_inner, convert_inner_of_inner};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{
@@ -76,43 +77,52 @@ pub(crate) type ListTrustCollectionEntitiesQuery = ListQueryParamsRest<
     SortableTrustCollectionColumnRestEnum,
 >;
 
-#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetTrustCollectionListQuery
+#[try_into(T = TrustCollectionFilterParamsDTO, Error = ServiceError)]
 pub(crate) struct TrustCollectionFilterQueryParamsRestDTO {
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<TrustCollectionId>>,
     /// Return only trust collections with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub exact: Option<Vec<ExactColumn>>,
     /// Return only trust lists created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only trust lists created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only trust lists last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only trust lists last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
@@ -164,48 +174,60 @@ pub(crate) type ListTrustListSubscriptionsEntitiesQuery = ListQueryParamsRest<
     SortableListTrustListSubscriptionColumnRestEnum,
 >;
 
-#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams)]
+#[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetTrustCollectionListQuery
+#[try_into(T = TrustListSubscriptionFilterParamsDTO, Error = ServiceError)]
 pub(crate) struct TrustListSubscriptionFilterQueryParamsRestDTO {
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<TrustListSubscriptionId>>,
     /// Return only trust list subscriptions with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Return only trust list subscriptions with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub reference: Option<String>,
     #[param(nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub roles: Option<Vec<TrustListRoleRestEnum>>,
     #[param(nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub states: Option<Vec<TrustListSubscriptionStateRestEnum>>,
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub types: Option<Vec<TrustListSubscriberId>>,
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<TrustListSubscriptionExactColumn>>,
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
+    pub exact: Option<Vec<TrustListSubscriptionExactColumnRestEnum>>,
     /// Return only trust lists created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only trust lists created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only trust lists last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only trust lists last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
@@ -221,9 +243,10 @@ pub(crate) enum SortableListTrustListSubscriptionColumnRestEnum {
     CreatedDate,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ToSchema)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum TrustListSubscriptionExactColumn {
+#[into(TrustListSubscriptionExactColumn)]
+pub(crate) enum TrustListSubscriptionExactColumnRestEnum {
     Name,
     Reference,
 }

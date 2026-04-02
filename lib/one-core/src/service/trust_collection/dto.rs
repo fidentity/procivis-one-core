@@ -5,7 +5,7 @@ use shared_types::{
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::model::common::GetListResponse;
+use crate::model::common::{ExactColumn, GetListResponse};
 use crate::model::trust_collection::TrustCollection;
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{TrustListSubscription, TrustListSubscriptionState};
@@ -78,4 +78,37 @@ pub struct TrustListSubscriptionListItemResponseDTO {
     pub reference: String,
     pub r#type: TrustListSubscriberId,
     pub state: TrustListSubscriptionState,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustCollectionFilterParamsDTO {
+    pub name: Option<String>,
+    pub ids: Option<Vec<TrustCollectionId>>,
+    pub exact: Option<Vec<ExactColumn>>,
+    pub organisation_id: OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustListSubscriptionExactColumn {
+    Name,
+    Reference,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustListSubscriptionFilterParamsDTO {
+    pub name: Option<String>,
+    pub reference: Option<String>,
+    pub ids: Option<Vec<TrustListSubscriptionId>>,
+    pub roles: Option<Vec<TrustListRoleEnum>>,
+    pub states: Option<Vec<TrustListSubscriptionState>>,
+    pub types: Option<Vec<TrustListSubscriberId>>,
+    pub exact: Option<Vec<TrustListSubscriptionExactColumn>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
 }

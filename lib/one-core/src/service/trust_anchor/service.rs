@@ -4,7 +4,7 @@ use super::TrustAnchorService;
 use super::dto::{
     CreateTrustAnchorRequestDTO, GetTrustAnchorDetailResponseDTO,
     GetTrustAnchorEntityListResponseDTO, GetTrustAnchorResponseDTO, GetTrustAnchorsResponseDTO,
-    ListTrustAnchorsQueryDTO,
+    SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO,
 };
 use super::error::TrustAnchorServiceError;
 use super::mapper::trust_anchor_from_request;
@@ -12,6 +12,7 @@ use crate::config::core_config::TrustManagementType;
 use crate::config::validator::trust_management::validate_trust_management;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 
 impl TrustAnchorService {
     pub async fn create_trust_anchor(
@@ -122,11 +123,11 @@ impl TrustAnchorService {
 
     pub async fn list_trust_anchors(
         &self,
-        filters: ListTrustAnchorsQueryDTO,
+        filter_params: ListQueryDTO<SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO>,
     ) -> Result<GetTrustAnchorsResponseDTO, TrustAnchorServiceError> {
         Ok(self
             .trust_anchor_repository
-            .list(filters)
+            .list(filter_params.into())
             .await
             .error_while("getting trust achors")?)
     }

@@ -14,7 +14,6 @@ use super::dto::{
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -102,16 +101,14 @@ pub(crate) async fn get_trust_collection_list(
     >,
 ) -> OkOrErrorResponse<GetTrustCollectionListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)
-            .error_while("fallback organisation id")?;
-        state
-            .core
-            .trust_collection_service
-            .get_trust_collection_list(
-                organisation_id,
-                query.try_into().error_while("mapping query")?,
-            )
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_collection_service
+                .get_trust_collection_list(query.try_into()?)
+                .await
+                .error_while("getting list of trust collections")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "getting list of trust collections")
@@ -235,12 +232,14 @@ pub(crate) async fn get_trust_list_subscription_entries(
     >,
 ) -> OkOrErrorResponse<GetTrustListSubscriptionListResponseRestDTO> {
     let result = async {
-        let query = query.try_into().error_while("mapping query")?;
-        state
-            .core
-            .trust_collection_service
-            .get_trust_list_subscription_list(id, query)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_collection_service
+                .get_trust_list_subscription_list(id, query.try_into()?)
+                .await
+                .error_while("getting trust list subscription list")?,
+        )
     }
     .await;
 

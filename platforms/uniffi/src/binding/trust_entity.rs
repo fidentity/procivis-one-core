@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use one_core::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
+use one_core::model::trust_entity::{
+    ExactTrustEntityFilterColumn, TrustEntityRole, TrustEntityState, TrustEntityType,
+};
 use one_core::service::trust_entity::dto::{
     CreateRemoteTrustEntityRequestDTO, CreateTrustEntityRequestDTO,
     GetRemoteTrustEntityResponseDTO, GetTrustEntitiesResponseDTO, GetTrustEntityResponseDTO,
@@ -146,7 +148,8 @@ pub enum SortableTrustEntityColumnBindings {
     State,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, Eq, PartialEq, Into, uniffi::Enum)]
+#[into(ExactTrustEntityFilterColumn)]
 #[uniffi(name = "TrustEntityListQueryExactColumn")]
 pub enum ExactTrustEntityFilterColumnBindings {
     Name,

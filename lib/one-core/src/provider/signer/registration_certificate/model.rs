@@ -4,14 +4,12 @@ use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 
-use crate::proto::jwt::JwtImpl;
-use crate::proto::jwt::model::SerdeSkippable;
+use crate::proto::jwt::Jwt;
 // Payload specification according to spec from:
 // https://www.etsi.org/deliver/etsi_ts/119400_119499/119475/01.01.01_60/ts_119475v010101p.pdf
 
-pub type WRPRegistrationCertificate = JwtImpl<Option<String>, Payload>;
-pub type WRPRegistrationCertificatePayload =
-    crate::proto::jwt::model::Payload<Option<String>, Payload>;
+pub type WRPRegistrationCertificate = Jwt<Payload>;
+pub type WRPRegistrationCertificatePayload = crate::proto::jwt::model::JWTPayload<Payload>;
 
 // 5.2.4 Payload Attributes
 #[derive(Debug)]
@@ -76,12 +74,6 @@ pub enum Subject {
         given_name: String,
         family_name: String,
     },
-}
-
-impl SerdeSkippable for Subject {
-    fn skip(&self) -> bool {
-        false
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

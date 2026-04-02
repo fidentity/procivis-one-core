@@ -58,7 +58,6 @@ impl OneCore {
                 into_id_opt(request.identifier_id)?,
                 into_id_opt(request.key_id)?,
                 request.tx_code,
-                into_id_opt(request.holder_wallet_unit_id)?,
             )
             .await?
             .to_string())
@@ -252,5 +251,4 @@ pub struct HolderAcceptCredentialRequestBindingDTO {
     pub key_id: Option<String>,
     /// User-provided transaction code.
     pub tx_code: Option<String>,
-    pub holder_wallet_unit_id: Option<String>,
 }

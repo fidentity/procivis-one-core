@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use shared_types::{CredentialId, DidId, HolderWalletUnitId, IdentifierId, InteractionId, KeyId};
+use shared_types::{CredentialId, DidId, IdentifierId, InteractionId, KeyId};
 use url::Url;
 use uuid::Uuid;
 
@@ -62,7 +62,6 @@ impl SSIHolderService {
         identifier_id: Option<IdentifierId>,
         key_id: Option<KeyId>,
         tx_code: Option<String>,
-        holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<CredentialId, HolderServiceError> {
         let credentials = self
             .credential_repository
@@ -141,17 +140,13 @@ impl SSIHolderService {
         };
 
         let credential_id = if credentials.is_empty() {
-            self.accept_credential_final1(
-                interaction_id,
-                holder_binding_input,
-                tx_code,
-                holder_wallet_unit_id,
-            )
-            .await
+            self.accept_credential_final1(interaction_id, holder_binding_input, tx_code)
+                .await
         } else {
             self.accept_credentials_draft13(credentials, holder_binding_input, tx_code)
                 .await
         }?;
+
         tracing::info!(
             "Accepted issuance of credential {credential_id} for interaction {interaction_id}"
         );
@@ -164,7 +159,6 @@ impl SSIHolderService {
         interaction_id: InteractionId,
         holder_binding: Option<HolderBindingInput>,
         tx_code: Option<String>,
-        holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<CredentialId, HolderServiceError> {
         let interaction = self
             .interaction_repository
@@ -252,13 +246,7 @@ impl SSIHolderService {
             .error_while("getting protocol")?;
 
         let issuer_response = protocol
-            .holder_accept_credential(
-                interaction,
-                holder_binding,
-                &self.storage_proxy(),
-                tx_code,
-                holder_wallet_unit_id,
-            )
+            .holder_accept_credential(interaction, holder_binding, &self.storage_proxy(), tx_code)
             .await
             .error_while("accepting credential")?;
 
@@ -409,13 +397,7 @@ impl SSIHolderService {
                 credential.protocol.clone(),
             ))
             .error_while("getting protocol")?
-            .holder_accept_credential(
-                interaction,
-                holder_binding,
-                &self.storage_proxy(),
-                tx_code,
-                None,
-            )
+            .holder_accept_credential(interaction, holder_binding, &self.storage_proxy(), tx_code)
             .await
             .error_while("accepting credential")?;
 

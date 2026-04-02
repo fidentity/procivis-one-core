@@ -581,11 +581,18 @@ async fn test_holder_accept_credential_success() {
             move |_, _, _| Ok((identifier, RemoteIdentifierRelation::Key(dummy_key())))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
         key_algorithm_provider,
         identifier_creator,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -603,7 +610,6 @@ async fn test_holder_accept_credential_success() {
                 key,
             }),
             &storage_access,
-            None,
             None,
         )
         .await
@@ -803,11 +809,18 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             ))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
         key_algorithm_provider,
         identifier_creator,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -835,7 +848,6 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
                 key,
             }),
             &storage_access,
-            None,
             None,
         )
         .await
@@ -1080,6 +1092,12 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
             move |_, _, _| Ok((identifier, RemoteIdentifierRelation::Key(dummy_key())))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
@@ -1087,12 +1105,13 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
         identifier_creator,
         key_algorithm_provider,
         key_security_level_provider,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
 
     let result = openid_provider
-        .holder_accept_credential(interaction, None, &storage_access, None, None)
+        .holder_accept_credential(interaction, None, &storage_access, None)
         .await
         .unwrap();
 
@@ -1772,8 +1791,15 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
             Some(Arc::new(security))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         key_security_level_provider,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -1794,7 +1820,6 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
                 key,
             }),
             &MockStorageProxy::default(),
-            None,
             None,
         )
         .await;
@@ -2007,11 +2032,11 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
 
     let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
     holder_wallet_unit_repository
-        .expect_get_holder_wallet_unit()
+        .expect_get_holder_wallet_unit_by_org_id()
         .once()
-        .return_once(|id, _| {
+        .return_once(|_| {
             Ok(Some(HolderWalletUnit {
-                id: id.to_owned(),
+                id: Uuid::new_v4().into(),
                 created_date: get_dummy_date(),
                 last_modified: get_dummy_date(),
                 wallet_provider_type: WalletProviderType::ProcivisOne,
@@ -2063,7 +2088,7 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
         storage_type: "INTERNAL".to_string(),
         ..dummy_key()
     };
-    let wallet_unit_id = Uuid::new_v4().into();
+
     let result = openid_provider
         .holder_accept_credential(
             interaction,
@@ -2077,7 +2102,6 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
             }),
             &storage_access,
             None,
-            Some(wallet_unit_id),
         )
         .await
         .unwrap();

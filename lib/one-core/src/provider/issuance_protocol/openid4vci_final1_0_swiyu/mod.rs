@@ -5,7 +5,7 @@ use std::sync::Arc;
 use secrecy::SecretSlice;
 use serde::Deserialize;
 use serde_with::{DurationSeconds, serde_as};
-use shared_types::{CredentialId, HolderWalletUnitId};
+use shared_types::CredentialId;
 use time::Duration;
 use url::Url;
 
@@ -176,10 +176,9 @@ impl IssuanceProtocol for OpenID4VCISwiyu {
         holder_binding: Option<HolderBindingInput>,
         storage_access: &StorageAccess,
         tx_code: Option<String>,
-        _holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<UpdateResponse, IssuanceProtocolError> {
         self.inner
-            .holder_accept_credential(interaction, holder_binding, storage_access, tx_code, None)
+            .holder_accept_credential(interaction, holder_binding, storage_access, tx_code)
             .await
     }
 

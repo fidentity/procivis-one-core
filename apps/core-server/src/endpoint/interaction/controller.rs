@@ -103,7 +103,6 @@ pub(crate) async fn issuance_accept(
             request.identifier_id,
             request.key_id,
             request.tx_code,
-            request.holder_wallet_unit_id,
         )
         .await;
     OkOrErrorResponse::from_result(result, state, "accepting credential")

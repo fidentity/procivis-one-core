@@ -786,7 +786,6 @@ async fn test_holder_accept_credential_success() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -1023,7 +1022,6 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -1227,7 +1225,6 @@ async fn test_holder_accept_expired_credential_fails() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await;
 
@@ -1325,7 +1322,6 @@ async fn test_holder_accept_tx_code_invalid() {
             }),
             &storage_access,
             Some("code".to_string()),
-            None,
         )
         .await;
 

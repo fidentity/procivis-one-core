@@ -2,7 +2,7 @@ use dto::IssuanceProtocolCapabilities;
 use error::IssuanceProtocolError;
 use serde::Serialize;
 use serde::de::Deserialize;
-use shared_types::{CredentialId, HolderWalletUnitId};
+use shared_types::CredentialId;
 use url::Url;
 
 use crate::model::credential::Credential;
@@ -76,7 +76,6 @@ pub(crate) trait IssuanceProtocol: Send + Sync {
         holder_binding: Option<HolderBindingInput>,
         storage_access: &StorageAccess,
         tx_code: Option<String>,
-        holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<UpdateResponse, IssuanceProtocolError>;
 
     /// Rejects a previously-accepted credential offer.

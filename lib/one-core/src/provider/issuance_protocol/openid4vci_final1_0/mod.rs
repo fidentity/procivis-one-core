@@ -12,7 +12,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    BlobId, CredentialFormat, CredentialId, DidValue, HolderWalletUnitId, InteractionId,
+    BlobId, CredentialFormat, CredentialId, DidValue, InteractionId, OrganisationId,
 };
 use standardized_types::jwk::PublicJwk;
 use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
@@ -57,6 +57,7 @@ use crate::model::credential_schema::{
     UpdateCredentialSchemaRequest,
 };
 use crate::model::did::{DidRelations, KeyRole};
+use crate::model::holder_wallet_unit::HolderWalletUnit;
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
 use crate::model::interaction::{Interaction, UpdateInteractionRequest};
 use crate::model::key::{Key, KeyRelations};
@@ -573,7 +574,7 @@ impl OpenID4VCIFinal1_0 {
         &self,
         interaction_data: &HolderInteractionData,
         key: &Key,
-        holder_wallet_unit_id: Option<HolderWalletUnitId>,
+        organisation_id: OrganisationId,
     ) -> Result<WalletAttestationResult, IssuanceProtocolError> {
         // DEVIATION: RFC8414 specifies `client_secret_basic` as the default when
         // token_endpoint_auth_methods_supported is absent, but some issuers (e.g. swiyu) don't publish this field.
@@ -589,14 +590,10 @@ impl OpenID4VCIFinal1_0 {
 
         let wallet_attestation_required = requires_wia(token_endpoint_auth_methods);
 
-        let wallet_unit_provided = if let Some(holder_wallet_unit_id) = holder_wallet_unit_id {
-            WalletUnitStatus::Active
-                == self
-                    .get_current_wallet_unit_status(holder_wallet_unit_id)
-                    .await?
-        } else {
-            false
-        };
+        let holder_wallet_unit = self.get_current_wallet_unit(organisation_id).await?;
+        let wallet_unit_provided = holder_wallet_unit
+            .as_ref()
+            .is_some_and(|unit| unit.status == WalletUnitStatus::Active);
 
         if wallet_attestation_required && !wallet_unit_provided {
             return Err(IssuanceProtocolError::Failed(
@@ -638,16 +635,16 @@ impl OpenID4VCIFinal1_0 {
         let wallet_attestations_issuance_response = match wallet_attestations_issuance_request {
             None => None,
             Some(request) => {
-                let wallet_unit_id =
-                    holder_wallet_unit_id
-                        .as_ref()
-                        .ok_or(IssuanceProtocolError::Failed(
-                            "holder wallet unit id is required".to_string(),
-                        ))?;
+                let holder_wallet_unit_id = holder_wallet_unit
+                    .as_ref()
+                    .ok_or(IssuanceProtocolError::Failed(
+                        "holder wallet unit is required".to_string(),
+                    ))?
+                    .id;
 
                 let response = self
                     .holder_wallet_unit_proto
-                    .issue_wallet_attestations(wallet_unit_id, request)
+                    .issue_wallet_attestations(&holder_wallet_unit_id, request)
                     .await
                     .error_while("issuing attestations")?;
 
@@ -691,11 +688,14 @@ impl OpenID4VCIFinal1_0 {
                 // Get the wallet unit's authentication key for signing the PoP
                 let wallet_unit_auth_key = self
                     .holder_wallet_unit_proto
-                    .get_authentication_key(holder_wallet_unit_id.as_ref().ok_or(
-                        IssuanceProtocolError::Failed(
-                            "holder wallet unit id is required for WIA PoP".to_string(),
-                        ),
-                    )?)
+                    .get_authentication_key(
+                        &holder_wallet_unit
+                            .as_ref()
+                            .ok_or(IssuanceProtocolError::Failed(
+                                "holder wallet unit is required for WIA PoP".to_string(),
+                            ))?
+                            .id,
+                    )
                     .await
                     .error_while("getting authentication key")?;
 
@@ -748,20 +748,16 @@ impl OpenID4VCIFinal1_0 {
         })
     }
 
-    async fn get_current_wallet_unit_status(
+    async fn get_current_wallet_unit(
         &self,
-        holder_wallet_unit_id: HolderWalletUnitId,
-    ) -> Result<WalletUnitStatus, IssuanceProtocolError> {
+        organisation_id: OrganisationId,
+    ) -> Result<Option<HolderWalletUnit>, IssuanceProtocolError> {
         let wallet_unit = self
             .holder_wallet_unit_repository
-            .get_holder_wallet_unit(&holder_wallet_unit_id, &Default::default())
+            .get_holder_wallet_unit_by_org_id(&organisation_id)
             .await
-            .error_while("fetching wallet unit")?
-            .ok_or(IssuanceProtocolError::InvalidRequest(
-                "Wallet unit not found".to_string(),
-            ))?;
-
-        Ok(wallet_unit.status)
+            .error_while("fetching wallet unit")?;
+        Ok(wallet_unit)
     }
 
     async fn holder_process_accepted_credential(
@@ -1151,7 +1147,6 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
         holder_binding: Option<HolderBindingInput>,
         storage_access: &StorageAccess,
         tx_code: Option<String>,
-        holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<UpdateResponse, IssuanceProtocolError> {
         let organisation =
             interaction
@@ -1174,7 +1169,7 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
         let key = &holder_binding.key;
 
         let attestation_result = self
-            .prepare_wallet_attestations(&interaction_data, key, holder_wallet_unit_id)
+            .prepare_wallet_attestations(&interaction_data, key, organisation.id)
             .await?;
 
         let token_response = self

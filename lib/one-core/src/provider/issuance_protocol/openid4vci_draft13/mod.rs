@@ -11,9 +11,7 @@ use one_crypto::utilities::generate_alphanumeric;
 use one_dto_mapper::convert_inner;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
-use shared_types::{
-    BlobId, CredentialFormat, CredentialId, DidValue, HolderWalletUnitId, InteractionId,
-};
+use shared_types::{BlobId, CredentialFormat, CredentialId, DidValue, InteractionId};
 use standardized_types::jwk::PublicJwk;
 use time::{Duration, OffsetDateTime};
 use url::Url;
@@ -826,7 +824,6 @@ impl IssuanceProtocol for OpenID4VCI13 {
         holder_binding: Option<HolderBindingInput>,
         storage_access: &StorageAccess,
         tx_code: Option<String>,
-        _holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<UpdateResponse, IssuanceProtocolError> {
         let credential = storage_access
             .get_credential_by_interaction_id(&interaction.id)

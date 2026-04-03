@@ -36,7 +36,7 @@ use crate::proto::trust_list_subscription_sync::{
 use crate::proto::verifier_provider_client::http_client::HTTPVerifierProviderClient;
 use crate::proto::wallet_provider_client::http_client::HTTPWalletProviderClient;
 use crate::proto::wallet_unit::HolderWalletUnitProtoImpl;
-use crate::proto::wrp_validator::WRPValidatorImpl;
+use crate::proto::wrp_validator::validator::WRPValidatorImpl;
 use crate::provider::blob_storage_provider::blob_storage_provider_from_config;
 use crate::provider::caching_loader::json_ld_context::{
     ContextCache, initialize_jsonld_cache_from_config,
@@ -386,6 +386,9 @@ impl OneCore {
             trust_list_subscriber_provider.clone(),
             data_provider.get_holder_wallet_unit_repository(),
             wallet_unit_client.clone(),
+            did_method_provider.clone(),
+            key_algorithm_provider.clone(),
+            certificate_validator.clone(),
         ));
 
         let trust_collection_manager = Arc::new(TrustCollectionManagerImpl::new(

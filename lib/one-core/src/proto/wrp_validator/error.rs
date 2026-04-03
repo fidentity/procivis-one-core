@@ -1,15 +1,22 @@
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
 
 #[derive(Debug, thiserror::Error)]
+#[expect(unused)]
 pub(crate) enum WRPValidatorError {
     #[error("Trust management disabled")]
     TrustManagementDisabled,
 
     #[error("Access certificate not trusted")]
     AccessCertificateNotTrusted,
+    #[error("Registration certificate not trusted")]
+    RegistrationCertificateNotTrusted,
     #[error("Missing organisation identifier")]
     MissingOrganisationIdentifier,
+    #[error("Invalid organisation identifier")]
+    InvalidOrganisationIdentifier,
 
+    #[error("Missing issuer")]
+    MissingIssuer,
     #[error("No certificates specified in the chain")]
     EmptyChain,
     #[error("PEM error: `{0}`")]
@@ -32,9 +39,13 @@ impl ErrorCodeMixin for WRPValidatorError {
     fn error_code(&self) -> ErrorCode {
         match self {
             Self::TrustManagementDisabled => ErrorCode::BR_0412,
-            Self::AccessCertificateNotTrusted => ErrorCode::BR_0410,
+            Self::AccessCertificateNotTrusted | Self::RegistrationCertificateNotTrusted => {
+                ErrorCode::BR_0410
+            }
             Self::EmptyChain
             | Self::MissingOrganisationIdentifier
+            | Self::InvalidOrganisationIdentifier
+            | Self::MissingIssuer
             | Self::PEMError(_)
             | Self::X509NomError(_)
             | Self::X509ParserError(_)

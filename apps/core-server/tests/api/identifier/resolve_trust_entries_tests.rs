@@ -89,9 +89,6 @@ trustListSubscriber:
         "certificate_fingerprints": {
             fingerprint: 0
         },
-        "subject_key_identifiers": {},
-        "subject_names": {},
-        "public_keys": {}
     });
 
     let value = serde_json::to_vec(&preprocessed_lote).unwrap();

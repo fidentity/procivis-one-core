@@ -13,22 +13,22 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::certificate::{Certificate, CertificateState};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::trust_list_role::TrustListRoleEnum;
-use crate::proto::certificate_validator::{CertificateValidatorImpl, MockCertificateValidator};
+use crate::proto::certificate_validator::{MockCertificateValidator, ParsedCertificate};
 use crate::proto::clock::MockClock;
 use crate::proto::http_client::{Method, MockHttpClient, Request, Response, StatusCode};
-use crate::provider::caching_loader::android_attestation_crl::{
-    AndroidAttestationCrlCache, AndroidAttestationCrlResolver,
-};
 use crate::provider::caching_loader::etsi_lote::EtsiLoteCache;
-use crate::provider::caching_loader::x509_crl::{X509CrlCache, X509CrlResolver};
 use crate::provider::did_method::provider::MockDidMethodProvider;
 use crate::provider::key_algorithm::ecdsa::Ecdsa;
+use crate::provider::key_algorithm::key::{
+    KeyHandle, MockSignaturePublicKeyHandle, SignatureKeyHandle,
+};
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::remote_entity_storage::in_memory::InMemoryStorage;
 use crate::provider::trust_list_subscriber::TrustListSubscriber;
 use crate::provider::trust_list_subscriber::error::TrustListSubscriberError;
 use crate::provider::trust_list_subscriber::etsi_lote::resolver::EtsiLoteResolver;
 use crate::provider::trust_list_subscriber::etsi_lote::{EtsiLoteSubscriber, LoteContentType};
+use crate::service::certificate::dto::CertificateX509AttributesDTO;
 use crate::service::test_utilities::{dummy_identifier, dummy_key};
 use crate::util::test_utilities::mock_http_get_request;
 
@@ -254,31 +254,38 @@ fn setup_subscriber(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber
     let key_algorithm_provider = Arc::new(key_algorithm_provider);
     let cache_storage = Arc::new(InMemoryStorage::new(HashMap::new()));
 
-    let certificate_validator = CertificateValidatorImpl::new(
-        key_algorithm_provider.clone(),
-        Arc::new(X509CrlCache::new(
-            Arc::new(X509CrlResolver::new(Some(client.clone()))),
-            cache_storage.clone(),
-            100,
-            Duration::days(1),
-            Duration::days(1),
-        )),
-        clock.clone(),
-        Duration::seconds(0),
-        Arc::new(AndroidAttestationCrlCache::new(
-            Arc::new(AndroidAttestationCrlResolver::new(client.clone())),
-            cache_storage.clone(),
-            100,
-            Duration::days(1),
-            Duration::days(1),
-        )),
-    );
+    let mut certificate_validator = MockCertificateValidator::new();
+    certificate_validator
+        .expect_parse_pem_chain()
+        .returning(|_, _| {
+            let mut handle = MockSignaturePublicKeyHandle::new();
+            handle.expect_verify().returning(|_, _| Ok(()));
+            Ok(ParsedCertificate {
+                attributes: CertificateX509AttributesDTO {
+                    serial_number: "1F:24:63:13:8E:BA:60:0E:ED:73:CF:3C:93:4D:CE:BB:64:28:74:5E"
+                        .to_string(),
+                    not_before: datetime!(2025-03-01 00:00 UTC),
+                    not_after: datetime!(2028-03-01 00:00 UTC),
+                    issuer: "CN=German Registrar, C=DE".to_string(),
+                    subject: "CN=German Registrar, C=DE".to_string(),
+                    fingerprint: TRUSTED_FINGERPRINT.to_string(),
+                    extensions: vec![],
+                },
+                subject_common_name: None,
+                subject_key_identifier: None,
+                public_key: KeyHandle::SignatureOnly(SignatureKeyHandle::PublicKeyOnly(Arc::new(
+                    handle,
+                ))),
+            })
+        });
+
+    let certificate_validator = Arc::new(certificate_validator);
     let resolver = EtsiLoteResolver::new(
         clock,
         client,
         Arc::new(MockDidMethodProvider::new()),
         key_algorithm_provider,
-        Arc::new(certificate_validator),
+        certificate_validator.clone(),
         LoteContentType::Jwt,
         Duration::seconds(0),
     );
@@ -290,5 +297,5 @@ fn setup_subscriber(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber
         Duration::seconds(60),
     );
 
-    EtsiLoteSubscriber::new(cache, Arc::new(MockCertificateValidator::new()))
+    EtsiLoteSubscriber::new(cache, certificate_validator)
 }

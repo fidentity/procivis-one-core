@@ -121,8 +121,13 @@ impl Resolver for EtsiLoteResolver {
                     );
                 }
             };
-        let preprocessed_list = preprocess_lote(&lote, &*self.key_algorithm_provider)
-            .error_while("preprocessing ETSI LoTE")?;
+        let preprocessed_list = preprocess_lote(
+            lote,
+            &*self.certificate_validator,
+            &*self.key_algorithm_provider,
+        )
+        .await
+        .error_while("preprocessing ETSI LoTE")?;
         Ok(ResolveResult::NewValue {
             content: serde_json::to_vec(&preprocessed_list)?,
             media_type: Some(response_content_type.to_string()),

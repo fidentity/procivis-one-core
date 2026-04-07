@@ -3,7 +3,7 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 use indoc::indoc;
 use serde::{Deserialize, Serialize};
-use shared_types::{DidValue, OrganisationId};
+use shared_types::{DidValue, IdentifierId, OrganisationId};
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -14,6 +14,7 @@ use crate::config::core_config::{
     KeyAlgorithmType, KeyStorageType, RevocationType, VerificationProtocolType,
 };
 use crate::model::blob::{Blob, BlobType};
+use crate::model::certificate::{Certificate, CertificateRole, CertificateState};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
@@ -430,6 +431,26 @@ pub fn dummy_identifier() -> Identifier {
         key: None,
         certificates: None,
         trust_information: None,
+    }
+}
+
+pub fn dummy_certificate(identifier_id: IdentifierId) -> Certificate {
+    Certificate {
+        id: Uuid::new_v4().into(),
+        identifier_id,
+        organisation_id: None,
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
+        expiry_date: datetime!(2042-04-02 21:37 +1),
+        name: "certificate".to_string(),
+        chain: "dummy chaing".to_string(),
+        fingerprint: "fingerprint".to_string(),
+        state: CertificateState::Active,
+        roles: vec![
+            CertificateRole::Authentication,
+            CertificateRole::AssertionMethod,
+        ],
+        key: None,
     }
 }
 

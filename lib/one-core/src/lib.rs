@@ -452,7 +452,7 @@ impl OneCore {
             nfc_hce.clone(),
             data_provider.get_history_repository(),
             session_provider.clone(),
-            wrp_validator,
+            wrp_validator.clone(),
         )?;
 
         let config = Arc::new(config);
@@ -807,6 +807,7 @@ impl OneCore {
                 session_provider.clone(),
                 trust_list_subscriber_provider.clone(),
                 data_provider.get_tx_manager(),
+                wrp_validator,
             ),
             wallet_unit_service: WalletUnitService::new(
                 data_provider.get_organisation_repository(),

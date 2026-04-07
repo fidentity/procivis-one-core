@@ -15,9 +15,12 @@ use crate::model::trust_list_subscription::{
     GetTrustListSubscriptionList, TrustListSubscription, TrustListSubscriptionState,
 };
 use crate::proto::identifier_creator::MockIdentifierCreator;
-use crate::proto::jwt::mapper::string_to_b64url_string;
+use crate::proto::jwt::model::JWTPayload;
 use crate::proto::session_provider::test::StaticSessionProvider;
 use crate::proto::transaction_manager::NoTransactionManager;
+use crate::proto::wrp_validator::{
+    AccessCertificateResult, MockWRPValidator, RegistrationCertificateResult,
+};
 use crate::provider::blob_storage_provider::{MockBlobStorage, MockBlobStorageProvider};
 use crate::provider::signer::registration_certificate::model::{
     Credential, Payload, SupervisoryAuthority, WRPRegistrationCertificatePayload,
@@ -42,7 +45,8 @@ use crate::service::identifier::dto::{
     IdentifierTrustInformationType, ResolveTrustEntriesRequestDTO,
 };
 use crate::service::test_utilities::{
-    dummy_identifier, dummy_key, dummy_organisation, generic_config, get_dummy_date,
+    dummy_certificate, dummy_identifier, dummy_key, dummy_organisation, generic_config,
+    get_dummy_date,
 };
 
 #[derive(Default)]
@@ -59,6 +63,7 @@ struct Mocks {
     trust_list_subscriber_provider: MockTrustListSubscriberProvider,
     identifier_trust_information_repository: MockIdentifierTrustInformationRepository,
     blob_storage_provider: MockBlobStorageProvider,
+    wrp_validator: MockWRPValidator,
 }
 
 fn setup_service(mocks: Mocks) -> IdentifierService {
@@ -79,6 +84,7 @@ fn setup_service(mocks: Mocks) -> IdentifierService {
         session_provider: Arc::new(mocks.session_provider),
         trust_list_subscriber_provider: Arc::new(mocks.trust_list_subscriber_provider),
         transaction_manager: Arc::new(NoTransactionManager),
+        wrp_validator: Arc::new(mocks.wrp_validator),
     }
 }
 
@@ -596,7 +602,6 @@ async fn test_resolve_trust_entries_filters_key_type() {
 
 #[tokio::test]
 async fn test_create_identifier_with_trust_information() {
-    let reg_cert = dummy_reg_cert();
     let session_provider = StaticSessionProvider::new_random();
     let mut organisation_repository = MockOrganisationRepository::default();
     let mut key_repository = MockKeyRepository::default();
@@ -628,12 +633,33 @@ async fn test_create_identifier_with_trust_information() {
 
     let identifier_id = Uuid::new_v4().into();
     let mut identifier = dummy_identifier();
+    identifier.certificates = Some(vec![dummy_certificate(identifier_id)]);
     identifier.id = identifier_id;
     identifier.organisation = Some(dummy_organisation(Some(organisation_id)));
 
     identifier_creator
         .expect_create_local_identifier()
         .returning(move |_, _, _| Ok(identifier.clone()));
+    let mut wrp_validator = MockWRPValidator::new();
+    wrp_validator
+        .expect_validate_access_certificate_trust()
+        .once()
+        .returning(|_, _| {
+            Ok(AccessCertificateResult {
+                trust_entity: None,
+                rp_id: "test_wrp".to_string(),
+            })
+        });
+    wrp_validator
+        .expect_validate_registration_certificate()
+        .once()
+        .returning(|_, rp_id, _| {
+            assert_eq!(rp_id, "test_wrp");
+            Ok(RegistrationCertificateResult {
+                trust_entity: None,
+                payload: dummy_reg_cert(),
+            })
+        });
 
     let service = setup_service(Mocks {
         organisation_repository,
@@ -642,6 +668,7 @@ async fn test_create_identifier_with_trust_information() {
         identifier_trust_information_repository,
         blob_storage_provider,
         session_provider,
+        wrp_validator,
         ..Default::default()
     });
 
@@ -655,20 +682,16 @@ async fn test_create_identifier_with_trust_information() {
             certificate_authorities: None,
             organisation_id,
             trust_information: vec![CreateIdentifierTrustInformationRequestDTO {
-                data: reg_cert,
+                data: "dummy reg cert".to_string(),
                 r#type: IdentifierTrustInformationType::RegistrationCertificate,
             }],
         })
         .await;
-
     assert!(result.is_ok());
 }
 
-const REG_CERT_HEADER: &str = "eyJhbGciOiJFZERTQSIsInR5cCI6InJjLXdycCtqd3QiLCJ4NWMiOlsiTUlJRHNqQ0NBMW1nQXdJQkFnSVVkN3dSVU1UMEhWclNSS0VoOEx6YUFVaFBCcE13Q2dZSUtvWkl6ajBFQXdJd2dZd3hFakFRQmdOVkJBTU1DV3h2WTJGc2FHOXpkREVVTUJJR0ExVUVDZ3dMVUhKdlkybDJhWE1nUVVjeEhqQWNCZ05WQkFzTUZVTmxjblJwWm1sallYUmxJRUYxZEdodmNtbDBlVEVQTUEwR0ExVUVCd3dHV25WeWFXTm9NUXN3Q1FZRFZRUUdFd0pEU0RFaU1DQUdDU3FHU0liM0RRRUpBUllUYzNWd2NHOXlkRUJ3Y205amFYWnBjeTVqYURBZUZ3MHlOakF5TWpRd056VTJNREJhRncweU56QXlNalF3TURBd01EQmFNSUdPTVFzd0NRWURWUVFHRXdKRFNERVBNQTBHQTFVRUJ3d0dXblZ5YVdOb01SUXdFZ1lEVlFRS0RBdFFjbTlqYVhacGN5QkJSekVlTUJ3R0ExVUVDd3dWUTJWeWRHbG1hV05oZEdVZ1FYVjBhRzl5YVhSNU1SUXdFZ1lEVlFRRERBdHdjbTlqYVhacGN5NWphREVpTUNBR0NTcUdTSWIzRFFFSkFSWVRjM1Z3Y0c5eWRFQndjbTlqYVhacGN5NWphREFxTUFVR0F5dGxjQU1oQUVUZExiZmMyekZjU3kvWEtZYmMrNzRVQkc2ZEpqeWRiTk5QVUxOMEttazJvNElCd2pDQ0FiNHdId1lEVlIwakJCZ3dGb0FVN2ZUdEQ5M05udi81WlJUYTJad2ZGUm5JbEVzd0RBWURWUjBUQVFIL0JBSXdBREFkQmdOVkhRNEVGZ1FVYnhkRnFvQ0c0UGlzNFpXOXJVcjV6anQ4QXFvd2djZ0dDQ3NHQVFVRkJ3RUJCSUc3TUlHNE1Gb0dDQ3NHQVFVRkJ6QUJoazVvZEhSd09pOHZZMkV1WkdWMkxtMWtiQzF3YkhWekxtTnZiUzl2WTNOd0x6SkZPRFl5T1RjMVJrUXdPVEJGTVVZek5VRTJOelJEUlVGQk5FVTJRelUyUlRWQ05qYzNORGd2WTJWeWRDOHdXZ1lJS3dZQkJRVUhNQUtHVG1oMGRIQTZMeTlqWVM1a1pYWXViV1JzTFhCc2RYTXVZMjl0TDJsemMzVmxjaTh5UlRnMk1qazNOVVpFTURrd1JURkdNelZCTmpjMFEwVkJRVFJGTmtNMU5rVTFRalkzTnpRNExtUmxjakJaQmdOVkhSOEVVakJRTUU2Z1RLQktoa2hvZEhSd09pOHZZMkV1WkdWMkxtMWtiQzF3YkhWekxtTnZiUzlqY213dk1rVTROakk1TnpWR1JEQTVNRVV4UmpNMVFUWTNORU5GUVVFMFJUWkROVFpGTlVJMk56YzBPQzh3RlFZRFZSMGxBUUgvQkFzd0NRWUhLSUdNWFFVQkFqQU9CZ05WSFE4QkFmOEVCQU1DQjRBd0lRWURWUjBSQkJvd0dJSVdLaTVrWlhZdWNISnZZMmwyYVhNdGIyNWxMbU52YlRBS0JnZ3Foa2pPUFFRREFnTkhBREJFQWlBQTJxVERXN0lzZGxPcXVVcUZtbHBCK2V2L043cDFpZ0pXQlJPbTVGdGl3Z0lnUlJ5NXZ5RTJka2dBdzUvNmNWNG5wZUFydjYrQkpBSUk1dUdFVHp3L3RBbz0iXX0";
-const DUMMY_SIG: &str =
-    "eBzMCuKJ_SbiFEmt4yiuthWXPe2RUNpyRFD8TPW5cGVnzcVW6jG9aC3GeGREjNpQu2ZNt-xSNL6IxIO69cIsCg";
-fn dummy_reg_cert() -> String {
-    let reg_cert = WRPRegistrationCertificatePayload {
+fn dummy_reg_cert() -> JWTPayload<Payload> {
+    WRPRegistrationCertificatePayload {
         issued_at: None,
         expires_at: None,
         invalid_before: None,
@@ -716,7 +739,5 @@ fn dummy_reg_cert() -> String {
             support_uri: Url::parse("https://example.com").unwrap(),
             intermediary: None,
         },
-    };
-    let payload = string_to_b64url_string(&serde_json::to_string(&reg_cert).unwrap()).unwrap();
-    format!("{REG_CERT_HEADER}.{payload}.{DUMMY_SIG}")
+    }
 }

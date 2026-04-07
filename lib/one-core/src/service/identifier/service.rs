@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures::FutureExt;
@@ -42,8 +42,8 @@ use crate::model::trust_list_subscription::{
 };
 use crate::proto::identifier_creator::CreateLocalIdentifierRequest;
 use crate::proto::transaction_manager::IsolationLevel;
+use crate::proto::wrp_validator::error::WRPValidatorError;
 use crate::provider::blob_storage_provider::BlobStorageType;
-use crate::provider::signer::registration_certificate::model::WRPRegistrationCertificate;
 use crate::provider::trust_list_subscriber::{
     Feature, TrustEntityResponse, TrustListSubscriber, TrustListSubscriberCapabilities,
 };
@@ -312,11 +312,22 @@ impl IdentifierService {
             .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
             .error_while("getting blob storage")?;
         let now = OffsetDateTime::now_utc();
+
+        let rp_id = self.etsi_rp_id_for_identifier(identifier).await?;
         for trust_info in trust_information {
-            // TODO ONE-9252: Validate reg cert and consistency with access certs, if any
-            let registration_cert =
-                WRPRegistrationCertificate::decompose_token(trust_info.data.as_str())
-                    .error_while("parsing trust information")?;
+            let reg_cert_info = self
+                .wrp_validator
+                .validate_registration_certificate(
+                    &trust_info.data,
+                    rp_id.as_ref().ok_or_else(|| {
+                        IdentifierServiceError::InvalidTrustInformation(
+                            "No organization_id specified".to_string(),
+                        )
+                    })?,
+                    None,
+                )
+                .await
+                .error_while("validating registration certificate")?;
             let blob_id = Uuid::new_v4().into();
             blob_storage
                 .create(Blob {
@@ -334,22 +345,18 @@ impl IdentifierService {
                     id: Uuid::new_v4().into(),
                     created_date: now,
                     last_modified: now,
-                    valid_from: registration_cert.payload.invalid_before,
-                    valid_to: registration_cert.payload.expires_at,
-                    intended_use: registration_cert.payload.custom.intended_use_id,
+                    valid_from: reg_cert_info.payload.invalid_before,
+                    valid_to: reg_cert_info.payload.expires_at,
+                    intended_use: reg_cert_info.payload.custom.intended_use_id,
                     allowed_issuance_types: map_dcql_credentials(
-                        registration_cert
+                        reg_cert_info
                             .payload
                             .custom
                             .provides_attestations
                             .unwrap_or_default(),
                     )?,
                     allowed_verification_types: map_dcql_credentials(
-                        registration_cert
-                            .payload
-                            .custom
-                            .credentials
-                            .unwrap_or_default(),
+                        reg_cert_info.payload.custom.credentials.unwrap_or_default(),
                     )?,
                     identifier_id: identifier.id,
                     blob_id,
@@ -358,6 +365,34 @@ impl IdentifierService {
                 .error_while("creating trust information")?;
         }
         Ok(())
+    }
+
+    async fn etsi_rp_id_for_identifier(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<Option<String>, IdentifierServiceError> {
+        let mut rp_ids = HashSet::new();
+        for cert in identifier.certificates.iter().flatten() {
+            let result = self
+                .wrp_validator
+                .validate_access_certificate_trust(&cert.chain, None)
+                .await;
+            match result {
+                Ok(ac_info) => {
+                    rp_ids.insert(ac_info.rp_id);
+                }
+                Err(WRPValidatorError::MissingOrganisationIdentifier) => {
+                    // ignore this error, as the identifier might have additional certificates that are not access certificates
+                }
+                Err(err) => return Err(err.error_while("validating access cert").into()),
+            }
+        }
+        if rp_ids.len() > 1 {
+            return Err(IdentifierServiceError::InvalidTrustInformation(
+                "Conflicting organization identifier values specified".to_string(),
+            ));
+        };
+        Ok(rp_ids.into_iter().next())
     }
 
     /// Deletes an identifier

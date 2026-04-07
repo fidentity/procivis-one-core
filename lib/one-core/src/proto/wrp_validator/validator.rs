@@ -4,7 +4,7 @@ use shared_types::OrganisationId;
 
 use super::error::WRPValidatorError;
 use super::x509::rp_id_from_pem_chain;
-use super::{AccessCertificateTrustResult, RegistrationCertificateResult, WRPValidator};
+use super::{AccessCertificateResult, RegistrationCertificateResult, WRPValidator};
 use crate::error::ContextWithErrorCode;
 use crate::mapper::x509::x5c_into_pem_chain;
 use crate::model::did::KeyRole;
@@ -43,28 +43,34 @@ pub(crate) struct WRPValidatorImpl {
 
 #[async_trait::async_trait]
 impl WRPValidator for WRPValidatorImpl {
-    async fn get_access_certificate_trust(
+    async fn validate_access_certificate_trust(
         &self,
         pem_chain: &str,
-        organisation_id: OrganisationId,
-    ) -> Result<AccessCertificateTrustResult, WRPValidatorError> {
-        self.check_trust_management_enabled(organisation_id).await?;
+        validate_trust: Option<OrganisationId>,
+    ) -> Result<AccessCertificateResult, WRPValidatorError> {
+        let trust_entity = if let Some(organisation_id) = validate_trust {
+            self.check_trust_management_enabled(organisation_id).await?;
 
-        let subscriptions = self
-            .get_trust_subscriptions_for_role(TrustListRoleEnum::WrpAcProvider, organisation_id)
-            .await?;
+            let subscriptions = self
+                .get_trust_subscriptions_for_role(TrustListRoleEnum::WrpAcProvider, organisation_id)
+                .await?;
 
-        if let Some(trust_entity) = self
-            .find_matching_trust_entity(subscriptions, pem_chain)
-            .await?
-        {
-            return Ok(AccessCertificateTrustResult {
-                trust_entity,
-                rp_id: rp_id_from_pem_chain(pem_chain)?,
-            });
-        }
+            if let Some(trust_entity) = self
+                .find_matching_trust_entity(subscriptions, pem_chain)
+                .await?
+            {
+                Some(trust_entity)
+            } else {
+                return Err(WRPValidatorError::AccessCertificateNotTrusted);
+            }
+        } else {
+            None
+        };
 
-        Err(WRPValidatorError::AccessCertificateNotTrusted)
+        Ok(AccessCertificateResult {
+            trust_entity,
+            rp_id: rp_id_from_pem_chain(pem_chain)?,
+        })
     }
 
     async fn validate_registration_certificate(
@@ -87,6 +93,7 @@ impl WRPValidator for WRPValidatorImpl {
         if token
             .payload
             .subject
+            .as_ref()
             .is_none_or(|subject| subject != expected_rp_id)
         {
             return Err(WRPValidatorError::InvalidOrganisationIdentifier);
@@ -117,7 +124,7 @@ impl WRPValidator for WRPValidatorImpl {
         };
 
         Ok(RegistrationCertificateResult {
-            payload: token.payload.custom,
+            payload: token.payload,
             trust_entity,
         })
     }

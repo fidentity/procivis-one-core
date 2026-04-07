@@ -141,7 +141,7 @@ impl IdentifierCreatorProto {
             deleted_at: None,
             did: None,
             key: None,
-            certificates: None,
+            certificates: Some(certificates.clone()),
             trust_information: None,
         };
         self.identifier_repository
@@ -488,12 +488,13 @@ impl IdentifierCreatorProto {
             None => subject_common_name.ok_or(Error::MissingCertificateCommonName)?,
         };
 
+        let now = crate::clock::now_utc();
         Ok(Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
             organisation_id: Some(organisation_id),
-            created_date: crate::clock::now_utc(),
-            last_modified: crate::clock::now_utc(),
+            created_date: now,
+            last_modified: now,
             expiry_date: attributes.not_after,
             name,
             chain,

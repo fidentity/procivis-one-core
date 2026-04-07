@@ -24,7 +24,7 @@ use crate::proto::jwt::Jwt;
 use crate::proto::jwt::model::DecomposedJwt;
 use crate::proto::key_verification::KeyVerification;
 use crate::proto::session_provider::SessionExt;
-use crate::proto::wrp_validator::AccessCertificateTrustResult;
+use crate::proto::wrp_validator::AccessCertificateResult;
 use crate::proto::wrp_validator::error::WRPValidatorError;
 use crate::provider::credential_formatter::model::{
     CertificateDetails, IdentifierDetails, TokenVerifier,
@@ -499,10 +499,10 @@ impl OpenID4VPFinal1_0 {
         certificate: &CertificateDetails,
         proof_id: ProofId,
         organisation_id: OrganisationId,
-    ) -> Result<Option<AccessCertificateTrustResult>, VerificationProtocolError> {
+    ) -> Result<Option<AccessCertificateResult>, VerificationProtocolError> {
         let result = match self
             .wrp_validator
-            .get_access_certificate_trust(&certificate.chain, organisation_id)
+            .validate_access_certificate_trust(&certificate.chain, Some(organisation_id))
             .await
         {
             Ok(result) => result,
@@ -565,7 +565,7 @@ impl OpenID4VPFinal1_0 {
                 )
                 .await?;
 
-                if let Some(credentials) = trusted.payload.credentials {
+                if let Some(credentials) = trusted.payload.custom.credentials {
                     if reg_cert.credential_ids.is_empty() {
                         allowed_credentials
                             .entry(None)

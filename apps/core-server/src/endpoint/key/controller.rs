@@ -10,7 +10,6 @@ use shared_types::{KeyId, Permission};
 use super::dto::GetKeyQuery;
 use crate::dto::common::{EntityResponseRestDTO, GetKeyListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, OkOrErrorResponse};
 use crate::endpoint::key::dto::{
     KeyGenerateCSRRequestRestDTO, KeyGenerateCSRResponseRestDTO, KeyListItemResponseRestDTO,
@@ -114,37 +113,17 @@ pub(crate) async fn get_key_list(
     WithRejection(Qs(query), _): WithRejection<Qs<GetKeyQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetKeyListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)
-            .error_while("mapping organisation from session")?;
-        state
+        let value = state
             .core
             .key_service
-            .get_key_list(
-                &organisation_id,
-                query.try_into().error_while("mapping query")?,
-            )
+            .get_key_list(query.try_into()?)
             .await
+            .error_while("getting key list")?;
+        list_try_from::<KeyListItemResponseRestDTO, KeyListItemResponseDTO>(value)
+            .map_err(|error| ServiceError::MappingError(error.to_string()))
     }
     .await;
-
-    match result {
-        Err(error) => {
-            tracing::error!("Error while getting keys: {:?}", error);
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => {
-            match list_try_from::<KeyListItemResponseRestDTO, KeyListItemResponseDTO>(value) {
-                Ok(value) => OkOrErrorResponse::ok(value),
-                Err(error) => {
-                    tracing::error!("Error while encoding base64: {:?}", error);
-                    OkOrErrorResponse::from_error(
-                        &ServiceError::MappingError(error.to_string()),
-                        state.config.hide_error_response_cause,
-                    )
-                }
-            }
-        }
-    }
+    OkOrErrorResponse::from_result(result, state, "getting keys")
 }
 
 #[endpoint(

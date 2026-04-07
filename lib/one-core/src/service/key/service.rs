@@ -1,18 +1,19 @@
 use std::str::FromStr;
 
-use shared_types::{KeyId, OrganisationId};
+use shared_types::KeyId;
 use standardized_types::jwk::PrivateJwk;
 use uuid::Uuid;
 
 use super::KeyService;
-use super::dto::{GetKeyListResponseDTO, KeyRequestDTO};
+use super::dto::{GetKeyListResponseDTO, KeyFilterParamsDTO, KeyRequestDTO};
 use crate::config::core_config::KeyAlgorithmType;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
-use crate::model::key::{KeyListQuery, KeyRelations};
+use crate::model::key::{KeyRelations, SortableKeyColumn};
 use crate::model::organisation::OrganisationRelations;
 use crate::proto::session_provider::SessionExt;
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::error::ServiceError;
 use crate::service::key::dto::{
     KeyGenerateCSRRequestDTO, KeyGenerateCSRResponseDTO, KeyResponseDTO,
@@ -132,17 +133,20 @@ impl KeyService {
     ///
     /// # Arguments
     ///
-    /// * `query` - query parameters
+    /// * `filter_params` - query parameters
     pub async fn get_key_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: KeyListQuery,
+        filter_params: ListQueryDTO<SortableKeyColumn, KeyFilterParamsDTO>,
     ) -> Result<GetKeyListResponseDTO, KeyServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("validating organisation")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("validating organisation")?;
+
         let result = self
             .key_repository
-            .get_key_list(query)
+            .get_key_list(filter_params.into())
             .await
             .error_while("loading keys")?;
 

@@ -6,7 +6,6 @@ use proc_macros::endpoint;
 use shared_types::{Permission, WalletUnitId};
 
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::endpoint::wallet_provider::dto::{
     GetWalletUnitsResponseRestDTO, ListWalletUnitsQuery, WalletUnitResponseRestDTO,
@@ -34,12 +33,11 @@ pub(crate) async fn get_wallet_unit_list(
     WithRejection(Qs(query), _): WithRejection<Qs<ListWalletUnitsQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetWalletUnitsResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .wallet_provider_service
-                .get_wallet_unit_list(&organisation_id, query.try_into()?)
+                .get_wallet_unit_list(query.try_into()?)
                 .await
                 .error_while("getting wallet units")?,
         )

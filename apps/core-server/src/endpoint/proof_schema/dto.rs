@@ -1,3 +1,4 @@
+use one_core::model::proof_schema::ExactProofSchemaFilterColumn;
 use one_core::service::error::ServiceError;
 use one_core::service::proof_schema::dto::{
     CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, GetProofSchemaListItemDTO,
@@ -18,7 +19,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::common::ListQueryParamsRest;
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRestDTO, CredentialSchemaLayoutType,
@@ -191,6 +192,13 @@ pub(crate) struct ImportProofSchemaCredentialSchemaRestDTO {
 // list endpoint
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
+#[into(ExactProofSchemaFilterColumn)]
+pub(crate) enum ExactProofSchemaFilterColumnRestEnum {
+    Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
 #[into("one_core::model::proof_schema::SortableProofSchemaColumn")]
 pub(crate) enum SortableProofSchemaColumnRestEnum {
     Name,
@@ -222,7 +230,7 @@ pub(crate) struct ProofSchemasFilterQueryParamsRest {
     /// Set which filters apply in an exact way.
     #[try_into(with_fn = convert_inner_of_inner, infallible)]
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactProofSchemaFilterColumnRestEnum>>,
     /// Return only proof schemas which use only the specified credential formats.
     #[param(rename = "formats[]", inline, nullable = false)]
     #[try_into(infallible)]

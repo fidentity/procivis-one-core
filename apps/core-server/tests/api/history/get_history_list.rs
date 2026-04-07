@@ -492,3 +492,217 @@ async fn test_get_history_list_by_proof_id() {
     let values = resp["values"].as_array().unwrap();
     assert_eq!(2, values.len());
 }
+
+#[tokio::test]
+async fn test_get_history_search_by_credential_schema_name() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let issuer_did = context
+        .db
+        .dids
+        .create(Some(organisation.clone()), TestingDidParams::default())
+        .await;
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                did: Some(issuer_did.clone()),
+                r#type: Some(IdentifierType::Did),
+                is_remote: Some(issuer_did.did_type == DidType::Remote),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let schema = context
+        .db
+        .credential_schemas
+        .create("UniqueSchemaName", &organisation, None, Default::default())
+        .await;
+
+    let credential = context
+        .db
+        .credentials
+        .create(
+            &schema,
+            CredentialStateEnum::Accepted,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams::default(),
+        )
+        .await;
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Issued),
+                entity_id: Some(credential.id.into()),
+                entity_type: Some(HistoryEntityType::Credential),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // Unrelated history entry
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Created),
+                entity_id: Some(Uuid::new_v4().into()),
+                entity_type: Some(HistoryEntityType::Did),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN - search by credential schema name with specific type
+    let resp = context
+        .api
+        .histories
+        .list(
+            0,
+            10,
+            QueryParams {
+                organisation_ids: Some(vec![organisation.id]),
+                search_text: Some("UniqueSchemaName".to_string()),
+                search_type: Some("CREDENTIAL_SCHEMA_NAME".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+    let values = resp["values"].as_array().unwrap();
+    assert_eq!(1, values.len());
+}
+
+#[tokio::test]
+async fn test_get_history_search_defaults_to_all() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let issuer_did = context
+        .db
+        .dids
+        .create(Some(organisation.clone()), TestingDidParams::default())
+        .await;
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            &organisation,
+            TestingIdentifierParams {
+                did: Some(issuer_did.clone()),
+                r#type: Some(IdentifierType::Did),
+                is_remote: Some(issuer_did.did_type == DidType::Remote),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    let schema = context
+        .db
+        .credential_schemas
+        .create("SearchableSchema", &organisation, None, Default::default())
+        .await;
+
+    let credential = context
+        .db
+        .credentials
+        .create(
+            &schema,
+            CredentialStateEnum::Accepted,
+            &identifier,
+            "OPENID4VCI_DRAFT13",
+            TestingCredentialParams::default(),
+        )
+        .await;
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Issued),
+                entity_id: Some(credential.id.into()),
+                entity_type: Some(HistoryEntityType::Credential),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN - search with text only, no type (should default to ALL)
+    let resp = context
+        .api
+        .histories
+        .list(
+            0,
+            10,
+            QueryParams {
+                organisation_ids: Some(vec![organisation.id]),
+                search_text: Some("SearchableSchema".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+    let values = resp["values"].as_array().unwrap();
+    assert!(
+        !values.is_empty(),
+        "Expected search to find history entries matching schema name"
+    );
+}
+
+#[tokio::test]
+async fn test_get_history_search_no_match() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    context
+        .db
+        .histories
+        .create(
+            &organisation,
+            TestingHistoryParams {
+                action: Some(HistoryAction::Created),
+                entity_id: Some(Uuid::new_v4().into()),
+                entity_type: Some(HistoryEntityType::Credential),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN - search for something that doesn't exist
+    let resp = context
+        .api
+        .histories
+        .list(
+            0,
+            10,
+            QueryParams {
+                organisation_ids: Some(vec![organisation.id]),
+                search_text: Some("NonExistentSearchTerm12345".to_string()),
+                search_type: Some("CREDENTIAL_SCHEMA_NAME".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+    let values = resp["values"].as_array().unwrap();
+    assert_eq!(0, values.len());
+}

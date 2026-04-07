@@ -1,11 +1,11 @@
 use one_dto_mapper::{From, Into};
 use serde::{Deserialize, Serialize};
-use shared_types::OrganisationId;
+use shared_types::{KeyId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::model::common::{GetListQueryParams, GetListResponse};
-use crate::model::key::{Key, SortableKeyColumn};
+use crate::model::common::GetListResponse;
+use crate::model::key::{ExactKeyFilterColumn, Key};
 
 pub struct KeyRequestDTO {
     pub organisation_id: OrganisationId,
@@ -46,7 +46,21 @@ pub struct KeyListItemResponseDTO {
 }
 
 pub type GetKeyListResponseDTO = GetListResponse<KeyListItemResponseDTO>;
-pub type GetKeyQueryDTO = GetListQueryParams<SortableKeyColumn>;
+
+#[derive(Clone, Debug)]
+pub struct KeyFilterParamsDTO {
+    pub name: Option<String>,
+    pub key_types: Option<Vec<String>>,
+    pub key_storages: Option<Vec<String>>,
+    pub ids: Option<Vec<KeyId>>,
+    pub exact: Option<Vec<ExactKeyFilterColumn>>,
+    pub is_remote: Option<bool>,
+    pub organisation_id: OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
 
 #[derive(Debug, Clone, Into)]
 #[into(crate::proto::csr_creator::GenerateCsrRequest)]

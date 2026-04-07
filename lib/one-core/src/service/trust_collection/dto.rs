@@ -5,8 +5,8 @@ use shared_types::{
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::model::common::{ExactColumn, GetListResponse};
-use crate::model::trust_collection::TrustCollection;
+use crate::model::common::GetListResponse;
+use crate::model::trust_collection::{ExactTrustCollectionFilterColumn, TrustCollection};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{TrustListSubscription, TrustListSubscriptionState};
 
@@ -84,7 +84,7 @@ pub struct TrustListSubscriptionListItemResponseDTO {
 pub struct TrustCollectionFilterParamsDTO {
     pub name: Option<String>,
     pub ids: Option<Vec<TrustCollectionId>>,
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactTrustCollectionFilterColumn>>,
     pub organisation_id: OrganisationId,
     pub created_date_after: Option<OffsetDateTime>,
     pub created_date_before: Option<OffsetDateTime>,

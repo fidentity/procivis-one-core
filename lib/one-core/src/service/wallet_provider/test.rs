@@ -17,9 +17,7 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::key::Key;
 use crate::model::organisation::Organisation;
-use crate::model::wallet_unit::{
-    WalletProviderType, WalletUnit, WalletUnitListQuery, WalletUnitOs, WalletUnitStatus,
-};
+use crate::model::wallet_unit::{WalletProviderType, WalletUnit, WalletUnitOs, WalletUnitStatus};
 use crate::proto::certificate_validator::MockCertificateValidator;
 use crate::proto::clock::DefaultClock;
 use crate::proto::jwt::Jwt;
@@ -41,9 +39,12 @@ use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
 use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
 use crate::repository::wallet_unit_repository::MockWalletUnitRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{dummy_organisation, generic_config, get_dummy_date};
 use crate::service::wallet_provider::WalletProviderService;
-use crate::service::wallet_provider::dto::RegisterWalletUnitRequestDTO;
+use crate::service::wallet_provider::dto::{
+    RegisterWalletUnitRequestDTO, WalletUnitFilterParamsDTO,
+};
 
 const BASE_URL: &str = "https://localhost";
 
@@ -358,15 +359,24 @@ async fn provider_wallet_unit_ops_session_org_mismatch() {
 
     // when
     let result = service
-        .get_wallet_unit_list(
-            &Uuid::new_v4().into(),
-            WalletUnitListQuery {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_wallet_unit_list(ListQueryDTO {
+            page: 0,
+            page_size: 1,
+            sort: None,
+            sort_direction: None,
+            filter: WalletUnitFilterParamsDTO {
+                name: None,
+                ids: None,
+                status: None,
+                os: None,
+                wallet_provider_type: None,
+                attestation: None,
+                organisation_id: Uuid::new_v4().into(),
+                created_date_after: None,
+                created_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     // then

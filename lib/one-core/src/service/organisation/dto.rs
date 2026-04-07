@@ -3,7 +3,7 @@ use shared_types::{IdentifierId, OrganisationId};
 use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
-use crate::model::organisation::UpdateOrganisationRequest;
+use crate::model::organisation::{ExactOrganisationFilterColumn, UpdateOrganisationRequest};
 use crate::service::identifier::dto::GetIdentifierListItemResponseDTO;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,3 +35,13 @@ pub struct GetOrganisationDetailsResponseDTO {
 
 pub type OrganisationListItemResponseDTO = GetOrganisationDetailsResponseDTO;
 pub type GetOrganisationListResponseDTO = GetListResponse<OrganisationListItemResponseDTO>;
+
+#[derive(Clone, Debug, Default)]
+pub struct OrganisationFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactOrganisationFilterColumn>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}

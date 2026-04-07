@@ -240,6 +240,19 @@ pub struct GetWalletUnitResponseDTO {
 pub type GetWalletUnitListResponseDTO = GetListResponse<GetWalletUnitResponseDTO>;
 
 #[derive(Clone, Debug)]
+pub struct WalletUnitFilterParamsDTO {
+    pub name: Option<String>,
+    pub ids: Option<Vec<shared_types::WalletUnitId>>,
+    pub status: Option<Vec<WalletUnitStatus>>,
+    pub os: Option<Vec<WalletUnitOs>>,
+    pub wallet_provider_type: Option<Vec<String>>,
+    pub attestation: Option<String>,
+    pub organisation_id: shared_types::OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
 pub struct WalletProviderMetadataResponseDTO {
     pub wallet_unit_attestation: WalletUnitAttestationMetadataDTO,
     pub name: String,

@@ -1,6 +1,7 @@
 use one_core::model::credential::{CredentialListIncludeEntityTypeEnum, SortableCredentialColumn};
 use one_core::model::credential_schema::SortableCredentialSchemaColumn;
 use one_core::model::did::SortableDidColumn;
+use one_core::model::history::SortableHistoryColumn;
 use one_core::model::identifier::SortableIdentifierColumn;
 use one_core::model::proof::SortableProofColumn;
 use one_core::model::proof_schema::SortableProofSchemaColumn;
@@ -23,7 +24,9 @@ use one_core::service::did::dto::{
     CreateDidRequestDTO, CreateDidRequestKeysDTO, DidFilterParamsDTO,
 };
 use one_core::service::error::ServiceError;
-use one_core::service::history::dto::{HistoryMetadataResponse, HistoryResponseDTO};
+use one_core::service::history::dto::{
+    HistoryFilterParamsDTO, HistoryMetadataResponse, HistoryResponseDTO,
+};
 use one_core::service::identifier::dto::{
     CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, IdentifierFilterParamsDTO,
 };
@@ -60,7 +63,8 @@ use super::credential_schema::{
 };
 use super::did::{DidListQueryBindingDTO, DidRequestBindingDTO, DidRequestKeysBindingDTO};
 use super::history::{
-    HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryMetadataBinding,
+    HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryListQueryBindingDTO,
+    HistoryMetadataBinding,
 };
 use super::identifier::{CreateIdentifierDidRequestBindingDTO, IdentifierListQueryBindingDTO};
 use super::interaction::{HandleInvitationResponseBindingEnum, InitiateIssuanceRequestBindingDTO};
@@ -565,9 +569,42 @@ pub(crate) fn optional_time(value: Option<OffsetDateTime>) -> Option<String> {
     value.as_ref().map(TimestampFormat::format_timestamp)
 }
 
-pub(crate) fn deserialize_timestamp(value: &str) -> Result<OffsetDateTime, ServiceError> {
-    OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| ServiceError::ValidationError(e.to_string()))
+impl TryFrom<HistoryListQueryBindingDTO>
+    for ListQueryDTO<SortableHistoryColumn, HistoryFilterParamsDTO>
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: HistoryListQueryBindingDTO) -> Result<Self, Self::Error> {
+        let (search_type, search_query) = match value.search {
+            Some(s) => (convert_inner(s.r#type), Some(s.text)),
+            None => (None, None),
+        };
+
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: HistoryFilterParamsDTO {
+                organisation_ids: Some(vec![into_id(&value.organisation_id)?]),
+                entity_ids: into_id_opt_vec(&value.entity_ids)?,
+                entity_types: convert_inner_of_inner(value.entity_types),
+                actions: convert_inner_of_inner(value.actions),
+                identifier_id: into_id_opt(value.identifier_id)?,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                credential_id: into_id_opt(value.credential_id)?,
+                credential_schema_id: into_id_opt(value.credential_schema_id)?,
+                proof_id: into_id_opt(value.proof_id)?,
+                proof_schema_id: into_id_opt(value.proof_schema_id)?,
+                users: value.users,
+                sources: None,
+                search_query,
+                search_type,
+            },
+            include: None,
+        })
+    }
 }
 
 pub(crate) fn optional_identifier_id_string(

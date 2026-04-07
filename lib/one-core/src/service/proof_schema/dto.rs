@@ -6,10 +6,10 @@ use shared_types::{
 };
 use time::OffsetDateTime;
 
-use crate::model::common::{ExactColumn, GetListResponse};
+use crate::model::common::GetListResponse;
 use crate::model::credential_schema::{KeyStorageSecurity, LayoutType};
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
-use crate::model::proof_schema::ProofSchema;
+use crate::model::proof_schema::{ExactProofSchemaFilterColumn, ProofSchema};
 use crate::service::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaListItemResponseDTO,
 };
@@ -31,7 +31,7 @@ impl ListFilterValue for ProofSchemaFilterValue {}
 #[derive(Clone, Debug)]
 pub struct ProofSchemaFilterParamsDTO {
     pub name: Option<String>,
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactProofSchemaFilterColumn>>,
     pub organisation_id: OrganisationId,
     pub ids: Option<Vec<ProofSchemaId>>,
     pub formats: Option<Vec<String>>,

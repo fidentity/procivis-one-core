@@ -15,7 +15,6 @@ use crate::config::core_config::{DatatypeConfig, DatatypeType};
 use crate::error::ContextWithErrorCode;
 use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
 use crate::model::claim_schema::ClaimSchema;
-use crate::model::common::ExactColumn;
 use crate::model::credential_schema::CredentialSchema;
 use crate::model::list_filter::{
     ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
@@ -24,7 +23,8 @@ use crate::model::list_filter::{
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
 use crate::model::proof_schema::{
-    ProofInputClaimSchema, ProofInputSchema, ProofSchema, ProofSchemaListQuery,
+    ExactProofSchemaFilterColumn, ProofInputClaimSchema, ProofInputSchema, ProofSchema,
+    ProofSchemaListQuery,
 };
 
 pub(super) fn convert_proof_schema_to_response(
@@ -406,7 +406,7 @@ impl From<ProofSchemaFilterParamsDTO> for ListFilterCondition<ProofSchemaFilterV
 
         let name = value.name.map(|name| {
             ProofSchemaFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactColumn::Name),
+                r#match: get_string_match_type(ExactProofSchemaFilterColumn::Name),
                 value: name,
             })
         });

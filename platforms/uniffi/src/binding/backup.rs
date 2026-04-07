@@ -261,6 +261,8 @@ mod tests {
             .list_history(HistoryListQueryBindingDTO {
                 page: 0,
                 page_size: 1,
+                sort: None,
+                sort_direction: None,
                 organisation_id,
                 entity_ids: None,
                 entity_types: Some(vec![HistoryEntityTypeBindingEnum::Backup]),
@@ -270,6 +272,7 @@ mod tests {
                 identifier_id: None,
                 credential_id: None,
                 credential_schema_id: None,
+                proof_id: None,
                 proof_schema_id: None,
                 search: None,
                 users: None,

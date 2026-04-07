@@ -1,16 +1,12 @@
 use one_core::model::history::{
-    HistoryAction, HistoryEntityType, HistoryFilterValue, HistoryListQuery, HistorySearchEnum,
+    HistoryAction, HistoryEntityType, HistorySearchEnum, SortableHistoryColumn,
 };
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterCondition, ListFilterValue, ValueComparison,
-};
-use one_core::model::list_query::ListPagination;
 use one_core::service::history::dto::GetHistoryListResponseDTO;
 use one_dto_mapper::{From, Into, convert_inner};
 use serde::{Deserialize, Serialize};
 
 use super::backup::UnexportableEntitiesBindingDTO;
-use super::mapper::deserialize_timestamp;
+use super::common::SortDirection;
 use crate::OneCore;
 use crate::error::BindingError;
 use crate::utils::into_id;
@@ -39,87 +35,9 @@ impl OneCore {
     ) -> Result<HistoryListBindingDTO, BindingError> {
         let core = self.use_core().await?;
 
-        let mut conditions = vec![
-            HistoryFilterValue::OrganisationIds(vec![into_id(&query.organisation_id)?]).condition(),
-        ];
-
-        if let Some(value) = query.entity_ids {
-            conditions.push(
-                HistoryFilterValue::EntityIds(
-                    value
-                        .into_iter()
-                        .map(|entity_id| into_id(&entity_id))
-                        .collect::<Result<Vec<_>, _>>()?,
-                )
-                .condition(),
-            );
-        }
-        if let Some(value) = query.entity_types {
-            conditions.push(
-                HistoryFilterValue::EntityTypes(
-                    value
-                        .into_iter()
-                        .map(|entity_type| entity_type.into())
-                        .collect(),
-                )
-                .condition(),
-            );
-        }
-        if let Some(values) = query.actions {
-            conditions.push(HistoryFilterValue::Actions(convert_inner(values)).condition());
-        }
-        if let Some(value) = query.identifier_id {
-            conditions.push(HistoryFilterValue::IdentifierId(into_id(&value)?).condition());
-        }
-        if let Some(value) = query.created_date_after {
-            conditions.push(
-                HistoryFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-        if let Some(value) = query.created_date_before {
-            conditions.push(
-                HistoryFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&value)?,
-                })
-                .condition(),
-            );
-        }
-        if let Some(value) = query.credential_id {
-            conditions.push(HistoryFilterValue::CredentialId(into_id(&value)?).condition());
-        }
-        if let Some(value) = query.credential_schema_id {
-            conditions.push(HistoryFilterValue::CredentialSchemaId(into_id(&value)?).condition());
-        }
-
-        if let Some(value) = query.search {
-            conditions.push(search_query_to_filter_value(value).condition());
-        }
-
-        if let Some(proof_schema_id) = query.proof_schema_id {
-            conditions
-                .push(HistoryFilterValue::ProofSchemaId(into_id(&proof_schema_id)?).condition());
-        }
-
-        if let Some(users) = query.users {
-            conditions.push(HistoryFilterValue::Users(users).condition());
-        }
-
         Ok(core
             .history_service
-            .get_history_list(HistoryListQuery {
-                pagination: Some(ListPagination {
-                    page: query.page,
-                    page_size: query.page_size,
-                }),
-                sorting: None,
-                filtering: Some(ListFilterCondition::And(conditions)),
-                include: None,
-            })
+            .get_history_list(query.try_into()?)
             .await?
             .into())
     }
@@ -232,6 +150,18 @@ pub struct HistoryListItemBindingDTO {
     pub user: Option<String>,
 }
 
+#[derive(Clone, Debug, Into, uniffi::Enum)]
+#[into(SortableHistoryColumn)]
+#[uniffi(name = "SortableHistoryColumn")]
+pub enum SortableHistoryColumnBindingEnum {
+    CreatedDate,
+    Action,
+    EntityType,
+    Source,
+    User,
+    OrganisationId,
+}
+
 #[derive(Clone, Debug, uniffi::Record)]
 #[uniffi(name = "HistoryListQuery")]
 pub struct HistoryListQueryBindingDTO {
@@ -239,6 +169,10 @@ pub struct HistoryListQueryBindingDTO {
     pub page: u32,
     /// Number of items to return per page.
     pub page_size: u32,
+    /// Field value to sort results by.
+    pub sort: Option<SortableHistoryColumnBindingEnum>,
+    /// Direction to sort results by.
+    pub sort_direction: Option<SortDirection>,
     /// Specifies the organizational context for this operation.
     pub organisation_id: String,
     /// Return only events associated with the provided entity IDs.
@@ -259,6 +193,8 @@ pub struct HistoryListQueryBindingDTO {
     pub credential_id: Option<String>,
     /// Return only events associated with the provided credential schema ID.
     pub credential_schema_id: Option<String>,
+    /// Return only events associated with the provided proof ID.
+    pub proof_id: Option<String>,
     /// Return only events associated with the provided proof schema ID.
     pub proof_schema_id: Option<String>,
     /// Search for a string.
@@ -281,6 +217,7 @@ pub struct HistoryListBindingDTO {
 #[into(HistorySearchEnum)]
 #[uniffi(name = "HistorySearchType")]
 pub enum HistorySearchTypeBindingEnum {
+    All,
     ClaimName,
     ClaimValue,
     CredentialSchemaName,
@@ -296,11 +233,4 @@ pub enum HistorySearchTypeBindingEnum {
 pub struct HistorySearchBindingDTO {
     pub text: String,
     pub r#type: Option<HistorySearchTypeBindingEnum>,
-}
-
-fn search_query_to_filter_value(value: HistorySearchBindingDTO) -> HistoryFilterValue {
-    match value.r#type {
-        Some(search_type) => HistoryFilterValue::SearchQuery(value.text, search_type.into()),
-        None => HistoryFilterValue::SearchQuery(value.text, HistorySearchEnum::All),
-    }
 }

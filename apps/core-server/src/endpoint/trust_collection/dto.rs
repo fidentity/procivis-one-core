@@ -1,4 +1,6 @@
-use one_core::model::trust_collection::SortableTrustCollectionColumn;
+use one_core::model::trust_collection::{
+    ExactTrustCollectionFilterColumn, SortableTrustCollectionColumn,
+};
 use one_core::model::trust_list_role::TrustListRoleEnum;
 use one_core::model::trust_list_subscription::{
     SortableTrustListSubscriptionColumn, TrustListSubscriptionState,
@@ -20,7 +22,7 @@ use time::OffsetDateTime;
 use url::Url;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::dto::common::{ExactColumn, GetListResponseRestDTO, ListQueryParamsRest};
+use crate::dto::common::{GetListResponseRestDTO, ListQueryParamsRest};
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::serialize::front_time;
 
@@ -77,6 +79,13 @@ pub(crate) type ListTrustCollectionEntitiesQuery = ListQueryParamsRest<
     SortableTrustCollectionColumnRestEnum,
 >;
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
+#[into(ExactTrustCollectionFilterColumn)]
+pub(crate) enum ExactTrustCollectionFilterColumnRestEnum {
+    Name,
+}
+
 #[derive(Clone, Debug, Deserialize, ToSchema, IntoParams, TryInto)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetTrustCollectionListQuery
 #[try_into(T = TrustCollectionFilterParamsDTO, Error = ServiceError)]
@@ -99,7 +108,7 @@ pub(crate) struct TrustCollectionFilterQueryParamsRestDTO {
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
     #[try_into(infallible, with_fn = convert_inner_of_inner)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactTrustCollectionFilterColumnRestEnum>>,
     /// Return only trust lists created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, with = "time::serde::rfc3339::option")]

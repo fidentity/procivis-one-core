@@ -5,7 +5,7 @@ use shared_types::{IdentifierId, OrganisationId};
 use super::OrganisationService;
 use super::dto::{
     CreateOrganisationRequestDTO, GetOrganisationDetailsResponseDTO,
-    GetOrganisationListResponseDTO, UpsertOrganisationRequestDTO,
+    GetOrganisationListResponseDTO, OrganisationFilterParamsDTO, UpsertOrganisationRequestDTO,
 };
 use super::error::OrganisationServiceError;
 use super::mapper::detail_from_model;
@@ -13,18 +13,19 @@ use super::validator::{validate_wallet_provider, validate_wallet_provider_issuer
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::model::identifier::{Identifier, IdentifierFilterValue, IdentifierListQuery};
 use crate::model::list_filter::ListFilterValue;
-use crate::model::organisation::{OrganisationListQuery, OrganisationRelations};
+use crate::model::organisation::{OrganisationRelations, SortableOrganisationColumn};
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 
 impl OrganisationService {
     /// Returns all existing organisations
     pub async fn get_organisation_list(
         &self,
-        query: OrganisationListQuery,
+        filter_params: ListQueryDTO<SortableOrganisationColumn, OrganisationFilterParamsDTO>,
     ) -> Result<GetOrganisationListResponseDTO, OrganisationServiceError> {
         let organisations = self
             .organisation_repository
-            .get_organisation_list(query)
+            .get_organisation_list(filter_params.into())
             .await
             .error_while("getting organisations")?;
 

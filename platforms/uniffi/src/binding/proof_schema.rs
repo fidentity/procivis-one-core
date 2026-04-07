@@ -1,5 +1,4 @@
-use one_core::model::common::ExactColumn;
-use one_core::model::proof_schema::SortableProofSchemaColumn;
+use one_core::model::proof_schema::{ExactProofSchemaFilterColumn, SortableProofSchemaColumn};
 use one_core::service::error::ServiceError;
 use one_core::service::proof_schema::dto::{
     GetProofSchemaListItemDTO, GetProofSchemaListResponseDTO, GetProofSchemaResponseDTO,
@@ -316,7 +315,7 @@ pub struct CreateProofSchemaClaimRequestDTO {
 }
 
 #[derive(Clone, Debug, Into, PartialEq, uniffi::Enum)]
-#[into(ExactColumn)]
+#[into(ExactProofSchemaFilterColumn)]
 #[uniffi(name = "ProofSchemaListQueryExactColumn")]
 pub enum ProofSchemaListQueryExactColumnBinding {
     Name,

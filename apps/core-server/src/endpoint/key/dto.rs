@@ -1,10 +1,12 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
+use one_core::model::key::ExactKeyFilterColumn;
 use one_core::service::error::ServiceError;
 use one_core::service::key::dto::{
-    KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile, KeyGenerateCSRRequestSubjectDTO,
-    KeyGenerateCSRResponseDTO, KeyListItemResponseDTO, KeyRequestDTO, KeyResponseDTO,
+    KeyFilterParamsDTO, KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile,
+    KeyGenerateCSRRequestSubjectDTO, KeyGenerateCSRResponseDTO, KeyListItemResponseDTO,
+    KeyRequestDTO, KeyResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryFrom, TryInto};
+use one_dto_mapper::{From, Into, TryFrom, TryInto, convert_inner, convert_inner_of_inner};
 use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
 use shared_types::{KeyId, OrganisationId};
@@ -12,7 +14,7 @@ use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{Boolean, ExactColumn, ListQueryParamsRest};
+use crate::dto::common::{Boolean, ListQueryParamsRest};
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::mapper::MapperError;
 use crate::serialize::front_time;
@@ -117,53 +119,72 @@ pub(crate) enum SortableKeyColumnRestDTO {
     StorageType,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = KeyFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetKeyQuery
 pub(crate) struct KeyFilterQueryParamsRest {
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Return all keys with a name starting with this string. Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Return only keys using the specified algorithms.
     #[param(rename = "keyTypes[]", nullable = false, example = json!(["EDDSA"]))]
+    #[try_into(infallible)]
     pub key_types: Option<Vec<String>>,
     /// Return only keys using the specified storage types.
     /// Possible values come from your configuration.
     #[param(rename = "keyStorages[]", nullable = false)]
+    #[try_into(infallible)]
     pub key_storages: Option<Vec<String>>,
     /// Filter by specific UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<KeyId>>,
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
+    pub exact: Option<Vec<ExactKeyFilterColumnRestEnum>>,
     /// Return only keys being a remote.
     #[param(inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner)]
     pub is_remote: Option<Boolean>,
     /// Return only keys created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only keys created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only keys last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only keys last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
+#[into(ExactKeyFilterColumn)]
+pub(crate) enum ExactKeyFilterColumnRestEnum {
+    Name,
 }
 
 pub(crate) type GetKeyQuery =

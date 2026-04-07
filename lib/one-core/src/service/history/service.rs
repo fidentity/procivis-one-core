@@ -1,11 +1,14 @@
 use shared_types::HistoryId;
 
 use super::HistoryService;
-use super::dto::{CreateHistoryRequestDTO, GetHistoryListResponseDTO, HistoryResponseDTO};
+use super::dto::{
+    CreateHistoryRequestDTO, GetHistoryListResponseDTO, HistoryFilterParamsDTO, HistoryResponseDTO,
+};
 use super::error::HistoryServiceError;
 use crate::error::ContextWithErrorCode;
-use crate::model::history::{History, HistoryListQuery, HistorySource};
+use crate::model::history::{History, HistorySource, SortableHistoryColumn};
 use crate::proto::session_provider::SessionExt;
+use crate::service::common_dto::ListQueryDTO;
 
 impl HistoryService {
     /// Returns history list filtered by query
@@ -15,16 +18,21 @@ impl HistoryService {
     /// * `query` - Query to filter list entities
     pub async fn get_history_list(
         &self,
-        query: HistoryListQuery,
+        filter_params: ListQueryDTO<SortableHistoryColumn, HistoryFilterParamsDTO>,
     ) -> Result<GetHistoryListResponseDTO, HistoryServiceError> {
         let history_list = self
             .history_repository
-            .get_history_list(query)
+            .get_history_list(filter_params.into())
             .await
             .error_while("getting history list")?;
         Ok(history_list.into())
     }
 
+    /// Returns details of a history entry
+    ///
+    /// # Arguments
+    ///
+    /// * `history_id` - Id of an existing history entry
     #[tracing::instrument(level = "debug", skip(self), err(Debug))]
     pub async fn get_history_entry(
         &self,

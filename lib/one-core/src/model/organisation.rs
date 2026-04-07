@@ -43,6 +43,11 @@ pub enum OrganisationFilterValue {
 
 impl ListFilterValue for OrganisationFilterValue {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactOrganisationFilterColumn {
+    Name,
+}
+
 pub type OrganisationListQuery = ListQuery<SortableOrganisationColumn, OrganisationFilterValue>;
 
 pub type GetOrganisationList = GetListResponse<Organisation>;

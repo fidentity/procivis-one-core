@@ -97,13 +97,6 @@ pub(crate) enum SortDirection {
     Descending,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, ToSchema, Into)]
-#[into("one_core::model::common::ExactColumn")]
-pub(crate) enum ExactColumn {
-    #[serde(rename = "name")]
-    Name,
-}
-
 #[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EntityResponseRestDTO {

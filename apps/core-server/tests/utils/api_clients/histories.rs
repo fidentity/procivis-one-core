@@ -19,6 +19,8 @@ pub struct QueryParams {
     pub sources: Option<Vec<HistorySource>>,
     pub users: Option<Vec<String>>,
     pub show_system_history: Option<bool>,
+    pub search_text: Option<String>,
+    pub search_type: Option<String>,
 }
 
 impl HistoriesApi {
@@ -86,6 +88,12 @@ impl HistoriesApi {
         }
         if let Some(proof_id) = filter.proof_id {
             url.push_str(&format!("&proofId={proof_id}"));
+        }
+        if let Some(search_text) = &filter.search_text {
+            url.push_str(&format!("&searchText={search_text}"));
+        }
+        if let Some(search_type) = &filter.search_type {
+            url.push_str(&format!("&searchType={search_type}"));
         }
 
         self.client.get(&url).await

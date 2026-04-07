@@ -20,6 +20,7 @@ use super::dto::{
     RegisterWalletUnitRequestDTO, RegisterWalletUnitResponseDTO, WalletInstanceAttestationClaims,
     WalletProviderMetadataResponseDTO, WalletProviderParams, WalletRegistrationRequirement,
     WalletUnitActivationRequestDTO, WalletUnitAttestationClaims, WalletUnitAttestationMetadataDTO,
+    WalletUnitFilterParamsDTO,
 };
 use super::error::WalletProviderError;
 use super::mapper::{
@@ -42,12 +43,13 @@ use crate::model::history::{
 use crate::model::identifier::{IdentifierRelations, IdentifierType};
 use crate::model::key::KeyRelations;
 use crate::model::list_filter::ListFilterValue;
+use crate::model::list_query::{ListPagination, ListSorting};
 use crate::model::organisation::{Organisation, OrganisationRelations};
 use crate::model::revocation_list::RevocationListRelations;
 use crate::model::trust_collection::{TrustCollectionFilterValue, TrustCollectionListQuery};
 use crate::model::wallet_unit::{
-    UpdateWalletUnitRequest, WalletUnit, WalletUnitListQuery, WalletUnitOs, WalletUnitRelations,
-    WalletUnitStatus,
+    SortableWalletUnitColumn, UpdateWalletUnitRequest, WalletUnit, WalletUnitListQuery,
+    WalletUnitOs, WalletUnitRelations, WalletUnitStatus,
 };
 use crate::model::wallet_unit_attested_key::{
     WalletUnitAttestedKey, WalletUnitAttestedKeyRelations, WalletUnitAttestedKeyRevocationInfo,
@@ -64,6 +66,7 @@ use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::revocation::RevocationMethod;
 use crate::provider::revocation::model::{CredentialRevocationInfo, RevocationState};
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::error::MissingProviderError;
 use crate::util::key_selection::KeyFilter;
 use crate::validator::{
@@ -111,11 +114,34 @@ impl WalletProviderService {
     /// * `query` - query parameters
     pub async fn get_wallet_unit_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: WalletUnitListQuery,
+        filter_params: ListQueryDTO<SortableWalletUnitColumn, WalletUnitFilterParamsDTO>,
     ) -> Result<GetWalletUnitListResponseDTO, WalletProviderError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
+        // We can't use the From impl to convert the ListQueryDto to a ListQuery
+        // because the filter param conversion involves computing a sha256 hash, which is faliable (unlike other cases)
+        let filtering = filter_params
+            .filter
+            .try_into()
+            .error_while("mapping filter query")?;
+
+        let query = WalletUnitListQuery {
+            pagination: Some(ListPagination {
+                page: filter_params.page,
+                page_size: filter_params.page_size,
+            }),
+            sorting: filter_params.sort.map(|column| ListSorting {
+                column,
+                direction: filter_params.sort_direction,
+            }),
+            filtering: Some(filtering),
+            include: None,
+        };
+
         let result = self
             .wallet_unit_repository
             .get_wallet_unit_list(query)

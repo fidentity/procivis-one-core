@@ -6,7 +6,7 @@ use similar_asserts::assert_eq;
 use uuid::Uuid;
 
 use super::OrganisationService;
-use super::dto::CreateOrganisationRequestDTO;
+use super::dto::{CreateOrganisationRequestDTO, OrganisationFilterParamsDTO};
 use super::error::OrganisationServiceError;
 use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::organisation::{
@@ -15,6 +15,7 @@ use crate::model::organisation::{
 use crate::repository::error::DataLayerError;
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::dummy_organisation;
 
 fn setup_service(organisation_repository: MockOrganisationRepository) -> OrganisationService {
@@ -140,7 +141,14 @@ async fn test_get_organisation_list_success() {
 
     let service = setup_service(organisation_repository);
     let result = service
-        .get_organisation_list(OrganisationListQuery::default())
+        .get_organisation_list(ListQueryDTO {
+            page: 0,
+            page_size: 10,
+            sort: None,
+            sort_direction: None,
+            filter: OrganisationFilterParamsDTO::default(),
+            include: None,
+        })
         .await;
 
     assert!(result.is_ok());
@@ -160,7 +168,14 @@ async fn test_get_organisation_list_failure() {
 
     let service = setup_service(organisation_repository);
     let result = service
-        .get_organisation_list(OrganisationListQuery::default())
+        .get_organisation_list(ListQueryDTO {
+            page: 0,
+            page_size: 10,
+            sort: None,
+            sort_direction: None,
+            filter: OrganisationFilterParamsDTO::default(),
+            include: None,
+        })
         .await;
 
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0054);

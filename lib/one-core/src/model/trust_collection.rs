@@ -46,6 +46,11 @@ pub enum SortableTrustCollectionColumn {
 
 impl ListFilterValue for TrustCollectionFilterValue {}
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTrustCollectionFilterColumn {
+    Name,
+}
+
 pub type TrustCollectionListQuery =
     ListQuery<SortableTrustCollectionColumn, TrustCollectionFilterValue>;
 

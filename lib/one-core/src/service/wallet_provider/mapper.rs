@@ -1,21 +1,28 @@
 use std::collections::HashMap;
 
+use one_crypto::Hasher;
+use one_crypto::hasher::sha256::SHA256;
 use standardized_types::jwk::PublicJwk;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{
     DisplayNameDTO, EudiWalletGeneralInfo, EudiWalletInfo, EudiWalletInfoConfig,
-    RegisterWalletUnitRequestDTO, WscdInfo,
+    RegisterWalletUnitRequestDTO, WalletUnitFilterParamsDTO, WscdInfo,
 };
 use super::error::WalletProviderError;
 use crate::config::core_config::WalletProviderType;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::organisation::Organisation;
-use crate::model::wallet_unit::{WalletUnit, WalletUnitStatus};
+use crate::model::wallet_unit::{WalletUnit, WalletUnitFilterValue, WalletUnitStatus};
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::key_algorithm::provider::{KeyAlgorithmProvider, ParsedKey};
 use crate::repository::error::DataLayerError;
+use crate::service::error::ServiceError;
 
 pub(crate) fn wallet_unit_from_request(
     request: RegisterWalletUnitRequestDTO,
@@ -93,4 +100,65 @@ pub(super) fn params_into_display_names(params: HashMap<String, String>) -> Vec<
         .into_iter()
         .map(|(lang, value)| DisplayNameDTO { lang, value })
         .collect()
+}
+
+impl TryFrom<WalletUnitFilterParamsDTO> for ListFilterCondition<WalletUnitFilterValue> {
+    type Error = ServiceError;
+
+    fn try_from(value: WalletUnitFilterParamsDTO) -> Result<Self, Self::Error> {
+        let organisation_id =
+            WalletUnitFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            WalletUnitFilterValue::Name(StringMatch {
+                r#match: StringMatchType::StartsWith,
+                value: name,
+            })
+        });
+
+        let ids = value.ids.map(WalletUnitFilterValue::Ids);
+
+        let status = value.status.map(WalletUnitFilterValue::Status);
+
+        let os = value.os.map(WalletUnitFilterValue::Os);
+
+        let attestation = value
+            .attestation
+            .map(|attestation| {
+                let attestation_hash = SHA256.hash_base64(attestation.as_bytes()).map_err(|e| {
+                    ServiceError::MappingError(format!(
+                        "Could not hash wallet unit attestation: {e}"
+                    ))
+                })?;
+                Ok::<_, ServiceError>(WalletUnitFilterValue::AttestationHash(attestation_hash))
+            })
+            .transpose()?;
+
+        let wallet_provider_type = value
+            .wallet_provider_type
+            .map(WalletUnitFilterValue::WalletProviderType);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            WalletUnitFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            WalletUnitFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        Ok(organisation_id
+            & name
+            & ids
+            & status
+            & os
+            & wallet_provider_type
+            & attestation
+            & created_date_after
+            & created_date_before)
+    }
 }

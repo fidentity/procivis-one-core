@@ -6,12 +6,13 @@ use super::dto::{
     TrustCollectionFilterParamsDTO, TrustCollectionPublicResponseDTO,
     TrustListSubscriptionExactColumn, TrustListSubscriptionFilterParamsDTO,
 };
-use crate::model::common::ExactColumn;
 use crate::model::list_filter::{
     ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
     ValueComparison,
 };
-use crate::model::trust_collection::{TrustCollection, TrustCollectionFilterValue};
+use crate::model::trust_collection::{
+    ExactTrustCollectionFilterColumn, TrustCollection, TrustCollectionFilterValue,
+};
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::model::trust_list_subscription::{
     TrustListSubscription, TrustListSubscriptionFilterValue, TrustListSubscriptionState,
@@ -84,7 +85,7 @@ impl From<TrustCollectionFilterParamsDTO> for ListFilterCondition<TrustCollectio
 
         let name = value.name.map(|name| {
             TrustCollectionFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactColumn::Name),
+                r#match: get_string_match_type(ExactTrustCollectionFilterColumn::Name),
                 value: name,
             })
         });

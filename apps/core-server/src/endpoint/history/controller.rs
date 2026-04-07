@@ -74,9 +74,7 @@ pub(crate) async fn get_history_list(
             state
                 .core
                 .history_service
-                .get_history_list(query.try_into().map_err(|e: std::convert::Infallible| {
-                    ServiceError::MappingError(e.to_string())
-                })?)
+                .get_history_list(query.try_into()?)
                 .await
                 .error_while("getting history list")?,
         )

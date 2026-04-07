@@ -1,7 +1,9 @@
 use one_core::model::wallet_unit::SortableWalletUnitColumn;
+use one_core::service::error::ServiceError;
 use one_core::service::wallet_provider::dto;
+use one_core::service::wallet_provider::dto::WalletUnitFilterParamsDTO;
 use one_core::service::wallet_unit::dto::{WalletProviderType, WalletUnitOs, WalletUnitStatus};
-use one_dto_mapper::{From, Into, convert_inner};
+use one_dto_mapper::{From, Into, TryInto, convert_inner, convert_inner_of_inner};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{OrganisationId, WalletUnitId};
@@ -11,6 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::deserialize::deserialize_timestamp;
 use crate::dto::common::ListQueryParamsRest;
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::serialize::{front_time, front_time_option};
 pub(crate) type ListWalletUnitsQuery =
     ListQueryParamsRest<WalletUnitFilterQueryParamsRestDTO, SortableWalletUnitColumnRest>;
@@ -80,41 +83,51 @@ pub(crate) enum WalletProviderTypeRestEnum {
     ProcivisOne,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = WalletUnitFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside ListWalletUnitsQuery
 pub(crate) struct WalletUnitFilterQueryParamsRestDTO {
-    /// Required when not using STS authentication mode. Specifies the
-    /// organizational context for this operation. When using STS
-    /// authentication, this value is derived from the token.
-    #[param(nullable = false)]
-    pub organisation_id: Option<OrganisationId>,
     /// Return only wallet units with a name starting with this string.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by specific wallet unit UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<WalletUnitId>>,
     /// Return only wallet units with the specified status.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "status[]", inline, nullable = false)]
     pub status: Option<Vec<WalletUnitStatusRestEnum>>,
     /// Return only wallet units with the specified operating systems.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "os[]", inline, nullable = false)]
     pub os: Option<Vec<WalletUnitOsRestEnum>>,
     /// Return only wallet units with the specified wallet provider types.
     #[param(rename = "walletProviderType[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub wallet_provider_type: Option<Vec<String>>,
     /// Return only the wallet unit with the specified attestation.
     #[param(rename = "attestation", inline, nullable = false)]
+    #[try_into(infallible)]
     pub attestation: Option<String>,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
+    pub organisation_id: Option<OrganisationId>,
     /// Return only wallet units created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only wallet units created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
 }
 

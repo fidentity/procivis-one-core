@@ -38,6 +38,11 @@ pub struct ProofInputClaimSchema {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactProofSchemaFilterColumn {
+    Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SortableProofSchemaColumn {
     Name,
     CreatedDate,

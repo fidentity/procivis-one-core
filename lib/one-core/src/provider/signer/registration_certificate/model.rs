@@ -151,7 +151,7 @@ pub struct Status {
     pub status_list: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Credential {
     pub format: CredentialFormat,
@@ -159,7 +159,7 @@ pub struct Credential {
     pub claim: Option<Vec<Claim>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {
     pub path: dcql::ClaimPath,

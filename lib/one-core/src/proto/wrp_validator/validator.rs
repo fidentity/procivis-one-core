@@ -30,7 +30,6 @@ use crate::repository::trust_collection_repository::TrustCollectionRepository;
 use crate::repository::trust_list_subscription_repository::TrustListSubscriptionRepository;
 use crate::service::error::MissingProviderError;
 
-#[expect(unused)]
 pub(crate) struct WRPValidatorImpl {
     trust_collection_repository: Arc<dyn TrustCollectionRepository>,
     trust_list_subscription_repository: Arc<dyn TrustListSubscriptionRepository>,
@@ -154,9 +153,18 @@ impl WRPValidatorImpl {
         pem_chain: &str,
     ) -> Result<Option<TrustEntityResponse>, WRPValidatorError> {
         for subscription in subscriptions {
-            if let Some(trust_entity) = self
-                .check_subscription_match(subscription, pem_chain)
-                .await?
+            let subscriber = self
+                .trust_list_subscriber_provider
+                .get(&subscription.r#type)
+                .ok_or(MissingProviderError::TrustListSubscriber(
+                    subscription.r#type,
+                ))
+                .error_while("getting trust list subscriber")?;
+
+            if let Some(trust_entity) = subscriber
+                .resolve_certificate(&subscription.reference.parse()?, pem_chain)
+                .await
+                .error_while("resolving access certificate trust")?
             {
                 return Ok(Some(trust_entity));
             }
@@ -228,24 +236,5 @@ impl WRPValidatorImpl {
             .await
             .error_while("getting trust list subscriptions")?
             .values)
-    }
-
-    async fn check_subscription_match(
-        &self,
-        subscription: TrustListSubscription,
-        pem_chain: &str,
-    ) -> Result<Option<TrustEntityResponse>, WRPValidatorError> {
-        let subscriber = self
-            .trust_list_subscriber_provider
-            .get(&subscription.r#type)
-            .ok_or(MissingProviderError::TrustListSubscriber(
-                subscription.r#type,
-            ))
-            .error_while("getting trust list subscriber")?;
-
-        Ok(subscriber
-            .resolve_certificate(&subscription.reference.parse()?, pem_chain)
-            .await
-            .error_while("resolving access certificate trust")?)
     }
 }

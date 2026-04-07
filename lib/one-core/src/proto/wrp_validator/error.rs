@@ -1,7 +1,6 @@
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
 
 #[derive(Debug, thiserror::Error)]
-#[expect(unused)]
 pub(crate) enum WRPValidatorError {
     #[error("Trust management disabled")]
     TrustManagementDisabled,

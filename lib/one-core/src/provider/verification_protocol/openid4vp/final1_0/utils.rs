@@ -1,14 +1,17 @@
 use core::str;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
+use dcql::DcqlQuery;
 use serde_json::json;
 use shared_types::{DidValue, OrganisationId, ProofId};
 use standardized_types::openid4vp::PresentationFormat;
 use url::Url;
 use uuid::Uuid;
 
-use super::mappers::decode_client_id_with_scheme;
-use super::model::{AuthorizationRequest, AuthorizationRequestQueryParams};
+use super::mappers::{credential_query_matches_reg_cert_credential, decode_client_id_with_scheme};
+use super::model::{
+    AuthorizationRequest, AuthorizationRequestQueryParams, VerifierInfoAttestation,
+};
 use super::{OpenID4VPFinal1_0, encode_client_id_with_scheme};
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::x509::{pem_chain_into_x5c, x5c_into_pem_chain};
@@ -21,11 +24,13 @@ use crate::proto::jwt::Jwt;
 use crate::proto::jwt::model::DecomposedJwt;
 use crate::proto::key_verification::KeyVerification;
 use crate::proto::session_provider::SessionExt;
+use crate::proto::wrp_validator::AccessCertificateTrustResult;
 use crate::proto::wrp_validator::error::WRPValidatorError;
 use crate::provider::credential_formatter::model::{
     CertificateDetails, IdentifierDetails, TokenVerifier,
 };
 use crate::provider::did_method::error::DidMethodError;
+use crate::provider::signer::registration_certificate;
 use crate::provider::verification_protocol::openid4vp::VerificationProtocolError;
 use crate::provider::verification_protocol::openid4vp::model::{
     ClientIdScheme, OpenID4VCVerifierAttestationPayload, OpenID4VPClientMetadata,
@@ -413,9 +418,22 @@ impl OpenID4VPFinal1_0 {
 
         if self.params.holder.trust_ecosystems_enabled {
             // check access certificate trust
-            if let Some(IdentifierDetails::Certificate(access_certificate)) = &verifier_details {
-                self.handle_access_certificate(access_certificate, proof_id, organisation_id)
-                    .await?;
+            if let Some(IdentifierDetails::Certificate(access_certificate)) = &verifier_details
+                && let Some(access_certificate_trust) = self
+                    .handle_access_certificate(access_certificate, proof_id, organisation_id)
+                    .await?
+            {
+                // check query against registration certificates
+                self.handle_registration_certificates(
+                    &referenced_params.verifier_info,
+                    referenced_params.dcql_query.as_ref().ok_or(
+                        VerificationProtocolError::InvalidRequest("missing dcql_query".to_string()),
+                    )?,
+                    &access_certificate_trust.rp_id,
+                    proof_id,
+                    organisation_id,
+                )
+                .await?;
             }
         }
 
@@ -481,19 +499,20 @@ impl OpenID4VPFinal1_0 {
         certificate: &CertificateDetails,
         proof_id: ProofId,
         organisation_id: OrganisationId,
-    ) -> Result<(), VerificationProtocolError> {
-        if let Err(err) = self
+    ) -> Result<Option<AccessCertificateTrustResult>, VerificationProtocolError> {
+        let result = match self
             .wrp_validator
             .get_access_certificate_trust(&certificate.chain, organisation_id)
             .await
         {
-            return match err {
-                WRPValidatorError::TrustManagementDisabled => {
-                    // trust management disabled, skipping checks and history creation
-                    Ok(())
-                }
-                err => Err(err.error_while("checking access certificate trust").into()),
-            };
+            Ok(result) => result,
+            Err(WRPValidatorError::TrustManagementDisabled) => {
+                // trust management disabled, skipping other checks and history creation
+                return Ok(None);
+            }
+            Err(err) => {
+                return Err(err.error_while("checking access certificate trust").into());
+            }
         };
 
         let certificate = pem_chain_into_x5c(&certificate.chain)
@@ -509,6 +528,82 @@ impl OpenID4VPFinal1_0 {
             certificate,
         )
         .await?;
+
+        Ok(Some(result))
+    }
+
+    async fn handle_registration_certificates(
+        &self,
+        verifier_info: &[VerifierInfoAttestation],
+        dcql_query: &DcqlQuery,
+        expected_rp_id: &str,
+        proof_id: ProofId,
+        organisation_id: OrganisationId,
+    ) -> Result<(), VerificationProtocolError> {
+        let mut allowed_credentials: HashMap<
+            Option<dcql::CredentialQueryId>,
+            Vec<registration_certificate::model::Credential>,
+        > = HashMap::new();
+        for reg_cert in verifier_info {
+            if let Ok(trusted) = self
+                .wrp_validator
+                .validate_registration_certificate(
+                    &reg_cert.data,
+                    expected_rp_id,
+                    Some(organisation_id),
+                )
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!(%err, "Provided registration certificate validation failure");
+                })
+            {
+                self.store_certificate_history_event(
+                    HistoryAction::WrpRcReceived,
+                    proof_id,
+                    organisation_id,
+                    reg_cert.data.to_owned(),
+                )
+                .await?;
+
+                if let Some(credentials) = trusted.payload.credentials {
+                    if reg_cert.credential_ids.is_empty() {
+                        allowed_credentials
+                            .entry(None)
+                            .or_default()
+                            .extend(credentials);
+                    } else {
+                        for credential_id in &reg_cert.credential_ids {
+                            allowed_credentials
+                                .entry(Some(credential_id.to_owned()))
+                                .or_default()
+                                .extend(credentials.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+
+        for credential_query in &dcql_query.credentials {
+            let empty = vec![];
+            let mut related_reg_cert_credentials = allowed_credentials
+                .get(&None)
+                .unwrap_or(&empty)
+                .iter()
+                .chain(
+                    allowed_credentials
+                        .get(&Some(credential_query.id.to_owned()))
+                        .unwrap_or(&empty),
+                );
+
+            let query_matched = related_reg_cert_credentials
+                .any(|c| credential_query_matches_reg_cert_credential(credential_query, c));
+
+            if !query_matched {
+                return Err(VerificationProtocolError::DisallowedQuery(
+                    credential_query.id.to_owned(),
+                ));
+            }
+        }
 
         Ok(())
     }

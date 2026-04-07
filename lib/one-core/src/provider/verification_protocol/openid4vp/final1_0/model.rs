@@ -113,7 +113,7 @@ pub(crate) struct VerifierInfoAttestation {
     pub format: VerifierInfoAttestationFormat,
     pub data: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credential_ids: Vec<String>,
+    pub credential_ids: Vec<dcql::CredentialQueryId>,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize, Debug)]

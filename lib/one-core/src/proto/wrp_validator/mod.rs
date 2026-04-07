@@ -30,7 +30,6 @@ pub(crate) trait WRPValidator: Send + Sync {
         organisation_id: OrganisationId,
     ) -> Result<AccessCertificateTrustResult, WRPValidatorError>;
 
-    #[expect(unused)]
     async fn validate_registration_certificate(
         &self,
         wrprc_jwt: &str,

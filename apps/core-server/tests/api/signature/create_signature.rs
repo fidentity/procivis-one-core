@@ -456,7 +456,7 @@ async fn test_create_signature_access_certificate_natural_person_success() {
     let leaf_cert = certs.first().unwrap();
     assert_eq!(
         leaf_cert.subject.to_string(),
-        "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, givenName=Max, surname=Muster"
+        "C=CH, OID(2.5.4.81)=https://some-url.com, CN=common name, serialNumber=orgId, givenName=Max, surname=Muster"
     );
     assert!(leaf_cert.validity.not_before < ASN1Time::now());
     // expires in ~ 5 years
@@ -521,7 +521,7 @@ async fn test_create_signature_access_certificate_legal_person_success() {
     let leaf_cert = certs.first().unwrap();
     assert_eq!(
         leaf_cert.subject.to_string(),
-        "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, O=Org name"
+        "C=CH, OID(2.5.4.81)=https://some-url.com, CN=common name, OID(2.5.4.97)=orgId, O=Org name"
     );
     assert!(leaf_cert.validity.not_before < ASN1Time::now());
     // expires in ~ 5 years

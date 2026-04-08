@@ -10,7 +10,7 @@ use standardized_types::openid4vp::{GenericAlgs, PresentationFormat};
 use url::Url;
 use uuid::Uuid;
 use wiremock::http::Method;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::utils::context::TestContext;
@@ -2357,7 +2357,15 @@ async fn test_handle_invitation_fails_authorization_code_authorization_server_no
 async fn test_handle_invitation_endpoint_for_openid4vc_final1_0_with_oauth_authorization_server_metadata()
  {
     let mock_server = MockServer::start().await;
-    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let additional_config = Some(indoc::formatdoc! {"
+            issuanceProtocol:
+              OPENID4VCI_FINAL1:
+                params:
+                  public:
+                    requestSignedMetadata: false
+        "});
+    let (context, organisation) = TestContext::new_with_organisation(additional_config).await;
 
     let credential_schema_id = Uuid::new_v4();
     let credential_issuer = format!(
@@ -2387,6 +2395,7 @@ async fn test_handle_invitation_endpoint_for_openid4vc_final1_0_with_oauth_autho
         .and(path(format!(
             "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{credential_schema_id}"
         )))
+        .and(header("Accept", "application/json"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!(
             {
                 "credential_endpoint": format!("{credential_issuer}/credential"),

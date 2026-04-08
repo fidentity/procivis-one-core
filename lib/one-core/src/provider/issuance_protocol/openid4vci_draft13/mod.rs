@@ -776,7 +776,7 @@ impl IssuanceProtocol for OpenID4VCI13 {
                 append_well_known(&credential_issuer, ".well-known/openid-credential-issuer")?;
             let content = self
                 .metadata_cache
-                .fetch::<serde_json::Value>(&metadata_url)
+                .fetch_json::<serde_json::Value>(&metadata_url)
                 .await
                 .error_while("fetching issuer metadata")?;
 
@@ -1988,7 +1988,7 @@ async fn get_discovery_and_issuer_metadata(
         )?;
         Ok(
             if let Ok(oidc_discovery) = fetcher
-                .fetch::<OAuthAuthorizationServerMetadata>(&url)
+                .fetch_json::<OAuthAuthorizationServerMetadata>(&url)
                 .await
             {
                 oidc_discovery
@@ -2013,7 +2013,7 @@ async fn get_discovery_and_issuer_metadata(
         )?;
 
         Ok(fetcher
-            .fetch::<OpenID4VCIIssuerMetadataResponseDTO>(&url)
+            .fetch_json::<OpenID4VCIIssuerMetadataResponseDTO>(&url)
             .await
             .error_while("getting issuer metadata")?)
     };

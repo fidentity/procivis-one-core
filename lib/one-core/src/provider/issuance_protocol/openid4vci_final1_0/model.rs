@@ -48,7 +48,6 @@ pub(crate) struct OpenID4VCIFinal1Params {
 
     pub key_attestation_leeway: u64,
 
-    #[expect(unused)] // TODO: ONE-9264: use during metadata request
     pub request_signed_metadata: bool,
 
     #[serde(flatten)]

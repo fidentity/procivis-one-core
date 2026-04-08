@@ -596,9 +596,9 @@ async fn test_handle_invitation_proof_success() {
     let mut metadata_cache = MockOpenIDMetadataFetcher::new();
     metadata_cache
         .expect_get()
-        .with(eq(client_metadata_uri.clone()))
+        .with(eq(client_metadata_uri.clone()), eq("application/json"))
         .once()
-        .returning(move |_| Ok(client_metadata.to_string().into_bytes()));
+        .returning(move |_, _| Ok(client_metadata.to_string().into_bytes()));
 
     let url_using_uri_instead_of_values = Url::parse(&format!("openid4vp://?response_type=vp_token&nonce={nonce}&client_id_scheme=redirect_uri&client_id={callback_url}&client_metadata_uri={client_metadata_uri}&response_mode=direct_post&response_uri={callback_url}&presentation_definition_uri={presentation_definition_uri}")).unwrap();
 

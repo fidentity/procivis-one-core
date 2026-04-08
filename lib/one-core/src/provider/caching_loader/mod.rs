@@ -11,6 +11,7 @@
 
 use std::cmp::min;
 use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ use super::remote_entity_storage::{
 use crate::error::{
     ContextWithErrorCode, ErrorCode, ErrorCodeMixin, ErrorCodeMixinExt, NestedError,
 };
+use crate::proto::jwt::TokenError;
 
 pub mod android_attestation_crl;
 pub mod etsi_lote;
@@ -47,6 +49,11 @@ pub trait Resolver: Send + Sync {
 pub enum CacheError {
     #[error("Failed cached value serialization: {0}")]
     SerdeJson(#[from] serde_json::Error),
+    #[error("Failed cached value serialization: {0}")]
+    FromUtf8Error(#[from] FromUtf8Error),
+    #[error("Failed cached value serialization: {0}")]
+    TokenError(#[from] TokenError),
+
     #[error("Failed cache hashing: {0}")]
     Hasher(#[from] one_crypto::HasherError),
 
@@ -73,6 +80,9 @@ pub enum ResolverError {
 
     #[error("Unexpected resolve result")]
     UnexpectedResolveResult,
+
+    #[error("Mapping error: {0}")]
+    MappingError(String),
 
     #[error(transparent)]
     Nested(#[from] NestedError),

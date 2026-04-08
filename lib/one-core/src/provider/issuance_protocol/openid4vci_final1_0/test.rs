@@ -1373,11 +1373,12 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
             .expect_get()
             .with(eq(format!(
                 "{issuer_url}.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}"
-            )))
+            )),
+            eq("application/json"))
             .once()
             .returning({
                     let credential_issuer = credential_issuer.clone();
-                    move |_| Ok(json!({
+                    move |_,_| Ok(json!({
                         "authorization_endpoint": format!("{credential_issuer}/authorize"),
                         "grant_types_supported": [
                             "urn:ietf:params:oauth:grant-type:pre-authorized_code"
@@ -1399,9 +1400,10 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
         .expect_get()
         .with(eq(format!(
             "{issuer_url}.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{credential_schema_id}"
-        )))
+        )),
+    eq("application/json"))
         .once()
-        .returning(move |_| Ok(json!({
+        .returning(move |_,_| Ok(json!({
             "credential_endpoint": format!("{credential_issuer}/credential"),
             "credential_issuer": credential_issuer,
             "nonce_endpoint": format!("{credential_issuer}/nonce"),
@@ -1489,11 +1491,12 @@ async fn inner_continue_issuance_test(with_scope: bool, with_credential_configur
 
     metadata_cache
         .expect_get()
-        .with(eq(format!("http://issuer/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}")))
+        .with(eq(format!("http://issuer/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}")),
+    eq("application/json"))
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_,_| {
                 Ok(json!({
                     "authorization_endpoint": format!("{credential_issuer}/authorize"),
                     "grant_types_supported": [
@@ -1519,11 +1522,12 @@ async fn inner_continue_issuance_test(with_scope: bool, with_credential_configur
         .expect_get()
         .with(eq(format!(
             "http://issuer/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{credential_schema_id}"
-        )))
+        )),
+        eq("application/json"))
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_,_| {
                 Ok(json!({
                     "credential_endpoint": format!("{credential_issuer}/credential"),
                     "credential_issuer": credential_issuer,
@@ -1656,8 +1660,11 @@ async fn test_can_handle_issuance_success_with_custom_url_scheme() {
     let mut metadata_cache = MockOpenIDMetadataFetcher::new();
     metadata_cache
         .expect_get()
-        .with(eq("http://base_url/.well-known/openid-credential-issuer"))
-        .returning(|_| Ok(dummy_issuer_metadata()));
+        .with(
+            eq("http://base_url/.well-known/openid-credential-issuer"),
+            eq("application/json"),
+        )
+        .returning(|_, _| Ok(dummy_issuer_metadata()));
 
     let protocol = setup_protocol(TestInputs {
         params: Some(test_params(url_scheme)),

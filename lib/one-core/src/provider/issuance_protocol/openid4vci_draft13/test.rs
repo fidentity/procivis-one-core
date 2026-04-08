@@ -1571,13 +1571,16 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
         let token_endpoint = format!("{credential_issuer}/token");
         metadata_cache
             .expect_get()
-            .with(eq(format!(
-                "{credential_issuer}/.well-known/oauth-authorization-server"
-            )))
+            .with(
+                eq(format!(
+                    "{credential_issuer}/.well-known/oauth-authorization-server"
+                )),
+                eq("application/json"),
+            )
             .once()
             .returning({
                 let credential_issuer = credential_issuer.clone();
-                move |_| {
+                move |_, _| {
                     Ok(json!({
                             "authorization_endpoint": format!("{credential_issuer}/authorize"),
                             "grant_types_supported": [
@@ -1602,11 +1605,14 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
     } else {
         metadata_cache
             .expect_get()
-            .with(eq(format!(
-                "{credential_issuer}/.well-known/oauth-authorization-server"
-            )))
+            .with(
+                eq(format!(
+                    "{credential_issuer}/.well-known/oauth-authorization-server"
+                )),
+                eq("application/json"),
+            )
             .once()
-            .returning(|_| {
+            .returning(|_, _| {
                 Err(ResolverError::InvalidResponse("".to_string())
                     .error_while("checking cache")
                     .into())
@@ -1615,11 +1621,14 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
 
     metadata_cache
         .expect_get()
-        .with(eq(format!(
-            "{credential_issuer}/.well-known/openid-credential-issuer"
-        )))
+        .with(
+            eq(format!(
+                "{credential_issuer}/.well-known/openid-credential-issuer"
+            )),
+            eq("application/json"),
+        )
         .once()
-        .returning(move |_| {
+        .returning(move |_, _| {
             Ok(json!({
                 "credential_endpoint": format!("{credential_issuer}/credential"),
                 "credential_issuer": credential_issuer,
@@ -1732,11 +1741,11 @@ async fn inner_continue_issuance_test(
     if openid_configuration_enabled {
         metadata_cache
             .expect_get()
-            .with(eq(auth_server_metadata_url))
+            .with(eq(auth_server_metadata_url), eq("application/json"))
             .once()
             .returning({
                 let credential_issuer = credential_issuer.clone();
-                move |_| {
+                move |_, _| {
                     Ok(json!({
                         "authorization_endpoint": format!("{credential_issuer}/authorize"),
                         "grant_types_supported": [
@@ -1760,9 +1769,9 @@ async fn inner_continue_issuance_test(
     } else {
         metadata_cache
             .expect_get()
-            .with(eq(auth_server_metadata_url))
+            .with(eq(auth_server_metadata_url), eq("application/json"))
             .once()
-            .returning(|_| {
+            .returning(|_, _| {
                 Err(ResolverError::InvalidResponse("".to_string())
                     .error_while("checking cache")
                     .into())
@@ -1771,13 +1780,16 @@ async fn inner_continue_issuance_test(
 
     metadata_cache
         .expect_get()
-        .with(eq(format!(
-            "{credential_issuer}/.well-known/openid-credential-issuer"
-        )))
+        .with(
+            eq(format!(
+                "{credential_issuer}/.well-known/openid-credential-issuer"
+            )),
+            eq("application/json"),
+        )
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_, _| {
                 Ok(json!({
                     "credential_endpoint": format!("{credential_issuer}/credential"),
                     "credential_issuer": credential_issuer,
@@ -2590,8 +2602,11 @@ async fn test_can_handle_issuance_success_with_custom_url_scheme() {
     let mut metadata_cache = MockOpenIDMetadataFetcher::new();
     metadata_cache
         .expect_get()
-        .with(eq("http://base_url/.well-known/openid-credential-issuer"))
-        .returning(|_| Ok(dummy_issuer_metadata()));
+        .with(
+            eq("http://base_url/.well-known/openid-credential-issuer"),
+            eq("application/json"),
+        )
+        .returning(|_, _| Ok(dummy_issuer_metadata()));
 
     let protocol = setup_protocol(TestInputs {
         params: Some(test_params(url_scheme)),

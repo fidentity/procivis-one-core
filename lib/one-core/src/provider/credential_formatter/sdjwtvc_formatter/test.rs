@@ -870,6 +870,190 @@ async fn test_extract_credentials_with_cnf_no_subject() {
     );
 }
 
+#[tokio::test]
+async fn test_extract_credentials_example_b1() {
+    // https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-08.html#appendix-B.1
+    let token = "eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImRjK3NkLWp3dCJ9.eyJfc2QiOiBbIjBIWm1uU0lQejMzN2tTV2U3QzM0bC0tODhnekppLWVCSjJWel9ISndBVGciLCAiOVpicGxDN1RkRVc3cWFsNkJCWmxNdHFKZG1lRU9pWGV2ZEpsb1hWSmRSUSIsICJJMDBmY0ZVb0RYQ3VjcDV5eTJ1anFQc3NEVkdhV05pVWxpTnpfYXdEMGdjIiwgIklFQllTSkdOaFhJbHJRbzU4eWtYbTJaeDN5bGw5WmxUdFRvUG8xN1FRaVkiLCAiTGFpNklVNmQ3R1FhZ1hSN0F2R1RyblhnU2xkM3o4RUlnX2Z2M2ZPWjFXZyIsICJodkRYaHdtR2NKUXNCQ0EyT3RqdUxBY3dBTXBEc2FVMG5rb3ZjS09xV05FIiwgImlrdXVyOFE0azhxM1ZjeUE3ZEMtbU5qWkJrUmVEVFUtQ0c0bmlURTdPVFUiLCAicXZ6TkxqMnZoOW80U0VYT2ZNaVlEdXZUeWtkc1dDTmcwd1RkbHIwQUVJTSIsICJ3elcxNWJoQ2t2a3N4VnZ1SjhSRjN4aThpNjRsbjFqb183NkJDMm9hMXVnIiwgInpPZUJYaHh2SVM0WnptUWNMbHhLdUVBT0dHQnlqT3FhMXoySW9WeF9ZRFEiXSwgImlzcyI6ICJodHRwczovL2V4YW1wbGUuY29tL2lzc3VlciIsICJpYXQiOiAxNjgzMDAwMDAwLCAiZXhwIjogMTg4MzAwMDAwMCwgInZjdCI6ICJodHRwczovL2JtaS5idW5kLmV4YW1wbGUvY3JlZGVudGlhbC9waWQvMS4wIiwgImFnZV9lcXVhbF9vcl9vdmVyIjogeyJfc2QiOiBbIkZjOElfMDdMT2NnUHdyREpLUXlJR085N3dWc09wbE1Makh2UkM0UjQtV2ciLCAiWEx0TGphZFVXYzl6Tl85aE1KUm9xeTQ2VXNDS2IxSXNoWnV1cVVGS1NDQSIsICJhb0NDenNDN3A0cWhaSUFoX2lkUkNTQ2E2NDF1eWNuYzh6UGZOV3o4bngwIiwgImYxLVAwQTJkS1dhdnYxdUZuTVgyQTctRVh4dmhveHY1YUhodUVJTi1XNjQiLCAiazVoeTJyMDE4dnJzSmpvLVZqZDZnNnl0N0Fhb25Lb25uaXVKOXplbDNqbyIsICJxcDdaX0t5MVlpcDBzWWdETzN6VnVnMk1GdVBOakh4a3NCRG5KWjRhSS1jIl19LCAiX3NkX2FsZyI6ICJzaGEtMjU2IiwgImNuZiI6IHsiandrIjogeyJrdHkiOiAiRUMiLCAiY3J2IjogIlAtMjU2IiwgIngiOiAiVENBRVIxOVp2dTNPSEY0ajRXNHZmU1ZvSElQMUlMaWxEbHM3dkNlR2VtYyIsICJ5IjogIlp4amlXV2JaTVFHSFZXS1ZRNGhiU0lpcnNWZnVlY0NFNnQ0alQ5RjJIWlEifX19.GpFPbIEEgUGopARZQ0IyasBufd1KzTqq7qTjfla0PDmAlGD9W56MfhVGysuuq0FPv-hnLD7EU43r5ybMxWTQhw~WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImdpdmVuX25hbWUiLCAiRXJpa2EiXQ~WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImZhbWlseV9uYW1lIiwgIk11c3Rlcm1hbm4iXQ~WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImJpcnRoZGF0ZSIsICIxOTYzLTA4LTEyIl0~WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInNvdXJjZV9kb2N1bWVudF90eXBlIiwgImlkX2NhcmQiXQ~WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgInN0cmVldF9hZGRyZXNzIiwgIkhlaWRlc3RyYVx1MDBkZmUgMTciXQ~WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImxvY2FsaXR5IiwgIktcdTAwZjZsbiJd~WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgInBvc3RhbF9jb2RlIiwgIjUxMTQ3Il0~WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgImNvdW50cnkiLCAiREUiXQ~WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgImFkZHJlc3MiLCB7Il9zZCI6IFsiWEZjN3pYUG03enpWZE15d20yRXVCZmxrYTVISHF2ZjhVcF9zek5HcXZpZyIsICJiZDFFVnpnTm9wVWs0RVczX2VRMm4zX05VNGl1WE9IdjlYYkdITjNnMVRFIiwgImZfRlFZZ3ZRV3Z5VnFObklYc0FSbE55ZTdZR3A4RTc3Z1JBamFxLXd2bnciLCAidjRra2JfcFAxamx2VWJTanR5YzVicWNXeUEtaThYTHZoVllZN1pUMHRiMCJdfV0~WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgIm5hdGlvbmFsaXRpZXMiLCBbIkRFIl1d~WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImdlbmRlciIsICJmZW1hbGUiXQ~WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgImJpcnRoX2ZhbWlseV9uYW1lIiwgIkdhYmxlciJd~WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgImxvY2FsaXR5IiwgIkJlcmxpbiJd~WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgInBsYWNlX29mX2JpcnRoIiwgeyJfc2QiOiBbIldwaEhvSUR5b1diQXBEQzR6YnV3UjQweGwweExoRENfY3Y0dHNTNzFyRUEiXSwgImNvdW50cnkiOiAiREUifV0~WyJDOUdTb3VqdmlKcXVFZ1lmb2pDYjFBIiwgImFsc29fa25vd25fYXMiLCAiU2Nod2VzdGVyIEFnbmVzIl0~WyJreDVrRjE3Vi14MEptd1V4OXZndnR3IiwgIjEyIiwgdHJ1ZV0~WyJIM28xdXN3UDc2MEZpMnllR2RWQ0VRIiwgIjE0IiwgdHJ1ZV0~WyJPQktsVFZsdkxnLUFkd3FZR2JQOFpBIiwgIjE2IiwgdHJ1ZV0~WyJNMEpiNTd0NDF1YnJrU3V5ckRUM3hBIiwgIjE4IiwgdHJ1ZV0~WyJEc210S05ncFY0ZEFIcGpyY2Fvc0F3IiwgIjIxIiwgdHJ1ZV0~WyJlSzVvNXBIZmd1cFBwbHRqMXFoQUp3IiwgIjY1IiwgZmFsc2Vd~";
+
+    let mut crypto = MockCryptoProvider::default();
+    crypto
+        .expect_get_hasher()
+        .once()
+        .with(eq("sha-256"))
+        .returning(move |_| Ok(Arc::new(SHA256 {})));
+
+    let mut http_client = MockHttpClient::new();
+    http_client
+        .expect_get()
+        .once()
+        .with(eq(ISSUER_URL))
+        .returning(|url| {
+            let mut inner_client = MockHttpClient::new();
+            inner_client
+                .expect_send()
+                .once()
+                .returning(|_, _, _, _, _| {
+                    Ok(Response {
+                        body: ISSUER_URL_RESPONSE.as_bytes().to_vec(),
+                        headers: Default::default(),
+                        status: StatusCode(200),
+                        request: Request {
+                            body: None,
+                            headers: Default::default(),
+                            method: Method::Get,
+                            url: ISSUER_URL.to_string(),
+                            timeout: None,
+                        },
+                    })
+                });
+
+            RequestBuilder::new(Arc::new(inner_client), Method::Get, url)
+        });
+
+    let sd_formatter = SDJWTVCFormatter::new(
+        Params {
+            leeway: 45u64,
+            embed_layout_properties: false,
+            swiyu_mode: false,
+            sd_array_elements: true,
+            ecosystem_schema_ids: vec![],
+            expiration_time: Duration::days(1),
+        },
+        Arc::new(crypto),
+        Arc::new(MockDidMethodProvider::new()),
+        Arc::new(MockKeyAlgorithmProvider::new()),
+        Arc::new(MockVctTypeMetadataFetcher::new()),
+        Arc::new(MockCertificateValidator::new()),
+        generic_config().core.datatype,
+        Arc::new(http_client),
+        Arc::new(MockDataTypeProvider::new()),
+    );
+
+    let mut verify_mock = MockTokenVerifier::new();
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider
+        .expect_key_algorithm_from_jose_alg()
+        .returning(|_| {
+            let mut alg = MockKeyAlgorithm::new();
+            alg.expect_algorithm_type()
+                .return_once(|| KeyAlgorithmType::Eddsa);
+            Some((KeyAlgorithmType::Eddsa, Arc::new(alg)))
+        });
+    verify_mock
+        .expect_key_algorithm_provider()
+        .return_const(Box::new(key_algorithm_provider));
+
+    verify_mock.expect_verify().return_once(|_, _, _, _| Ok(()));
+
+    let credentials = sd_formatter
+        .extract_credentials(token, None, Box::new(verify_mock))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        credentials.subject,
+        Some(IdentifierDetails::Key(PublicJwk::Ec(PublicJwkEc {
+            alg: None,
+            r#use: None,
+            kid: None,
+            crv: "P-256".to_string(),
+            x: "TCAER19Zvu3OHF4j4W4vfSVoHIP1ILilDls7vCeGemc".to_string(),
+            y: Some("ZxjiWWbZMQGHVWKVQ4hbSIirsVfuecCE6t4jT9F2HZQ".to_string()),
+        })))
+    );
+
+    assert_eq!(
+        credentials.claims.claims["given_name"].value,
+        CredentialClaimValue::String("Erika".to_owned())
+    );
+    assert_eq!(
+        credentials.claims.claims["family_name"].value,
+        CredentialClaimValue::String("Mustermann".to_owned())
+    );
+    assert_eq!(
+        credentials.claims.claims["birthdate"].value,
+        CredentialClaimValue::String("1963-08-12".to_owned())
+    );
+    assert_eq!(
+        credentials.claims.claims["gender"].value,
+        CredentialClaimValue::String("female".to_owned())
+    );
+    assert_eq!(
+        credentials.claims.claims["birth_family_name"].value,
+        CredentialClaimValue::String("Gabler".to_owned())
+    );
+    assert_eq!(
+        credentials.claims.claims["also_known_as"].value,
+        CredentialClaimValue::String("Schwester Agnes".to_owned())
+    );
+
+    let nationalities = match &credentials.claims.claims["nationalities"].value {
+        CredentialClaimValue::Array(vec) => vec,
+        other => panic!(
+            "Expected \"nationalities\" claim to be an array, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        nationalities[0].value,
+        CredentialClaimValue::String("DE".to_owned())
+    );
+
+    let address = match &credentials.claims.claims["address"].value {
+        CredentialClaimValue::Object(map) => map,
+        other => panic!(
+            "Expected \"address\" claim to be an object, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        address["street_address"].value,
+        CredentialClaimValue::String("Heidestraße 17".to_owned())
+    );
+    assert_eq!(
+        address["locality"].value,
+        CredentialClaimValue::String("Köln".to_owned())
+    );
+    assert_eq!(
+        address["postal_code"].value,
+        CredentialClaimValue::String("51147".to_owned())
+    );
+    assert_eq!(
+        address["country"].value,
+        CredentialClaimValue::String("DE".to_owned())
+    );
+
+    let pob = match &credentials.claims.claims["place_of_birth"].value {
+        CredentialClaimValue::Object(map) => map,
+        other => panic!(
+            "Expected \"place_of_birth\" claim to be an object, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        pob["locality"].value,
+        CredentialClaimValue::String("Berlin".to_owned())
+    );
+    assert_eq!(
+        pob["country"].value,
+        CredentialClaimValue::String("DE".to_owned())
+    );
+
+    let age_over = match &credentials.claims.claims["age_equal_or_over"].value {
+        CredentialClaimValue::Object(map) => map,
+        other => panic!(
+            "Expected \"age_equal_or_over\" claim to be an object, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(age_over["12"].value, CredentialClaimValue::Bool(true));
+    assert_eq!(age_over["14"].value, CredentialClaimValue::Bool(true));
+    assert_eq!(age_over["16"].value, CredentialClaimValue::Bool(true));
+    assert_eq!(age_over["18"].value, CredentialClaimValue::Bool(true));
+    assert_eq!(age_over["21"].value, CredentialClaimValue::Bool(true));
+    assert_eq!(age_over["65"].value, CredentialClaimValue::Bool(false));
+}
+
 #[test]
 fn test_schema_id() {
     let formatter = SDJWTVCFormatter::new(

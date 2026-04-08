@@ -1382,11 +1382,26 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
             .ok_or(IssuanceProtocolError::Failed("Missing base_url".to_owned()))?;
 
         if self.params.credential_offer_by_value {
+            let identifier_id = if self.params.url_scheme != "swiyu" {
+                Some(
+                    credential
+                        .issuer_identifier
+                        .as_ref()
+                        .ok_or(IssuanceProtocolError::Failed(
+                            "issuer_identifier missing".to_string(),
+                        ))?
+                        .id,
+                )
+            } else {
+                None
+            };
+
             let offer = create_credential_offer(
                 protocol_base_url,
                 &credential.protocol,
                 &interaction_id.to_string(),
                 credential_schema,
+                identifier_id,
             )?;
 
             let offer_string = serde_json::to_string(&offer)?;

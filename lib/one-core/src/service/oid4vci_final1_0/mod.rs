@@ -12,9 +12,11 @@ use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::issuance_protocol::openid4vci_final1_0::service::get_protocol_base_url;
 use crate::provider::issuance_protocol::provider::IssuanceProtocolProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
+use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 
 pub mod dto;
@@ -31,9 +33,11 @@ pub struct OID4VCIFinal1_0Service {
     credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
     credential_repository: Arc<dyn CredentialRepository>,
     interaction_repository: Arc<dyn InteractionRepository>,
+    identifier_repository: Arc<dyn IdentifierRepository>,
     config: Arc<core_config::CoreConfig>,
     protocol_provider: Arc<dyn IssuanceProtocolProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
+    key_provider: Arc<dyn KeyProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     formatter_provider: Arc<dyn CredentialFormatterProvider>,
     revocation_method_provider: Arc<dyn RevocationMethodProvider>,
@@ -52,6 +56,7 @@ impl OID4VCIFinal1_0Service {
         credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         credential_repository: Arc<dyn CredentialRepository>,
         interaction_repository: Arc<dyn InteractionRepository>,
+        identifier_repository: Arc<dyn IdentifierRepository>,
         config: Arc<core_config::CoreConfig>,
         protocol_provider: Arc<dyn IssuanceProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -60,6 +65,7 @@ impl OID4VCIFinal1_0Service {
         revocation_method_provider: Arc<dyn RevocationMethodProvider>,
         certificate_validator: Arc<dyn CertificateValidator>,
         blob_storage_provider: Arc<dyn BlobStorageProvider>,
+        key_provider: Arc<dyn KeyProvider>,
         transaction_manager: Arc<dyn TransactionManager>,
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
         identifier_creator: Arc<dyn IdentifierCreator>,
@@ -71,9 +77,11 @@ impl OID4VCIFinal1_0Service {
             credential_schema_repository,
             credential_repository,
             interaction_repository,
+            identifier_repository,
             config,
             protocol_provider,
             did_method_provider,
+            key_provider,
             key_algorithm_provider,
             formatter_provider,
             revocation_method_provider,
@@ -93,6 +101,7 @@ impl OID4VCIFinal1_0Service {
         credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         credential_repository: Arc<dyn CredentialRepository>,
         interaction_repository: Arc<dyn InteractionRepository>,
+        identifier_repository: Arc<dyn IdentifierRepository>,
         config: Arc<core_config::CoreConfig>,
         protocol_provider: Arc<dyn IssuanceProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -103,6 +112,7 @@ impl OID4VCIFinal1_0Service {
         identifier_creator: Arc<dyn IdentifierCreator>,
         transaction_manager: Arc<dyn TransactionManager>,
         blob_storage_provider: Arc<dyn BlobStorageProvider>,
+        key_provider: Arc<dyn KeyProvider>,
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
     ) -> Self {
         Self {
@@ -111,9 +121,11 @@ impl OID4VCIFinal1_0Service {
             credential_schema_repository,
             credential_repository,
             interaction_repository,
+            identifier_repository,
             config,
             protocol_provider,
             did_method_provider,
+            key_provider,
             key_algorithm_provider,
             formatter_provider,
             revocation_method_provider,

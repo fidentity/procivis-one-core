@@ -1,14 +1,21 @@
+use std::str::FromStr;
+use std::sync::LazyLock;
+
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use axum_extra::extract::WithRejection;
 use axum_extra::typed_header::TypedHeader;
+use headers::Mime;
 use headers::authorization::Bearer;
 use one_core::error::{ErrorCode, ErrorCodeMixin};
+use one_core::service::oid4vci_final1_0::dto::{
+    OID4VCIFinal1_0IssuerMetadataResponseEnum, OID4VCIFinal1_0IssuerMetadataResponseTypeEnum,
+};
 use one_core::service::oid4vci_final1_0::error::OID4VCIFinal1_0ServiceError;
 use proc_macros::endpoint;
-use shared_types::{CredentialId, CredentialSchemaId};
+use shared_types::{CredentialId, CredentialSchemaId, IdentifierId};
 
 use super::dto::{
     OAuthAuthorizationServerMetadataRestDTO, OpenID4VCIErrorResponseRestDTO,
@@ -19,18 +26,28 @@ use super::dto::{
     OpenID4VCITokenResponseRestDTO,
 };
 use crate::dto::error::ErrorResponseRestDTO;
+use crate::extractor::Accept;
 use crate::router::AppState;
+
+#[allow(clippy::expect_used)]
+static APPLICATION_JWT: LazyLock<Mime> = LazyLock::new(|| {
+    Mime::from_str("application/jwt").expect("application/jwt is valid mime type")
+});
 
 #[endpoint(
     permissions = [],
     get,
-    path = "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+    path = "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
     params(
         ("protocol_id" = String, Path, description = "Issuance protocol id"),
+        ("identifier_id" = IdentifierId, Path, description = "Identifier id"),
         ("credential_schema_id" = CredentialSchemaId, Path, description = "Credential schema id")
     ),
     responses(
-        (status = 200, description = "OK", body = OpenID4VCIIssuerMetadataResponseRestDTO),
+        (status = 200, description = "OK", content(
+            (OpenID4VCIIssuerMetadataResponseRestDTO = "application/json"),
+            (String = "application/jwt")
+        )),
         (status = 404, description = "Credential schema not found"),
         (status = 500, description = "Server error"),
     ),
@@ -42,27 +59,56 @@ use crate::router::AppState;
     "},
 )]
 pub(crate) async fn oid4vci_final1_0_get_issuer_metadata(
+    accept: TypedHeader<Accept>,
     state: State<AppState>,
-    WithRejection(Path((protocol_id, credential_schema_id)), _): WithRejection<
-        Path<(String, CredentialSchemaId)>,
+    WithRejection(Path((protocol_id, identifier_id, credential_schema_id)), _): WithRejection<
+        Path<(String, IdentifierId, CredentialSchemaId)>,
         ErrorResponseRestDTO,
     >,
 ) -> Response {
+    let response_type = if accept.contains(&mime::APPLICATION_JSON) {
+        OID4VCIFinal1_0IssuerMetadataResponseTypeEnum::Model
+    } else if accept.contains(&APPLICATION_JWT) {
+        OID4VCIFinal1_0IssuerMetadataResponseTypeEnum::Jwt
+    } else {
+        return StatusCode::NOT_ACCEPTABLE.into_response();
+    };
+
     let result = state
         .core
         .oid4vci_final1_0_service
-        .get_issuer_metadata(&protocol_id, &credential_schema_id)
+        .get_issuer_metadata(
+            &protocol_id,
+            &identifier_id,
+            &credential_schema_id,
+            response_type,
+        )
         .await;
 
     match result {
-        Ok(value) => (
-            StatusCode::OK,
-            Json(OpenID4VCIIssuerMetadataResponseRestDTO::from(value)),
-        )
-            .into_response(),
+        Ok(value) => {
+            let response_body = match value {
+                OID4VCIFinal1_0IssuerMetadataResponseEnum::Model(model) => {
+                    Json(OpenID4VCIIssuerMetadataResponseRestDTO::from(*model)).into_response()
+                }
+                OID4VCIFinal1_0IssuerMetadataResponseEnum::Jwt(jwt) => (
+                    [(
+                        header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/jwt"),
+                    )],
+                    jwt,
+                )
+                    .into_response(),
+            };
+            (StatusCode::OK, response_body).into_response()
+        }
         Err(error) if matches!(error.error_code(), ErrorCode::BR_0006 | ErrorCode::BR_0089) => {
             tracing::error!("Not found error: {error}");
             StatusCode::NOT_FOUND.into_response()
+        }
+        Err(error) if matches!(error.error_code(), ErrorCode::BR_0418) => {
+            tracing::error!("Invalid certificate type error: {error}");
+            StatusCode::BAD_REQUEST.into_response()
         }
         Err(e) => {
             tracing::error!("Error: {:?}", e);
@@ -74,9 +120,10 @@ pub(crate) async fn oid4vci_final1_0_get_issuer_metadata(
 #[endpoint(
     permissions = [],
     get,
-    path = "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+    path = "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
     params(
         ("protocol_id" = String, Path, description = "Issuance protocol id"),
+        ("identifier_id" = IdentifierId, Path, description = "Identifier id"),
         ("credential_schema_id" = CredentialSchemaId, Path, description = "Credential schema id")
     ),
     responses(
@@ -93,15 +140,15 @@ pub(crate) async fn oid4vci_final1_0_get_issuer_metadata(
 )]
 pub(crate) async fn oid4vci_final1_0_oauth_authorization_server(
     state: State<AppState>,
-    WithRejection(Path((protocol_id, credential_schema_id)), _): WithRejection<
-        Path<(String, CredentialSchemaId)>,
+    WithRejection(Path((protocol_id, identifier_id, credential_schema_id)), _): WithRejection<
+        Path<(String, IdentifierId, CredentialSchemaId)>,
         ErrorResponseRestDTO,
     >,
 ) -> Response {
     let result = state
         .core
         .oid4vci_final1_0_service
-        .oauth_authorization_server(&protocol_id, &credential_schema_id)
+        .oauth_authorization_server(&protocol_id, &credential_schema_id, Some(&identifier_id))
         .await;
 
     match result {

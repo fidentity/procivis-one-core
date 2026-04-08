@@ -2,7 +2,7 @@ use serde::Deserialize;
 use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
 
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
-    OAuthAuthorizationServerMetadata, OAuthCodeChallengeMethod,
+    OAuthAuthorizationServerMetadata, OAuthCodeChallengeMethod, OpenID4VCIIssuerMetadataResponseDTO,
 };
 
 #[derive(Clone, Debug, Deserialize)]
@@ -74,4 +74,16 @@ impl From<OAuthAuthorizationServerMetadata> for OAuthAuthorizationServerMetadata
             dpop_signing_alg_values_supported: value.dpop_signing_alg_values_supported,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum OID4VCIFinal1_0IssuerMetadataResponseTypeEnum {
+    Model,
+    Jwt,
+}
+
+#[derive(Clone, Debug)]
+pub enum OID4VCIFinal1_0IssuerMetadataResponseEnum {
+    Model(Box<OpenID4VCIIssuerMetadataResponseDTO>),
+    Jwt(String),
 }

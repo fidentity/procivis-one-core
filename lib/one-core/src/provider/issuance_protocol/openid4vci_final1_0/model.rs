@@ -19,7 +19,7 @@ use super::super::model::{
 };
 use crate::mapper::opt_secret_string;
 use crate::mapper::params::deserialize_encryption_key;
-use crate::model::credential_schema::{CodeTypeEnum, LayoutProperties};
+use crate::model::credential_schema::{CodeTypeEnum, CredentialSchema, LayoutProperties};
 use crate::provider::credential_formatter::vcdm::ContextType;
 
 #[serde_as]
@@ -162,7 +162,8 @@ pub(crate) struct HolderInteractionData {
 }
 
 // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-12.2.4
-#[derive(Clone, Debug, Deserialize)]
+#[skip_serializing_none]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OpenID4VCIIssuerMetadataResponseDTO {
     pub credential_issuer: String,
     pub authorization_servers: Option<Vec<String>>,
@@ -172,6 +173,24 @@ pub struct OpenID4VCIIssuerMetadataResponseDTO {
     pub credential_configurations_supported:
         IndexMap<String, OpenID4VCICredentialConfigurationData>,
     pub display: Option<Vec<OpenID4VCIIssuerMetadataDisplayResponseDTO>>,
+    //https://www.etsi.org/deliver/etsi_ts/119400_119499/11947203/01.01.01_60/ts_11947203v010101p.pdf section 4.2.3
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issuer_info: Vec<EtsiIssuerInfoResponseDTO>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EtsiIssuerInfoResponseDTO {
+    pub format: EtsiIssuerInfoAttestationFormat,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_ids: Vec<dcql::CredentialQueryId>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+pub enum EtsiIssuerInfoAttestationFormat {
+    #[serde(rename = "registration_cert")]
+    RegistrationCert,
 }
 
 #[skip_serializing_none]
@@ -709,4 +728,13 @@ pub(super) struct WalletAttestationResult {
     pub wia_request: Option<TokenRequestWalletAttestationRequest>,
     /// WUA proof for credential request (if key attestation is required)
     pub wua_proof: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IssuerMetadata {
+    pub(crate) protocol_base_url: String,
+    pub(crate) protocol_id: String,
+    pub(crate) schema: CredentialSchema,
+    pub(crate) credential_configurations_supported:
+        IndexMap<String, OpenID4VCICredentialConfigurationData>,
 }

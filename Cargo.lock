@@ -1220,6 +1220,7 @@ dependencies = [
  "indexmap 2.12.1",
  "indoc",
  "maplit",
+ "mime",
  "one-core",
  "one-crypto",
  "one-dto-mapper",

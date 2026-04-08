@@ -89,6 +89,19 @@ impl HttpClient {
         Response { resp }
     }
 
+    pub async fn get_with_headers(&self, url: &str, headers: HeaderMap) -> Response {
+        let url = format!("{}{url}", self.base_url);
+        let resp = http_client()
+            .get(url)
+            .headers(headers)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .unwrap();
+
+        Response { resp }
+    }
+
     pub async fn post(&self, url: &str, body: impl Into<Option<Value>>) -> Response {
         self.post_custom_bearer_auth(url, &self.token, body).await
     }

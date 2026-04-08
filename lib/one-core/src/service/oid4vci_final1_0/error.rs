@@ -1,4 +1,6 @@
-use shared_types::{CredentialId, CredentialSchemaId, InteractionId};
+use std::string::FromUtf8Error;
+
+use shared_types::{CredentialId, CredentialSchemaId, IdentifierId, InteractionId};
 
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
 use crate::model::credential::CredentialStateEnum;
@@ -16,6 +18,8 @@ pub enum OID4VCIFinal1_0ServiceError {
     MissingCredential(CredentialId),
     #[error("Invalid credential state: `{0}`")]
     InvalidCredentialState(CredentialStateEnum),
+    #[error("From UTF-8 error: `{0}`")]
+    FromUtf8Error(#[from] FromUtf8Error),
 
     #[error("Validation error: `{0}`")]
     ValidationError(String),
@@ -27,6 +31,14 @@ pub enum OID4VCIFinal1_0ServiceError {
 
     #[error(transparent)]
     Nested(#[from] NestedError),
+
+    #[error("Identifier not found: {0}")]
+    IdentifierNotFound(IdentifierId),
+
+    #[error("Identifier missing Authentication capable certificate: {0}")]
+    MissingAuthenticationCapableCertificate(IdentifierId),
+    #[error("Invalid trust information: `{0}`")]
+    TrustInformationError(String),
 }
 
 impl ErrorCodeMixin for OID4VCIFinal1_0ServiceError {
@@ -38,9 +50,13 @@ impl ErrorCodeMixin for OID4VCIFinal1_0ServiceError {
             Self::InvalidCredentialState(_) => ErrorCode::BR_0002,
             Self::MissingCredentialSchema(_) => ErrorCode::BR_0006,
             Self::ValidationError(_) => ErrorCode::BR_0323,
-            Self::MappingError(_) => ErrorCode::BR_0047,
+            Self::TrustInformationError(_) | Self::FromUtf8Error(_) | Self::MappingError(_) => {
+                ErrorCode::BR_0047
+            }
             Self::OpenID4VCIError(_) => ErrorCode::BR_0048,
             Self::Nested(nested) => nested.error_code(),
+            Self::IdentifierNotFound(_) => ErrorCode::BR_0207,
+            Self::MissingAuthenticationCapableCertificate(_) => ErrorCode::BR_0418,
         }
     }
 }

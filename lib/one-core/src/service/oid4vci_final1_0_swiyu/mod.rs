@@ -16,9 +16,11 @@ use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::issuance_protocol::openid4vci_final1_0_swiyu::OID4VCI_FINAL1_0_SWIYU_VERSION;
 use crate::provider::issuance_protocol::provider::IssuanceProtocolProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
+use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
+use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::service::oid4vci_final1_0::OID4VCIFinal1_0Service;
 
@@ -36,6 +38,7 @@ impl OID4VCIFinal1_0SwiyuService {
         credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         credential_repository: Arc<dyn CredentialRepository>,
         interaction_repository: Arc<dyn InteractionRepository>,
+        identifier_repository: Arc<dyn IdentifierRepository>,
         config: Arc<core_config::CoreConfig>,
         protocol_provider: Arc<dyn IssuanceProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -46,6 +49,7 @@ impl OID4VCIFinal1_0SwiyuService {
         identifier_creator: Arc<dyn IdentifierCreator>,
         transaction_manager: Arc<dyn TransactionManager>,
         blob_storage_provider: Arc<dyn BlobStorageProvider>,
+        key_provider: Arc<dyn KeyProvider>,
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
     ) -> Self {
         let protocol_base_url = core_base_url
@@ -61,6 +65,7 @@ impl OID4VCIFinal1_0SwiyuService {
                 credential_schema_repository,
                 credential_repository,
                 interaction_repository,
+                identifier_repository,
                 config,
                 protocol_provider,
                 did_method_provider,
@@ -71,6 +76,7 @@ impl OID4VCIFinal1_0SwiyuService {
                 identifier_creator,
                 transaction_manager,
                 blob_storage_provider,
+                key_provider,
                 holder_wallet_unit_proto,
             ),
         }

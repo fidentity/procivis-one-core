@@ -888,6 +888,9 @@ pub enum ErrorCode {
 
     #[strum(message = "Invalid trust information")]
     BR_0416,
+
+    #[strum(message = "Certificate role not allowed")]
+    BR_0418,
 }
 
 pub trait ErrorCodeMixin: Error + Send + Sync + 'static {

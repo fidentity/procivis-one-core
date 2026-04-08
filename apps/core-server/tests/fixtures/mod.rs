@@ -15,7 +15,7 @@ use core_server::{AuthMode, ServerConfig};
 use hex_literal::hex;
 use one_core::config::core_config::{self, AppConfig, InputFormat};
 use one_core::model::blob::Blob;
-use one_core::model::certificate::{Certificate, CertificateState};
+use one_core::model::certificate::{Certificate, CertificateRole, CertificateState};
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential::{
@@ -494,9 +494,22 @@ pub async fn create_identifier(
     identifier
 }
 
+#[derive(Debug, Default)]
+pub struct TestingCertIdentifierParams {
+    pub created_date: Option<OffsetDateTime>,
+    pub last_modified: Option<OffsetDateTime>,
+    pub expiry_date: Option<OffsetDateTime>,
+    pub name: Option<String>,
+    pub chain: Option<String>,
+    pub fingerprint: Option<String>,
+    pub state: Option<CertificateState>,
+    pub roles: Vec<CertificateRole>,
+}
+
 pub async fn create_cert_identifier(
     context: &TestContext,
     organisation: &Organisation,
+    params: Option<TestingCertIdentifierParams>,
 ) -> Identifier {
     let key = context
         .db
@@ -512,19 +525,23 @@ pub async fn create_cert_identifier(
         &ca_params,
     );
     let identifier_id = Uuid::new_v4().into();
+
+    let params = params.unwrap_or_default();
     let now = one_core::clock::now_utc();
     let certificate = Certificate {
         id: Uuid::new_v4().into(),
         identifier_id,
         organisation_id: Some(organisation.id),
-        created_date: now,
-        last_modified: now,
-        expiry_date: now.add(Duration::minutes(10)),
-        name: "test cert 2".to_string(),
-        chain: format!("{}{}", cert.pem(), ca_cert.pem()),
-        fingerprint: "ffffaaaa22".to_string(),
-        state: CertificateState::Active,
-        roles: vec![],
+        created_date: params.created_date.unwrap_or(now),
+        last_modified: params.last_modified.unwrap_or(now),
+        expiry_date: params.expiry_date.unwrap_or(now.add(Duration::minutes(10))),
+        name: params.name.unwrap_or("test cert 2".to_string()),
+        chain: params
+            .chain
+            .unwrap_or(format!("{}{}", cert.pem(), ca_cert.pem())),
+        fingerprint: params.fingerprint.unwrap_or("ffffaaaa22".to_string()),
+        state: params.state.unwrap_or(CertificateState::Active),
+        roles: params.roles,
         key: Some(key.clone()),
     };
     let identifier = context

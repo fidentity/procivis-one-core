@@ -333,19 +333,21 @@ async fn test_generate_offer() {
     let protocol_base_url = "BASE_URL/ssi/openid4vci/final-1.0".to_string();
     let interaction_id = Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965").unwrap();
     let credential = generic_credential_did();
+    let issuer_identifier_id = credential.issuer_identifier.as_ref().unwrap().id;
 
     let offer = create_credential_offer(
         &protocol_base_url,
         &credential.protocol,
         &interaction_id.to_string(),
         credential.schema.as_ref().unwrap(),
+        Some(issuer_identifier_id),
     )
     .unwrap();
 
     assert_eq!(
         json!(&offer),
         json!({
-            "credential_issuer": format!("BASE_URL/ssi/openid4vci/final-1.0/{}/c322aa7f-9803-410d-b891-939b279fb965", credential.protocol),
+            "credential_issuer": format!("BASE_URL/ssi/openid4vci/final-1.0/{}/{issuer_identifier_id}/c322aa7f-9803-410d-b891-939b279fb965", credential.protocol),
             "credential_configuration_ids" : [
                 credential.schema.as_ref().unwrap().schema_id,
             ],
@@ -397,7 +399,7 @@ async fn test_generate_share_credentials_offer_by_value() {
     // Everything except for interaction id is here.
     // Generating token with predictable interaction id is tested somewhere else.
     assert!(
-        result.url.starts_with(r#"openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22http%3A%2F%2Fbase_url%2Fssi%2Fopenid4vci%2Ffinal-1.0%2FOPENID4VCI_FINAL1%2Fc322aa7f-9803-410d-b891-939b279fb965%22%2C%22credential_configuration_ids%22%3A%5B%22CredentialSchemaId%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%"#)
+        result.url.starts_with(r#"openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22http%3A%2F%2Fbase_url%2Fssi%2Fopenid4vci%2Ffinal-1.0%2FOPENID4VCI_FINAL1%2Fc322aa7f-9803-410d-b891-939b279fb965%2Fc322aa7f-9803-410d-b891-939b279fb965%22%2C%22credential_configuration_ids%22%3A%5B%22CredentialSchemaId%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%7B%22pre-authorized_code%22%3A%"#)
     );
 }
 

@@ -69,6 +69,7 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
 utoipauto = { version = "0.2" }
 uuid.workspace = true
 validator.workspace = true
+mime = "0.3.17"
 
 [build-dependencies]
 serde                = { workspace = true, features = ["derive"] }

@@ -15,7 +15,7 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::key::Key;
 use crate::provider::key_storage::KeyStorage;
 
-pub(crate) fn pem_chain_into_x5c(pem_chain: &str) -> Result<Vec<String>, CertificateParsingError> {
+pub fn pem_chain_into_x5c(pem_chain: &str) -> Result<Vec<String>, CertificateParsingError> {
     Pem::iter_from_buffer(pem_chain.as_bytes())
         .map(|pem| {
             let encoded = Base64::encode_to_string(pem?.contents)?;

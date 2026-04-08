@@ -10,6 +10,7 @@ use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
     OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCINonceResponseDTO,
     OpenID4VCINotificationRequestDTO, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
 };
+use crate::provider::issuance_protocol::openid4vci_final1_0::service::create_issuer_metadata_response;
 use crate::service::oid4vci_final1_0::dto::{
     OAuthAuthorizationServerMetadataResponseDTO, OpenID4VCICredentialResponseDTO,
 };
@@ -22,7 +23,7 @@ impl OID4VCIFinal1_0SwiyuService {
         credential_schema_id: &CredentialSchemaId,
     ) -> Result<OAuthAuthorizationServerMetadataResponseDTO, OID4VCIFinal1_0ServiceError> {
         self.inner
-            .oauth_authorization_server(protocol_id, credential_schema_id)
+            .oauth_authorization_server(protocol_id, credential_schema_id, None)
             .await
     }
     pub async fn get_issuer_metadata(
@@ -32,8 +33,9 @@ impl OID4VCIFinal1_0SwiyuService {
     ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OID4VCIFinal1_0ServiceError> {
         let mut metadata = self
             .inner
-            .get_issuer_metadata(protocol_id, credential_schema_id)
+            .prepare_issuer_metadata(protocol_id, credential_schema_id)
             .await?;
+
         let credential_schema = self
             .credential_schema_repository
             .get_credential_schema(
@@ -89,8 +91,7 @@ impl OID4VCIFinal1_0SwiyuService {
                 );
             }
         }
-
-        Ok(metadata)
+        create_issuer_metadata_response(metadata, None, None).map_err(Into::into)
     }
 
     pub async fn get_credential_offer(

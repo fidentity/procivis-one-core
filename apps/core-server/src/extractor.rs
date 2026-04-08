@@ -1,7 +1,9 @@
 use axum::body::to_bytes;
 use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::StatusCode;
+use axum::http;
 use axum::http::request::Parts;
+use axum::http::{HeaderName, HeaderValue, StatusCode};
+use headers::{Error, Header, Mime};
 use serde_qs::Config;
 
 pub struct Qs<T>(pub T);
@@ -94,4 +96,54 @@ where
                 format!("Query extraction error: {e}"),
             )
         })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Accept(Vec<Mime>);
+
+impl Accept {
+    pub fn contains(&self, mime: &Mime) -> bool {
+        self.0.contains(mime)
+    }
+}
+
+impl Header for Accept {
+    fn name() -> &'static HeaderName {
+        &http::header::ACCEPT
+    }
+
+    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
+        values
+            .next()
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| {
+                let types = v
+                    .split(',')
+                    .map(|s| s.trim())
+                    .flat_map(|s| s.parse::<Mime>().ok().into_iter())
+                    .collect::<Vec<Mime>>();
+                if types.is_empty() {
+                    None
+                } else {
+                    Some(Accept(types))
+                }
+            })
+            .ok_or_else(Error::invalid)
+    }
+
+    #[allow(clippy::expect_used)]
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        let iter = self.0.iter().map(|m| {
+            m.as_ref()
+                .parse()
+                .expect("Mime is always a valid HeaderValue")
+        });
+        values.extend(iter);
+    }
+}
+
+impl From<Mime> for Accept {
+    fn from(m: Mime) -> Accept {
+        Accept(vec![m])
+    }
 }

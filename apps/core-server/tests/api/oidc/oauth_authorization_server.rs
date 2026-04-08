@@ -6,7 +6,7 @@ use crate::utils::db_clients::credential_schemas::TestingCreateSchemaParams;
 #[tokio::test]
 async fn test_oauth_authorization_server_metadata() {
     // GIVEN
-    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let (context, organisation, _did, identifier, ..) = TestContext::new_with_did(None).await;
     let credential_schema = context
         .db
         .credential_schemas
@@ -17,7 +17,7 @@ async fn test_oauth_authorization_server_metadata() {
     let resp = context
         .api
         .ssi
-        .oauth_authorization_server("OPENID4VCI_FINAL1", credential_schema.id)
+        .oauth_authorization_server("OPENID4VCI_FINAL1", identifier.id, credential_schema.id)
         .await;
 
     // THEN
@@ -28,7 +28,12 @@ async fn test_oauth_authorization_server_metadata() {
     let openid_credential_issuer_resp = context
         .api
         .ssi
-        .openid_credential_issuer_final1("OPENID4VCI_FINAL1", credential_schema.id)
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            mime::APPLICATION_JSON.into(),
+        )
         .await
         .json_value()
         .await;
@@ -45,7 +50,10 @@ async fn test_oauth_authorization_server_metadata() {
     );
 
     assert_eq!(
-        format!("{issuer}/OPENID4VCI_FINAL1/{}", credential_schema.id),
+        format!(
+            "{issuer}/OPENID4VCI_FINAL1/{}/{}",
+            identifier.id, credential_schema.id
+        ),
         resp["issuer"]
     );
     assert_eq!(
@@ -86,7 +94,7 @@ async fn test_oauth_authorization_server_metadata() {
 #[tokio::test]
 async fn test_oauth_authorization_server_metadata_eudi_compliant() {
     // GIVEN
-    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let (context, organisation, _did, identifier, ..) = TestContext::new_with_did(None).await;
     let credential_schema = context
         .db
         .credential_schemas
@@ -105,7 +113,7 @@ async fn test_oauth_authorization_server_metadata_eudi_compliant() {
     let resp = context
         .api
         .ssi
-        .oauth_authorization_server("OPENID4VCI_FINAL1", credential_schema.id)
+        .oauth_authorization_server("OPENID4VCI_FINAL1", identifier.id, credential_schema.id)
         .await;
 
     // THEN
@@ -115,7 +123,12 @@ async fn test_oauth_authorization_server_metadata_eudi_compliant() {
     let openid_credential_issuer_resp = context
         .api
         .ssi
-        .openid_credential_issuer_final1("OPENID4VCI_FINAL1", credential_schema.id)
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            mime::APPLICATION_JSON.into(),
+        )
         .await
         .json_value()
         .await;
@@ -131,7 +144,10 @@ async fn test_oauth_authorization_server_metadata_eudi_compliant() {
     );
 
     assert_eq!(
-        format!("{issuer}/OPENID4VCI_FINAL1/{}", credential_schema.id),
+        format!(
+            "{issuer}/OPENID4VCI_FINAL1/{}/{}",
+            identifier.id, credential_schema.id
+        ),
         resp["issuer"]
     );
     assert_eq!(
@@ -182,14 +198,14 @@ async fn test_oauth_authorization_server_metadata_eudi_compliant() {
 #[tokio::test]
 async fn test_oauth_authorization_server_metadata_nonexistent_schema() {
     // GIVEN
-    let (context, _) = TestContext::new_with_organisation(None).await;
+    let (context, _organisation, _id, identifier, ..) = TestContext::new_with_did(None).await;
     let nonexistent_id = uuid::Uuid::new_v4();
 
     // WHEN
     let resp = context
         .api
         .ssi
-        .oauth_authorization_server("OPENID4VCI_FINAL1", nonexistent_id)
+        .oauth_authorization_server("OPENID4VCI_FINAL1", identifier.id, nonexistent_id)
         .await;
 
     // THEN

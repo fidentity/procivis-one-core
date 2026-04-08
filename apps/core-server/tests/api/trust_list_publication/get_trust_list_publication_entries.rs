@@ -18,7 +18,7 @@ async fn test_get_trust_list_publication_entries() {
     // given
     let (context, organisation, identifier, certificate, key) =
         TestContext::new_with_certificate_identifier(None).await;
-    let identifier2 = create_cert_identifier(&context, &organisation).await;
+    let identifier2 = create_cert_identifier(&context, &organisation, Default::default()).await;
     let trust_list_publication = context
         .db
         .trust_list_publications

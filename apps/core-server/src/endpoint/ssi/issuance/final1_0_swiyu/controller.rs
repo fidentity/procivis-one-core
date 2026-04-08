@@ -14,9 +14,9 @@ use crate::dto::error::ErrorResponseRestDTO;
 use crate::endpoint::ssi::issuance::final1_0::dto::{
     OAuthAuthorizationServerMetadataRestDTO, OpenID4VCIErrorResponseRestDTO,
     OpenID4VCIFinal1CredentialOfferRestDTO, OpenID4VCIFinal1CredentialRequestRestDTO,
-    OpenID4VCIFinal1CredentialResponseRestDTO, OpenID4VCINonceResponseRestDTO,
-    OpenID4VCINotificationRequestRestDTO, OpenID4VCITokenRequestRestDTO,
-    OpenID4VCITokenResponseRestDTO,
+    OpenID4VCIFinal1CredentialResponseRestDTO, OpenID4VCIIssuerMetadataResponseRestDTO,
+    OpenID4VCINonceResponseRestDTO, OpenID4VCINotificationRequestRestDTO,
+    OpenID4VCITokenRequestRestDTO, OpenID4VCITokenResponseRestDTO,
 };
 use crate::endpoint::ssi::issuance::final1_0_swiyu::dto::OpenID4VCISwiyuIssuerMetadataResponseRestDTO;
 use crate::extractor::QsOrForm;
@@ -58,7 +58,7 @@ pub(crate) async fn oid4vci_final1_0_swiyu_get_issuer_metadata(
     match result {
         Ok(value) => (
             StatusCode::OK,
-            Json(OpenID4VCISwiyuIssuerMetadataResponseRestDTO::from(value)),
+            Json(OpenID4VCIIssuerMetadataResponseRestDTO::from(value)),
         )
             .into_response(),
         Err(error) if matches!(error.error_code(), ErrorCode::BR_0006 | ErrorCode::BR_0089) => {

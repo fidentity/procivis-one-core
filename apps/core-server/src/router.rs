@@ -627,11 +627,11 @@ fn get_external_endpoints(
                 post(ssi::issuance::draft13::controller::oid4vci_draft13_credential_notification),
             )
             .route(
-                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
                 get(ssi::issuance::final1_0::controller::oid4vci_final1_0_get_issuer_metadata),
             )
             .route(
-                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
                 get(ssi::issuance::final1_0::controller::oid4vci_final1_0_oauth_authorization_server),
             )
             .route(

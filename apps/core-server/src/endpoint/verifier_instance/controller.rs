@@ -53,7 +53,7 @@ pub(crate) async fn register_verifier_instance(
         ("bearer" = [])
     ),
     summary = "Get trust collections",
-    description = "Get trust collections associated with the given verifier instance",
+    description = "Returns trust collections associated with the given verifier instance.",
 )]
 pub(crate) async fn get_verifier_instance_trust_collections(
     state: State<AppState>,

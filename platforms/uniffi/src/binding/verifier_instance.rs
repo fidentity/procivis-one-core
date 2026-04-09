@@ -10,6 +10,7 @@ use crate::utils::into_id;
 
 #[uniffi::export(async_runtime = "tokio")]
 impl OneCore {
+    /// Registers the verifier unit with a Verifier Provider.
     #[uniffi::method]
     pub async fn register_verifier_instance(
         &self,
@@ -23,6 +24,7 @@ impl OneCore {
         Ok(response.into())
     }
 
+    /// Returns trust collections curated by the Verifier Provider.
     #[uniffi::method]
     pub async fn get_verifier_instance_trust_collections(
         &self,
@@ -36,6 +38,7 @@ impl OneCore {
             .into())
     }
 
+    /// Modifies verifier unit's settings.
     #[uniffi::method]
     pub async fn update_verifier_instance(
         &self,
@@ -54,9 +57,12 @@ impl OneCore {
 #[try_into(T = RegisterVerifierInstanceRequestDTO, Error = ErrorResponseBindingDTO)]
 #[uniffi(name = "RegisterVerifierInstanceRequest")]
 pub struct RegisterVerifierInstanceRequestBindingDTO {
+    /// The verifier unit's organization.
     #[try_into(with_fn_ref = into_id)]
     pub organisation_id: String,
+    /// The Verifier Provider's reference URL.
     pub verifier_provider_url: String,
+    /// Reference a configured `verifierProvider` instance.
     pub r#type: String,
 }
 

@@ -10,8 +10,11 @@ use utoipa::ToSchema;
 #[into(dto::RegisterVerifierInstanceRequestDTO)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegisterVerifierInstanceRequestRestDTO {
+    /// The verifier unit's organization.
     pub organisation_id: OrganisationId,
+    /// The Verifier Provider's reference URL.
     pub verifier_provider_url: String,
+    /// Reference a configured `verifierProvider` instance.
     pub r#type: String,
 }
 

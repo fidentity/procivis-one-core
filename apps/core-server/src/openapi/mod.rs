@@ -368,7 +368,7 @@ fn get_tags(config: Arc<ServerConfig>) -> Vec<Tag> {
             Tag::builder()
                 .name("holder_wallet_unit")
                 .description(Some(indoc::formatdoc! {"
-                For wallet units, register with the Wallet Provider and check status.
+                For wallet units, register with the Wallet Provider, check status and get trust information.
             "}))
                 .extensions(Some(
                     Extensions::builder()
@@ -379,7 +379,7 @@ fn get_tags(config: Arc<ServerConfig>) -> Vec<Tag> {
             Tag::builder()
                 .name("verifier_instance")
                 .description(Some(indoc::formatdoc! {"
-                For verifiers, registration and trust management.
+                For verifier units, register with the Verifier Provider and get trust information.
             "}))
                 .extensions(Some(
                     Extensions::builder()

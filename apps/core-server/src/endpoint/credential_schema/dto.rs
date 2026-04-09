@@ -1,9 +1,11 @@
+use dcql::CredentialMeta;
 use one_core::model::credential_schema::{CredentialSchemaExactColumn, TransactionCodeType};
 use one_core::service::credential_schema::dto::{
     CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
-    CredentialSchemaDetailResponseDTO, CredentialSchemaFilterParamsDTO,
-    CredentialSchemaListIncludeEntityTypeEnum, CredentialSchemaListItemResponseDTO,
-    CredentialSchemaTransactionCodeDTO, CredentialSchemaTransactionCodeRequestDTO,
+    CredentialSchemaDcqlResponseDTO, CredentialSchemaDetailResponseDTO,
+    CredentialSchemaFilterParamsDTO, CredentialSchemaListIncludeEntityTypeEnum,
+    CredentialSchemaListItemResponseDTO, CredentialSchemaTransactionCodeDTO,
+    CredentialSchemaTransactionCodeRequestDTO,
 };
 use one_core::service::error::ServiceError;
 use one_dto_mapper::{
@@ -94,6 +96,17 @@ pub(crate) struct CredentialSchemaResponseRestDTO {
     pub requires_wallet_instance_attestation: bool,
     #[from(with_fn = convert_inner)]
     pub transaction_code: Option<CredentialSchemaTransactionCodeRestDTO>,
+    #[from(with_fn = convert_inner)]
+    pub dcql: Option<CredentialSchemaDcqlResponseRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, From)]
+#[serde(rename_all = "camelCase")]
+#[from(CredentialSchemaDcqlResponseDTO)]
+pub struct CredentialSchemaDcqlResponseRestDTO {
+    pub format: dcql::CredentialFormat,
+    pub meta: CredentialMeta,
 }
 
 #[options_not_nullable]
@@ -511,6 +524,9 @@ pub(crate) struct ImportCredentialSchemaRequestSchemaRestDTO {
     #[serde(default)]
     #[try_into(with_fn = try_convert_inner)]
     pub transaction_code: Option<ImportCredentialSchemaTransactionCodeRequestRestDTO>,
+    #[try_into(skip)]
+    #[allow(unused)]
+    pub dcql: Option<CredentialSchemaDcqlResponseRestDTO>,
 }
 
 #[options_not_nullable]
@@ -626,6 +642,7 @@ mod test {
                 length: 6,
                 description: Some("description".to_string()),
             }),
+            dcql: None,
         };
 
         let serialized = serde_json::to_value(shared).unwrap();

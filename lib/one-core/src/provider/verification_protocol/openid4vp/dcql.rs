@@ -7,7 +7,7 @@ use dcql::{
     TrustedAuthority,
 };
 use itertools::Itertools;
-use one_dto_mapper::{convert_inner, try_convert_inner};
+use one_dto_mapper::convert_inner;
 use shared_types::{CredentialId, OrganisationId};
 use standardized_types::x509::AuthorityKeyIdentifier;
 
@@ -39,6 +39,7 @@ use crate::service::credential::dto::{
 };
 use crate::service::credential::mapper::credential_detail_response_from_model;
 use crate::service::credential_schema::dto::CredentialSchemaDetailResponseDTO;
+use crate::service::credential_schema::mapper::schema_to_detail_response_dto;
 use crate::service::storage_proxy::StorageAccess;
 
 /// Retrieve the "presentation definition" for the given DCQL query.
@@ -206,8 +207,10 @@ pub(crate) async fn get_presentation_definition_v2(
                 .find_schema_by_schema_ids(&schema_ids, organisation.id)
                 .await
                 .map_err(VerificationProtocolError::StorageAccessError)?;
-            let credential_schema =
-                try_convert_inner(credential_schema).error_while("converting credential schema")?;
+            let credential_schema = credential_schema
+                .map(|schema| schema_to_detail_response_dto(schema, config))
+                .transpose()
+                .error_while("converting credential schema")?;
             credential_queries.insert(
                 query.id.to_string(),
                 failure_hint(
@@ -224,13 +227,13 @@ pub(crate) async fn get_presentation_definition_v2(
             .into_iter()
             .partition(|credential| credential.state == CredentialStateEnum::Accepted);
         if candidates.is_empty() {
-            let credential_schema = try_convert_inner(
-                invalid_credentials
-                    .into_iter()
-                    .next()
-                    .and_then(|cred| cred.schema),
-            )
-            .error_while("converting credential schema")?;
+            let credential_schema = invalid_credentials
+                .into_iter()
+                .next()
+                .and_then(|cred| cred.schema)
+                .map(|schema| schema_to_detail_response_dto(schema, config))
+                .transpose()
+                .error_while("converting credential schema")?;
             credential_queries.insert(
                 query.id.to_string(),
                 failure_hint(
@@ -280,7 +283,9 @@ pub(crate) async fn get_presentation_definition_v2(
                 failure_hint(
                     &query,
                     CredentialQueryFailureReasonEnum::Constraint,
-                    try_convert_inner(failure_hint_schema)
+                    failure_hint_schema
+                        .map(|schema| schema_to_detail_response_dto(schema, config))
+                        .transpose()
                         .error_while("converting failure hint schema")?,
                 )?,
             );

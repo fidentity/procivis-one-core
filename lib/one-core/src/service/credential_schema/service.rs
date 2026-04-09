@@ -9,7 +9,7 @@ use super::dto::{
     ImportCredentialSchemaRequestDTO,
 };
 use super::error::CredentialSchemaServiceError;
-use super::mapper::from_create_request_with_id;
+use super::mapper::{from_create_request_with_id, schema_to_detail_response_dto};
 use super::validator::UniquenessCheckResult;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::credential_schema_claim::claim_schema_from_metadata_claim_schema;
@@ -223,7 +223,7 @@ impl CredentialSchemaService {
             ));
         }
 
-        schema.try_into()
+        schema_to_detail_response_dto(schema, &self.config)
     }
 
     /// Returns list of credential schemas according to query

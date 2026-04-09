@@ -36,6 +36,7 @@ impl CertificateSerial {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AuthorityKeyIdentifier(Vec<u8>);
 
 impl From<Vec<u8>> for AuthorityKeyIdentifier {

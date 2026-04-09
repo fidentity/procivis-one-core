@@ -1,3 +1,4 @@
+use dcql::CredentialMeta;
 use one_dto_mapper::{From, Into, convert_inner};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -67,6 +68,13 @@ pub struct CredentialSchemaDetailResponseDTO {
     pub allow_suspension: bool,
     pub requires_wallet_instance_attestation: bool,
     pub transaction_code: Option<CredentialSchemaTransactionCodeDTO>,
+    pub dcql: Option<CredentialSchemaDcqlResponseDTO>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CredentialSchemaDcqlResponseDTO {
+    pub format: dcql::CredentialFormat,
+    pub meta: CredentialMeta,
 }
 
 #[derive(Clone, Debug, Deserialize, Into, From)]

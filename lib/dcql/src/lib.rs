@@ -24,6 +24,7 @@ pub mod matching;
 /// Following fields are not supported
 /// - credential_sets
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Builder)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct DcqlQuery {
     pub credentials: Vec<CredentialQuery>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,6 +32,7 @@ pub struct DcqlQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CredentialSet {
     #[serde(default = "default_true")]
     pub required: bool,
@@ -38,11 +40,13 @@ pub struct CredentialSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CredentialQueryId(String);
 
 /// Credential query structure
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Builder)]
 #[builder(start_fn(vis = ""))]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct CredentialQuery {
     #[builder(into)]
     pub id: CredentialQueryId,
@@ -73,6 +77,7 @@ fn default_true() -> bool {
 
 /// Format-specific metadata for credential queries
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum CredentialMeta {
     MsoMdoc { doctype_value: String },
@@ -81,6 +86,7 @@ pub enum CredentialMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ClaimQueryId(String);
 
 /// Individual claim query within a credential query
@@ -88,6 +94,7 @@ pub struct ClaimQueryId(String);
 /// The following fields defined in the specification are not supported
 /// - values
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Builder)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ClaimQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[builder(into)]
@@ -105,6 +112,7 @@ pub struct ClaimQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum CredentialFormat {
     #[serde(rename = "jwt_vc_json")]
     #[strum(to_string = "jwt_vc_json")]
@@ -124,12 +132,14 @@ pub enum CredentialFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Builder)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct ClaimPath {
     pub segments: Vec<PathSegment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum PathSegment {
     /// Property of object with specific name
@@ -142,6 +152,7 @@ pub enum PathSegment {
 
 /// Trusted authorities as defined in DCQL section 6.1.1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TrustedAuthority {
     /// ETSI Trusted List – values contain one or more Trusted List identifiers
@@ -162,6 +173,7 @@ pub enum TrustedAuthority {
 
 /// Possible claim value to match credentials against.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum ClaimValue {
     /// String value

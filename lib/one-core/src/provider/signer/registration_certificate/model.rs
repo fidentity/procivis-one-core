@@ -156,6 +156,7 @@ pub struct Status {
 pub struct Credential {
     pub format: CredentialFormat,
     pub meta: dcql::CredentialMeta,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claim: Option<Vec<Claim>>,
 }
 

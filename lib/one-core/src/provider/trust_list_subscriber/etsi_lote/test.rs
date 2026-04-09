@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use ct_codecs::Decoder as _;
 use maplit::hashmap;
 use similar_asserts::assert_eq;
 use time::macros::datetime;
@@ -16,8 +17,10 @@ use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::proto::certificate_validator::{MockCertificateValidator, ParsedCertificate};
 use crate::proto::clock::MockClock;
 use crate::proto::http_client::{Method, MockHttpClient, Request, Response, StatusCode};
+use crate::proto::xades::{MockXAdESProto, XAdES};
 use crate::provider::caching_loader::etsi_lote::EtsiLoteCache;
 use crate::provider::did_method::provider::MockDidMethodProvider;
+use crate::provider::key_algorithm::KeyAlgorithm;
 use crate::provider::key_algorithm::ecdsa::Ecdsa;
 use crate::provider::key_algorithm::key::{
     KeyHandle, MockSignaturePublicKeyHandle, SignatureKeyHandle,
@@ -286,6 +289,7 @@ fn setup_subscriber(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber
         Arc::new(MockDidMethodProvider::new()),
         key_algorithm_provider,
         certificate_validator.clone(),
+        Arc::new(MockXAdESProto::new()),
         LoteContentType::Jwt,
         Duration::seconds(0),
     );
@@ -298,4 +302,221 @@ fn setup_subscriber(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber
     );
 
     EtsiLoteSubscriber::new(cache, certificate_validator)
+}
+
+// XAdES-signed XML LoTE containing the same TRUSTED_CERT entity.
+// Generated with the P-256 test key pair from proto::xades::test using
+// generate_xml_lote_test_vector (run with --ignored --nocapture).
+const LOTE_XML: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<ListOfTrustedEntities xmlns="http://uri.etsi.org/019602/v1#" LOTETag="http://uri.etsi.org/019602/tag#"><ListAndSchemeInformation><LoTEVersionIdentifier>1</LoTEVersionIdentifier><LoTESequenceNumber>1</LoTESequenceNumber><LoTEType>http://uri.etsi.org/19602/LoTEType/EURegistrarsAndRegistersList</LoTEType><SchemeOperatorName><Name xml:lang="en">Test Operator</Name></SchemeOperatorName><StatusDeterminationApproach/><SchemeTerritory>EU</SchemeTerritory><ListIssueDateTime>2026-03-01T00:00:00Z</ListIssueDateTime><NextUpdate><dateTime>2026-06-01T00:00:00Z</dateTime></NextUpdate></ListAndSchemeInformation><TrustedEntitiesList><TrustedEntity><TrustedEntityInformation><TEName><Name xml:lang="de-DE">Test Entity</Name></TEName></TrustedEntityInformation><TrustedEntityServices><TrustedEntityService><ServiceInformation><ServiceName><Name xml:lang="de-DE">Test Service</Name></ServiceName><ServiceDigitalIdentity><DigitalId><X509Certificate>MIICLzCCAdSgAwIBAgIUHyRjE466YA7tc888k03Ou2QodF4wCgYIKoZIzj0EAwIwKDELMAkGA1UEBhMCREUxGTAXBgNVBAMMEEdlcm1hbiBSZWdpc3RyYXIwHhcNMjYwMTE2MTExNTU0WhcNMjgwMTE2MTExNTU0WjAoMQswCQYDVQQGEwJERTEZMBcGA1UEAwwQR2VybWFuIFJlZ2lzdHJhcjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMefY2X4ixfRkWEvp9grF2i21z6PKZsr8zzBaJ/+GnotCeH2cJ6GtLhxXhHfJjrETsMNIGhVaJoHoHcZTBHJrfyjgdswgdgwHQYDVR0OBBYEFKnCo9ovbaxU7s65TugsySwAg4AzMB8GA1UdIwQYMBaAFKnCo9ovbaxU7s65TugsySwAg4AzMBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgEGMCoGA1UdEgQjMCGGH2h0dHBzOi8vc2FuZGJveC5ldWRpLXdhbGxldC5vcmcwRgYDVR0fBD8wPTA7oDmgN4Y1aHR0cHM6Ly9zYW5kYm94LmV1ZGktd2FsbGV0Lm9yZy9zdGF0dXMtbWFuYWdlbWVudC9jcmwwCgYIKoZIzj0EAwIDSQAwRgIhAIY7ERpRrDRl0lr5H5uxjJ83JR4qua2sfPKxX+pl4Qw+AiEA2qL6LXVORA2r2VZjSEknfciwIG7laA12kjnyGAD3V/A=</X509Certificate></DigitalId></ServiceDigitalIdentity><ServiceStatus>http://uri.etsi.org/19602/SvcStatus/active</ServiceStatus><StatusStartingTime>2026-03-01T00:00:00Z</StatusStartingTime></ServiceInformation></TrustedEntityService></TrustedEntityServices></TrustedEntity></TrustedEntitiesList><ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="id-7f5552b2-bd88-425b-a42d-64e074b23d31"><ds:SignedInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/><ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256"/><ds:Reference Id="r-id-7f5552b2-bd88-425b-a42d-64e074b23d31" URI=""><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>ibHwcbENffk1nsVFRhNhhBX9XOKIluQTGocvLekeOBY=</ds:DigestValue></ds:Reference><ds:Reference URI="#xades-id-7f5552b2-bd88-425b-a42d-64e074b23d31" Type="http://uri.etsi.org/01903#SignedProperties"><ds:Transforms><ds:Transform Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/></ds:Transforms><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>Y0OazMA/aZaHQmPILNDLNRnNAaOWjb6NVKO63gg8xLg=</ds:DigestValue></ds:Reference></ds:SignedInfo><ds:SignatureValue Id="value-id-7f5552b2-bd88-425b-a42d-64e074b23d31">dFO8cosEG/KAgMqgB3BXGpuDuzZAGcgh5mv93DkqahQu054UOXL38EeIoWmfyYeMlwEPZpfWSzujtTpWgDZk+g==</ds:SignatureValue><ds:KeyInfo><ds:X509Data><ds:X509Certificate>MIIBMTCB2KADAgECAhQSJe8xsm3dMnAInnpRGvwiotSp6jAKBggqhkjOPQQDAjAYMRYwFAYDVQQDDA1YQWRFUyBUZXN0IENBMCAXDTc1MDEwMTAwMDAwMFoYDzQwOTYwMTAxMDAwMDAwWjAYMRYwFAYDVQQDDA1YQWRFUyBUZXN0IENBMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcd/LTtCQnat2XnDElumvgQAM5ZcnUMVTkPig458C1yeJpCY9SCKvzQjZcIWqfb8o+p1YfQ/EzMII/xbe4/GVQDAKBggqhkjOPQQDAgNIADBFAiEA34ISXnPYu5LRBb0itF0Nlmm4imiZ5YUKZahKnnmmAMQCIBWBr/GnmGAj5aqM+V6HGzhpwlz6d5ocJqb5GY+WhnHb</ds:X509Certificate></ds:X509Data></ds:KeyInfo><ds:Object><xades:QualifyingProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" Target="#id-7f5552b2-bd88-425b-a42d-64e074b23d31"><xades:SignedProperties xmlns:xades="http://uri.etsi.org/01903/v1.3.2#" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" Id="xades-id-7f5552b2-bd88-425b-a42d-64e074b23d31"><xades:SignedSignatureProperties><xades:SigningTime>2026-03-29T20:35:02.640504Z</xades:SigningTime><xades:SigningCertificateV2><xades:Cert><xades:CertDigest><ds:DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><ds:DigestValue>Vko5kJdJk0XOYw1G3uHVzAgQ+uPXlHRtH32Qp1K2FSs=</ds:DigestValue></xades:CertDigest><xades:IssuerSerialV2/></xades:Cert></xades:SigningCertificateV2></xades:SignedSignatureProperties><xades:SignedDataObjectProperties><xades:DataObjectFormat ObjectReference="#r-id-7f5552b2-bd88-425b-a42d-64e074b23d31"><xades:MimeType>text/xml</xades:MimeType></xades:DataObjectFormat></xades:SignedDataObjectProperties></xades:SignedProperties></xades:QualifyingProperties></ds:Object></ds:Signature></ListOfTrustedEntities>"##;
+
+fn setup_subscriber_xml(time: OffsetDateTime, reference: &Url) -> EtsiLoteSubscriber {
+    let mut clock = MockClock::new();
+    clock.expect_now_utc().returning(move || time);
+    let clock = Arc::new(clock);
+    let mut client = MockHttpClient::new();
+    mock_http_get_request(
+        &mut client,
+        reference.to_string(),
+        Response {
+            body: LOTE_XML.as_bytes().to_vec(),
+            headers: hashmap! { "Content-Type".to_string() => "application/xml".to_string() },
+            status: StatusCode(200),
+            request: Request {
+                body: None,
+                headers: Default::default(),
+                method: Method::Get,
+                url: reference.to_string(),
+                timeout: None,
+            },
+        },
+    );
+    let client = Arc::new(client);
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider
+        .expect_key_algorithm_from_type()
+        .returning(|r#type| match r#type {
+            KeyAlgorithmType::Ecdsa => Some(Arc::new(Ecdsa)),
+            _ => None,
+        });
+    let key_algorithm_provider = Arc::new(key_algorithm_provider);
+    let cache_storage = Arc::new(InMemoryStorage::new(HashMap::new()));
+
+    // XAdES verification needs a certificate validator that returns
+    // the test signing key's public key.
+    let ecdsa = Ecdsa;
+    let signing_cert_der =
+        ct_codecs::Base64::decode_to_vec("MIIBMTCB2KADAgECAhQSJe8xsm3dMnAInnpRGvwiotSp6jAKBggqhkjOPQQDAjAYMRYwFAYDVQQDDA1YQWRFUyBUZXN0IENBMCAXDTc1MDEwMTAwMDAwMFoYDzQwOTYwMTAxMDAwMDAwWjAYMRYwFAYDVQQDDA1YQWRFUyBUZXN0IENBMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEcd/LTtCQnat2XnDElumvgQAM5ZcnUMVTkPig458C1yeJpCY9SCKvzQjZcIWqfb8o+p1YfQ/EzMII/xbe4/GVQDAKBggqhkjOPQQDAgNIADBFAiEA34ISXnPYu5LRBb0itF0Nlmm4imiZ5YUKZahKnnmmAMQCIBWBr/GnmGAj5aqM+V6HGzhpwlz6d5ocJqb5GY+WhnHb", None).unwrap();
+    let (_, parsed) = x509_parser::parse_x509_certificate(&signing_cert_der).unwrap();
+    let key_handle = ecdsa
+        .parse_der(parsed.tbs_certificate.subject_pki.raw)
+        .unwrap();
+
+    let mut cert_validator = MockCertificateValidator::new();
+    cert_validator
+        .expect_parse_pem_chain()
+        .returning(move |_, _| {
+            let now = OffsetDateTime::now_utc();
+            Ok(crate::proto::certificate_validator::ParsedCertificate {
+                attributes: CertificateX509AttributesDTO {
+                    serial_number: "test".to_string(),
+                    not_before: now,
+                    not_after: now,
+                    issuer: "XAdES Test CA".to_string(),
+                    subject: "XAdES Test CA".to_string(),
+                    fingerprint: TRUSTED_FINGERPRINT.to_string(),
+                    extensions: vec![],
+                },
+                subject_common_name: Some("XAdES Test CA".to_string()),
+                subject_key_identifier: None,
+                public_key: key_handle.clone(),
+            })
+        });
+
+    let cert_validator = Arc::new(cert_validator);
+    let crypto = one_crypto::initialize_crypto_provider();
+    let xades = XAdES::new(crypto, cert_validator.clone());
+
+    let resolver = EtsiLoteResolver::new(
+        clock,
+        client,
+        Arc::new(MockDidMethodProvider::new()),
+        key_algorithm_provider,
+        cert_validator,
+        Arc::new(xades),
+        LoteContentType::Xml,
+        Duration::seconds(0),
+    );
+    let cache = EtsiLoteCache::new(
+        Arc::new(resolver),
+        cache_storage,
+        100,
+        Duration::seconds(60),
+        Duration::seconds(60),
+    );
+
+    EtsiLoteSubscriber::new(cache, Arc::new(MockCertificateValidator::new()))
+}
+
+#[tokio::test]
+async fn validate_subscription_xml_success() {
+    let time = datetime!(2026-04-01 00:00 UTC);
+    let reference = Url::parse("https://example.com/lote-xml").unwrap();
+
+    let subscriber = setup_subscriber_xml(time, &reference);
+
+    let result = subscriber
+        .validate_subscription(
+            &reference,
+            Some(TrustListRoleEnum::NationalRegistryRegistrar),
+        )
+        .await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn validate_subscription_xml_expired() {
+    // After NextUpdate (2026-06-01) but still valid for XAdES signing time check
+    let time = datetime!(2026-07-01 00:00 UTC);
+    let reference = Url::parse("https://example.com/lote-xml").unwrap();
+
+    let subscriber = setup_subscriber_xml(time, &reference);
+
+    let result = subscriber
+        .validate_subscription(&reference, None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(result.error_code(), ErrorCode::BR_0354);
+}
+
+#[tokio::test]
+async fn resolve_trusted_identifier_xml() {
+    let time = datetime!(2026-04-01 00:00 UTC);
+    let reference = Url::parse("https://example.com/lote-xml").unwrap();
+
+    let subscriber = setup_subscriber_xml(time, &reference);
+
+    let identifier_id = Uuid::new_v4().into();
+    let now = OffsetDateTime::now_utc();
+    let identifier = Identifier {
+        id: identifier_id,
+        created_date: now,
+        last_modified: now,
+        name: "".to_string(),
+        r#type: IdentifierType::Certificate,
+        is_remote: false,
+        state: IdentifierState::Active,
+        deleted_at: None,
+        organisation: None,
+        did: None,
+        key: None,
+        certificates: Some(vec![Certificate {
+            id: Uuid::new_v4().into(),
+            identifier_id,
+            organisation_id: None,
+            created_date: now,
+            last_modified: now,
+            expiry_date: now,
+            name: "".to_string(),
+            chain: TRUSTED_CERT.to_string(),
+            fingerprint: TRUSTED_FINGERPRINT.to_string(),
+            state: CertificateState::Active,
+            roles: vec![],
+            key: Some(dummy_key()),
+        }]),
+        trust_information: None,
+    };
+
+    let result = subscriber
+        .resolve_entries(&reference, &[identifier])
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    assert!(result.contains_key(&identifier_id));
+}
+
+#[tokio::test]
+async fn resolve_untrusted_identifier_xml() {
+    let time = datetime!(2026-04-01 00:00 UTC);
+    let reference = Url::parse("https://example.com/lote-xml").unwrap();
+
+    let subscriber = setup_subscriber_xml(time, &reference);
+
+    let identifier_id = Uuid::new_v4().into();
+    let now = OffsetDateTime::now_utc();
+    let identifier = Identifier {
+        id: identifier_id,
+        created_date: now,
+        last_modified: now,
+        name: "".to_string(),
+        r#type: IdentifierType::Certificate,
+        is_remote: false,
+        state: IdentifierState::Active,
+        deleted_at: None,
+        organisation: None,
+        did: None,
+        key: None,
+        certificates: Some(vec![Certificate {
+            id: Uuid::new_v4().into(),
+            identifier_id,
+            organisation_id: None,
+            created_date: now,
+            last_modified: now,
+            expiry_date: now,
+            name: "".to_string(),
+            chain: UNTRUSTED_CERT.to_string(),
+            fingerprint: "unknown fingerprint".to_string(),
+            state: CertificateState::Active,
+            roles: vec![],
+            key: Some(dummy_key()),
+        }]),
+        trust_information: None,
+    };
+
+    let result = subscriber
+        .resolve_entries(&reference, &[identifier])
+        .await
+        .unwrap();
+    assert!(result.is_empty());
 }

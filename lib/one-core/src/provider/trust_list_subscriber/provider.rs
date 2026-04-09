@@ -12,6 +12,7 @@ use crate::config::core_config::{
 use crate::proto::certificate_validator::CertificateValidator;
 use crate::proto::clock::Clock;
 use crate::proto::http_client::HttpClient;
+use crate::proto::xades::XAdESProto;
 use crate::provider::caching_loader::etsi_lote::EtsiLoteCache;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
@@ -38,6 +39,7 @@ impl TrustListSubscriberProvider for TrustListSubscriberProviderImpl {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn trust_list_subscriber_provider_from_config(
     config: &mut CoreConfig,
     clock: Arc<dyn Clock>,
@@ -45,6 +47,7 @@ pub(crate) fn trust_list_subscriber_provider_from_config(
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     certificate_validator: Arc<dyn CertificateValidator>,
+    xades_proto: Arc<dyn XAdESProto>,
     remote_entity_cache_repository: Arc<dyn RemoteEntityCacheRepository>,
 ) -> Result<Arc<dyn TrustListSubscriberProvider>, ConfigValidationError> {
     let mut subscribers: HashMap<TrustListSubscriberId, Arc<dyn TrustListSubscriber>> =
@@ -63,6 +66,7 @@ pub(crate) fn trust_list_subscriber_provider_from_config(
                     did_method_provider.clone(),
                     key_algorithm_provider.clone(),
                     certificate_validator.clone(),
+                    xades_proto.clone(),
                     params.accepts,
                     params.leeway,
                 );

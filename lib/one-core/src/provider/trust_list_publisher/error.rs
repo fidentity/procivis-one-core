@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
 use crate::mapper::x509::CertificateParsingError;
+use crate::proto::xades::error::Error;
 
 #[derive(Debug, Error)]
 pub enum TrustListPublisherError {
@@ -35,6 +36,10 @@ pub enum TrustListPublisherError {
     Encoding(#[from] ct_codecs::Error),
     #[error("UTF-8 error: `{0}`")]
     FromUtf8Error(#[from] FromUtf8Error),
+    #[error("XML serialization error: `{0}`")]
+    XmlSerialization(#[from] quick_xml::SeError),
+    #[error("XAdES error: `{0}`")]
+    XAdES(#[from] Error),
     #[error("Datetime format error: `{0}`")]
     DatetimeFormat(#[from] time::error::Format),
 
@@ -59,7 +64,9 @@ impl ErrorCodeMixin for TrustListPublisherError {
             | Self::FromUtf8Error(_)
             | Self::DatetimeFormat(_)
             | Self::Signing(_)
-            | Self::InvalidJws(_) => ErrorCode::BR_0384,
+            | Self::InvalidJws(_)
+            | Self::XmlSerialization(_)
+            | Self::XAdES(_) => ErrorCode::BR_0384,
         }
     }
 }

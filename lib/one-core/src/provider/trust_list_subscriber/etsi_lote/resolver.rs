@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use standardized_types::etsi_119_602::LoTEPayload;
+use standardized_types::etsi_119_602::{json, xml};
 use time::OffsetDateTime;
 
 use super::LoteContentType;
@@ -12,6 +12,7 @@ use crate::proto::clock::Clock;
 use crate::proto::http_client::HttpClient;
 use crate::proto::jwt::Jwt;
 use crate::proto::key_verification::KeyVerification;
+use crate::proto::xades::{XAdESProto, XAdESSignedXML};
 use crate::provider::caching_loader::{ResolveResult, Resolver, ResolverError};
 use crate::provider::credential_formatter::model::PublicKeySource;
 use crate::provider::did_method::provider::DidMethodProvider;
@@ -23,17 +24,20 @@ pub struct EtsiLoteResolver {
     did_method_provider: Arc<dyn DidMethodProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     certificate_validator: Arc<dyn CertificateValidator>,
+    xades_proto: Arc<dyn XAdESProto>,
     content_type: LoteContentType,
     leeway: time::Duration,
 }
 
 impl EtsiLoteResolver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: Arc<dyn Clock>,
         client: Arc<dyn HttpClient>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         certificate_validator: Arc<dyn CertificateValidator>,
+        xades_proto: Arc<dyn XAdESProto>,
         content_type: LoteContentType,
         leeway: time::Duration,
     ) -> Self {
@@ -43,6 +47,7 @@ impl EtsiLoteResolver {
             did_method_provider,
             key_algorithm_provider,
             certificate_validator,
+            xades_proto,
             content_type,
             leeway,
         }
@@ -81,15 +86,17 @@ impl Resolver for EtsiLoteResolver {
             )));
         }
 
-        let (lote, expiry) =
+        let lote =
             match self.content_type {
                 LoteContentType::Jwt => {
                     let decomposed_token =
-                        Jwt::<LoTEPayload>::decompose_token(str::from_utf8(&response.body)?)
+                        Jwt::<json::LoTEPayload>::decompose_token(str::from_utf8(&response.body)?)
                             .error_while("parsing ETSI LoTE JWT")?;
+
                     let x5c = decomposed_token.header.x5c.as_ref().ok_or(
                         ResolverError::InvalidResponse("missing x5c header claim".to_string()),
                     )?;
+
                     let pub_key_source = PublicKeySource::X5c { x5c };
                     let verification = KeyVerification {
                         did_method_provider: self.did_method_provider.clone(),
@@ -101,26 +108,29 @@ impl Resolver for EtsiLoteResolver {
                         .verify_signature(pub_key_source, &verification)
                         .await
                         .error_while("verifying ETSI LoTE JWT signature")?;
-                    let expiry = decomposed_token
-                        .payload
-                        .custom
-                        .list_and_scheme_information
-                        .next_update;
-                    if expiry + self.leeway < self.clock.now_utc() {
-                        return Err(ResolverError::InvalidResponse(
-                            "LoTE trust list is expired".to_string(),
-                        ));
-                    }
-                    (decomposed_token.payload.custom, expiry)
+                    decomposed_token.payload.custom
                 }
                 LoteContentType::Xml => {
-                    // TODO ONE-9004: Follow-up MR
-                    unimplemented!(
-                        "ETSI LoTE content type not supported: {}",
-                        response_content_type
-                    );
+                    let signed_xml = XAdESSignedXML::<xml::LoTEPayload>::decompose_document(
+                        str::from_utf8(&response.body)?,
+                    )
+                    .error_while("parsing ETSI LoTE XML")?;
+
+                    self.xades_proto
+                        .verify_enveloped_signature(signed_xml.envelope(), self.leeway)
+                        .await
+                        .error_while("verifying ETSI LoTE XML signature")?;
+
+                    signed_xml.content.into()
                 }
             };
+        let expiry = lote.list_and_scheme_information.next_update;
+        if expiry + self.leeway < self.clock.now_utc() {
+            return Err(ResolverError::InvalidResponse(
+                "LoTE trust list is expired".to_string(),
+            ));
+        }
+
         let preprocessed_list = preprocess_lote(
             lote,
             &*self.certificate_validator,
@@ -128,6 +138,7 @@ impl Resolver for EtsiLoteResolver {
         )
         .await
         .error_while("preprocessing ETSI LoTE")?;
+
         Ok(ResolveResult::NewValue {
             content: serde_json::to_vec(&preprocessed_list)?,
             media_type: Some(response_content_type.to_string()),

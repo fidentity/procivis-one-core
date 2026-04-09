@@ -27,3 +27,4 @@ pub(crate) mod verifier_provider_client;
 pub(crate) mod wallet_provider_client;
 pub(crate) mod wallet_unit;
 pub(crate) mod wrp_validator;
+pub(crate) mod xades;

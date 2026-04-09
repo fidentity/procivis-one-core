@@ -19,6 +19,7 @@ use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::key::Key;
 use crate::proto::clock::DefaultClock;
 use crate::proto::jwt::Jwt;
+use crate::proto::xades::MockXAdESProto;
 use crate::provider::credential_formatter::model::MockSignatureProvider;
 use crate::provider::key_algorithm::ecdsa::Ecdsa;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
@@ -287,6 +288,7 @@ fn make_publisher(
     pub_repo: MockTrustListPublicationRepository,
     entry_repo: MockTrustEntryRepository,
     identifier_repo: MockIdentifierRepository,
+    xades_proto: MockXAdESProto,
 ) -> EtsiLotePublisher {
     EtsiLotePublisher {
         method_id: "ETSI_LOTE".into(),
@@ -297,6 +299,7 @@ fn make_publisher(
         clock: Arc::new(DefaultClock),
         key_provider: Arc::new(key_provider),
         key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: Arc::new(xades_proto),
         trust_list_publication_repository: Arc::new(pub_repo),
         trust_entry_repository: Arc::new(entry_repo),
         identifier_repository: Arc::new(identifier_repo),
@@ -440,6 +443,7 @@ async fn test_format_trust_list_empty_list() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let jws = publisher
@@ -478,6 +482,7 @@ async fn test_format_trust_list_with_entry() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let jws = publisher
@@ -527,6 +532,7 @@ async fn test_create_trust_list_rejects_identifier_without_certificate() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let result = publisher
@@ -569,6 +575,7 @@ async fn test_lifecycle_create_add_update_remove() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -576,6 +583,7 @@ async fn test_lifecycle_create_add_update_remove() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
@@ -722,6 +730,7 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
     identifier_repo
         .expect_get()
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -729,6 +738,7 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
         pub_repo,
         entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
@@ -851,6 +861,7 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -858,6 +869,7 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     let params = json!({
@@ -936,12 +948,15 @@ async fn test_generate_trust_list_content_returns_fresh_content() {
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
 
+    let xades_proto = MockXAdESProto::new();
+
     let publisher = make_publisher(
         key_provider,
         key_algorithm_provider,
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
@@ -1005,6 +1020,7 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -1012,6 +1028,7 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
@@ -1062,6 +1079,111 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         seq_after_create + 1,
         "should have re-signed (sequence incremented)"
     );
+}
+
+#[tokio::test]
+async fn test_format_trust_list_xml_empty_list() {
+    let (key_provider, key_algorithm_provider, key, certificate, _) = make_signing_mocks();
+
+    let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
+    let publication = TrustListPublication {
+        key: Some(key),
+        certificate: Some(certificate),
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
+    };
+
+    let publisher = EtsiLotePublisher {
+        method_id: "ETSI_LOTE_XML".into(),
+        params: EtsiLoteParams {
+            refresh_interval_seconds: time::Duration::seconds(86400),
+            content_type: LoteContentType::Xml,
+        },
+        clock: Arc::new(DefaultClock),
+        key_provider: Arc::new(key_provider),
+        key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: {
+            let mut mock = MockXAdESProto::new();
+            mock.expect_create_enveloped_signature()
+                .once()
+                .returning(|unsigned_xml, _, _| {
+                    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>{unsigned_xml}");
+                    Box::pin(async move { Ok(xml) })
+                });
+            Arc::new(mock)
+        },
+        trust_list_publication_repository: Arc::new(MockTrustListPublicationRepository::new()),
+        trust_entry_repository: Arc::new(MockTrustEntryRepository::new()),
+        identifier_repository: Arc::new(MockIdentifierRepository::new()),
+    };
+
+    let xml = publisher
+        .format_trust_list(&publication, "Test Operator", &[])
+        .await
+        .unwrap();
+
+    let xml_str = String::from_utf8(xml).unwrap();
+    assert!(xml_str.starts_with("<?xml"));
+    assert!(xml_str.contains("<ListOfTrustedEntities"));
+    assert!(xml_str.contains("xmlns=\"http://uri.etsi.org/019602/v1#\""));
+    assert!(xml_str.contains("<Name xml:lang=\"en\">Test Operator</Name>"));
+    assert!(!xml_str.contains("<TrustedEntitiesList>"));
+}
+
+#[tokio::test]
+async fn test_format_trust_list_xml_with_entry() {
+    let (key_provider, key_algorithm_provider, key, certificate, _) = make_signing_mocks();
+
+    let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
+    let publication = TrustListPublication {
+        key: Some(key),
+        certificate: Some(certificate),
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
+    };
+
+    let identifier = Identifier {
+        name: "Test Entity".into(),
+        r#type: IdentifierType::Certificate,
+        certificates: Some(vec![dummy_certificate(generate_self_signed_pem())]),
+        ..dummy_identifier()
+    };
+    let entry_params = AddEntryParams::default();
+    let entry = dummy_entry(serde_json::to_vec(&entry_params).unwrap());
+
+    let publisher = EtsiLotePublisher {
+        method_id: "ETSI_LOTE_XML".into(),
+        params: EtsiLoteParams {
+            refresh_interval_seconds: time::Duration::seconds(86400),
+            content_type: LoteContentType::Xml,
+        },
+        clock: Arc::new(DefaultClock),
+        key_provider: Arc::new(key_provider),
+        key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: {
+            let mut mock = MockXAdESProto::new();
+            mock.expect_create_enveloped_signature()
+                .once()
+                .returning(|unsigned_xml, _, _| {
+                    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>{unsigned_xml}");
+                    Box::pin(async move { Ok(xml) })
+                });
+            Arc::new(mock)
+        },
+        trust_list_publication_repository: Arc::new(MockTrustListPublicationRepository::new()),
+        trust_entry_repository: Arc::new(MockTrustEntryRepository::new()),
+        identifier_repository: Arc::new(MockIdentifierRepository::new()),
+    };
+
+    let xml = publisher
+        .format_trust_list(&publication, "Test Operator", &[(entry, identifier)])
+        .await
+        .unwrap();
+
+    let xml_str = String::from_utf8(xml).unwrap();
+    assert!(xml_str.contains("<TrustedEntitiesList>"));
+    assert!(xml_str.contains("<TrustedEntity>"));
+    assert!(xml_str.contains("<Name xml:lang=\"en\">Test Entity</Name>"));
+    assert!(xml_str.contains("<X509Certificate>"));
+    assert!(xml_str.contains("SvcType/PID/Issuance"));
 }
 
 #[tokio::test]

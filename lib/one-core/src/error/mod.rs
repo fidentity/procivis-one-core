@@ -879,10 +879,13 @@ pub enum ErrorCode {
 
     #[strum(message = "Trust management disabled")]
     BR_0412,
+
     #[strum(message = "Invalid filter value: credential schema not found")]
     BR_0413,
+
     #[strum(message = "Invalid filter value: proof schema not found")]
     BR_0414,
+
     #[strum(message = "Missing trust information blob")]
     BR_0415,
 

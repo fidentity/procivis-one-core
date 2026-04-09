@@ -37,6 +37,7 @@ use crate::proto::verifier_provider_client::http_client::HTTPVerifierProviderCli
 use crate::proto::wallet_provider_client::http_client::HTTPWalletProviderClient;
 use crate::proto::wallet_unit::HolderWalletUnitProtoImpl;
 use crate::proto::wrp_validator::validator::WRPValidatorImpl;
+use crate::proto::xades::XAdES;
 use crate::provider::blob_storage_provider::blob_storage_provider_from_config;
 use crate::provider::caching_loader::json_ld_context::{
     ContextCache, initialize_jsonld_cache_from_config,
@@ -345,6 +346,8 @@ impl OneCore {
             data_provider.get_tx_manager(),
         ));
 
+        let xades_proto = Arc::new(XAdES::new(crypto.clone(), certificate_validator.clone()));
+
         let presentation_formatter_provider = get_presentation_formatter_provider(
             key_algorithm_provider.clone(),
             client.clone(),
@@ -365,6 +368,7 @@ impl OneCore {
             clock.clone(),
             key_provider.clone(),
             key_algorithm_provider.clone(),
+            xades_proto.clone(),
             data_provider.get_trust_list_publication_repository(),
             data_provider.get_trust_entry_repository(),
             data_provider.get_identifier_repository(),
@@ -377,6 +381,7 @@ impl OneCore {
             did_method_provider.clone(),
             key_algorithm_provider.clone(),
             certificate_validator.clone(),
+            xades_proto,
             data_provider.get_remote_entity_cache_repository(),
         )?;
 

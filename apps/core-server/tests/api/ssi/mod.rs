@@ -12,6 +12,7 @@ mod get_trust_collection;
 mod get_trust_entity;
 mod get_trust_list;
 mod get_trust_list_publication_content;
+mod get_trust_list_publication_content_xml;
 mod get_verifier_provider;
 mod get_wallet_provider_metadata;
 mod issue_wallet_attestations;

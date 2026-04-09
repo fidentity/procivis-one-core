@@ -11,7 +11,7 @@ use shared_types::{TrustEntryId, TrustListPublicationId, TrustListPublisherId};
 use standardized_types::etsi_119_602::{
     ListAndSchemeInformation, LoTEPayload, LoTEType, MultiLangString, MultiLangUri, PkiObject,
     ServiceDigitalIdentity, ServiceInformation, TrustedEntity, TrustedEntityInformation,
-    TrustedEntityService,
+    TrustedEntityService, xml,
 };
 use standardized_types::jades::JadesHeader;
 use strum::Display;
@@ -34,6 +34,7 @@ use crate::model::trust_list_publication::{
 use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::proto::certificate_validator::parse::extract_leaf_pem_from_chain;
 use crate::proto::clock::Clock;
+use crate::proto::xades::XAdESProto;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::trust_list_publisher::error::TrustListPublisherError;
@@ -51,6 +52,7 @@ pub(crate) struct EtsiLotePublisher {
     pub clock: Arc<dyn Clock>,
     pub key_provider: Arc<dyn KeyProvider>,
     pub key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    pub xades_proto: Arc<dyn XAdESProto>,
     pub trust_list_publication_repository: Arc<dyn TrustListPublicationRepository>,
     pub trust_entry_repository: Arc<dyn TrustEntryRepository>,
     pub identifier_repository: Arc<dyn IdentifierRepository>,
@@ -266,8 +268,6 @@ impl EtsiLotePublisher {
             now,
         )?;
 
-        let payload_json = serde_json::to_vec(&payload)?;
-
         let key = publication.key.as_ref().ok_or_else(|| {
             TrustListPublisherError::MissingRelation("publication missing key".to_string())
         })?;
@@ -283,7 +283,23 @@ impl EtsiLotePublisher {
             .get_signature_provider(key, None, self.key_algorithm_provider.clone())
             .error_while("getting signature provider")?;
 
-        sign_jades_compact(&payload_json, &*signer, x5c, self.clock.now_utc()).await
+        match self.params.content_type {
+            LoteContentType::Xml => {
+                let xml_payload = xml::LoTEPayload::from(payload);
+                let unsigned_xml = quick_xml::se::to_string(&xml_payload)?;
+
+                let signed_document = self
+                    .xades_proto
+                    .create_enveloped_signature(&unsigned_xml, &*signer, x5c)
+                    .await?;
+
+                Ok(signed_document.into_bytes())
+            }
+            LoteContentType::Jwt => {
+                let payload_json = serde_json::to_vec(&payload)?;
+                sign_jades_compact(&payload_json, &*signer, x5c, self.clock.now_utc()).await
+            }
+        }
     }
 
     async fn sign_trust_list(

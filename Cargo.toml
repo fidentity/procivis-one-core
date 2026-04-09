@@ -48,6 +48,7 @@ quick-xml                = { version = "0.37", features = ["serialize"] }
 rand                     = { version = "0.8" }
 rcgen                    = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex                    = { version = "1.10" }
+roxmltree                = { version = "0.20" }
 reqwest                  = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
 rustls-platform-verifier = { version = "0.6" }
 sea-orm                  = { version = "1.1", default-features = false }

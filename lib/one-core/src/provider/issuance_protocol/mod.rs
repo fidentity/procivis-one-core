@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use dto::IssuanceProtocolCapabilities;
 use error::IssuanceProtocolError;
 use serde::Serialize;
 use serde::de::Deserialize;
-use shared_types::CredentialId;
+use shared_types::{CredentialId, CredentialSchemaId};
 use url::Url;
 
 use crate::model::credential::Credential;
@@ -10,7 +12,9 @@ use crate::model::identifier::Identifier;
 use crate::model::interaction::Interaction;
 use crate::model::key::Key;
 use crate::model::organisation::Organisation;
-use crate::provider::issuance_protocol::dto::ContinueIssuanceDTO;
+use crate::provider::issuance_protocol::dto::{
+    ContinueIssuanceDTO, OpenID4VCIIssuerMetadataResponseDTO,
+};
 use crate::provider::issuance_protocol::model::InvitationResponseEnum;
 use crate::service::storage_proxy::StorageAccess;
 
@@ -85,6 +89,13 @@ pub(crate) trait IssuanceProtocol: Send + Sync {
         storage_access: &StorageAccess,
     ) -> Result<(), IssuanceProtocolError>;
 
+    async fn holder_continue_issuance(
+        &self,
+        continue_issuance_dto: ContinueIssuanceDTO,
+        organisation: Organisation,
+        storage_access: &StorageAccess,
+    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError>;
+
     /// Generates QR-code content to start the credential issuance flow.
     async fn issuer_share_credential(
         &self,
@@ -99,12 +110,12 @@ pub(crate) trait IssuanceProtocol: Send + Sync {
         holder_key_id: String,
     ) -> Result<SubmitIssuerResponse, IssuanceProtocolError>;
 
-    async fn holder_continue_issuance(
+    async fn issuer_metadata(
         &self,
-        continue_issuance_dto: ContinueIssuanceDTO,
-        organisation: Organisation,
-        storage_access: &StorageAccess,
-    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError>;
+        protocol_id: &str,
+        credential_schema_id: &CredentialSchemaId,
+        issuer_identifier: Option<Arc<Identifier>>,
+    ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, IssuanceProtocolError>;
 
     fn get_capabilities(&self) -> IssuanceProtocolCapabilities;
 }

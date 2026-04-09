@@ -73,6 +73,7 @@ use crate::provider::key_storage::model::{KeyStorageCapabilities, StorageGenerat
 use crate::provider::key_storage::provider::MockKeyProvider;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
+use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
 use crate::repository::key_repository::MockKeyRepository;
@@ -90,6 +91,7 @@ struct TestInputs {
     pub identifier_creator: MockIdentifierCreator,
     pub metadata_cache: MockOpenIDMetadataFetcher,
     pub validity_credential_repository: MockValidityCredentialRepository,
+    pub credential_schema_repository: MockCredentialSchemaRepository,
     pub formatter_provider: MockCredentialFormatterProvider,
     pub revocation_provider: MockRevocationMethodProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
@@ -115,6 +117,7 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VCIFinal1_0 {
         Arc::new(inputs.identifier_creator),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(inputs.validity_credential_repository),
+        Arc::new(inputs.credential_schema_repository),
         Arc::new(inputs.formatter_provider),
         Arc::new(inputs.revocation_provider),
         Arc::new(inputs.did_method_provider),

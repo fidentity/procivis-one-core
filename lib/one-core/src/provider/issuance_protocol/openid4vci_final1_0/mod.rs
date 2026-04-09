@@ -7,6 +7,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use indexmap::IndexMap;
 use one_crypto::encryption::{decrypt_string, encrypt_string};
 use one_crypto::utilities::generate_alphanumeric;
 use one_dto_mapper::convert_inner;
@@ -14,7 +15,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    BlobId, CredentialFormat, CredentialId, DidValue, InteractionId, OrganisationId,
+    BlobId, CredentialFormat, CredentialId, CredentialSchemaId, DidValue, InteractionId,
+    OrganisationId,
 };
 use standardized_types::jwk::PublicJwk;
 use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
@@ -31,21 +33,27 @@ use super::model::{
 };
 use super::openid4vci_final1_0::mapper::{
     credential_config_to_holder_signing_algs_and_key_storage_security, get_credential_offer_url,
-    interaction_data_to_accepted_key_storage_security, parse_credential_issuer_params,
+    interaction_data_to_accepted_key_storage_security, map_cryptographic_binding_methods_supported,
+    map_proof_types_supported, parse_credential_issuer_params,
 };
 use super::openid4vci_final1_0::model::{
-    ChallengeResponseDTO, HolderInteractionData, OAuthAuthorizationServerMetadata,
-    OpenID4VCIAuthorizationCodeGrant, OpenID4VCICredentialRequestDTO, OpenID4VCIFinal1Params,
+    ChallengeResponseDTO, EtsiIssuerInfoAttestationFormat, EtsiIssuerInfoResponseDTO,
+    HolderInteractionData, OAuthAuthorizationServerMetadata, OpenID4VCIAuthorizationCodeGrant,
+    OpenID4VCICredentialConfigurationData, OpenID4VCICredentialRequestDTO, OpenID4VCIFinal1Params,
     OpenID4VCIGrants, OpenID4VCIIssuerInteractionDataDTO, OpenID4VCIIssuerMetadataResponseDTO,
     OpenID4VCINonceResponseDTO, OpenID4VCINotificationEvent, OpenID4VCINotificationRequestDTO,
-    OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
+    OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO, PreparedMetadata,
 };
 use super::openid4vci_final1_0::proof_formatter::OpenID4VCIProofJWTFormatter;
-use super::openid4vci_final1_0::service::{create_credential_offer, get_protocol_base_url};
+use super::openid4vci_final1_0::service::{
+    create_credential_offer, create_issuer_metadata_response, credential_configurations_supported,
+    get_protocol_base_url,
+};
 use super::{
     HolderBindingInput, IssuanceProtocol, IssuanceProtocolError, StorageAccess,
     deserialize_interaction_data, serialize_interaction_data,
 };
+use crate::clock::now_utc;
 use crate::config::core_config::{CoreConfig, DidType as ConfigDidType, FormatType};
 use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin, ErrorCodeMixinExt};
 use crate::mapper::oidc::map_from_oidc_format_to_core_detailed;
@@ -65,6 +73,7 @@ use crate::model::history::{
 };
 use crate::model::holder_wallet_unit::HolderWalletUnit;
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
+use crate::model::identifier_trust_information::{IdentifierTrustInformation, SchemaFormat};
 use crate::model::interaction::{Interaction, UpdateInteractionRequest};
 use crate::model::key::{Key, KeyRelations};
 use crate::model::organisation::{Organisation, OrganisationRelations};
@@ -92,11 +101,11 @@ use crate::provider::credential_formatter::model::{
 };
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
+use crate::provider::issuance_protocol::error::OpenIDIssuanceError;
 use crate::provider::issuance_protocol::mapper::{
     autogenerate_holder_binding, generate_transaction_code,
 };
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
-    EtsiIssuerInfoResponseDTO, OpenID4VCICredentialConfigurationData,
     OpenID4VCICredentialRequestIdentifier, OpenID4VCICredentialRequestProofs,
     OpenID4VCIFinal1CredentialOfferDTO, TokenRequestWalletAttestationRequest,
     WalletAttestationResult,
@@ -107,6 +116,7 @@ use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::provider::signer::registration_certificate;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
@@ -144,6 +154,7 @@ pub(crate) struct OpenID4VCIFinal1_0 {
     identifier_creator: Arc<dyn IdentifierCreator>,
     credential_schema_importer: Arc<dyn CredentialSchemaImporter>,
     validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+    credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
     formatter_provider: Arc<dyn CredentialFormatterProvider>,
     revocation_provider: Arc<dyn RevocationMethodProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
@@ -174,6 +185,7 @@ impl OpenID4VCIFinal1_0 {
         identifier_creator: Arc<dyn IdentifierCreator>,
         credential_schema_importer: Arc<dyn CredentialSchemaImporter>,
         validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+        credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         formatter_provider: Arc<dyn CredentialFormatterProvider>,
         revocation_provider: Arc<dyn RevocationMethodProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -201,6 +213,7 @@ impl OpenID4VCIFinal1_0 {
             identifier_creator,
             credential_schema_importer,
             validity_credential_repository,
+            credential_schema_repository,
             formatter_provider,
             revocation_provider,
             did_method_provider,
@@ -232,6 +245,7 @@ impl OpenID4VCIFinal1_0 {
         identifier_creator: Arc<dyn IdentifierCreator>,
         credential_schema_importer: Arc<dyn CredentialSchemaImporter>,
         validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+        credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         formatter_provider: Arc<dyn CredentialFormatterProvider>,
         revocation_provider: Arc<dyn RevocationMethodProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -258,6 +272,7 @@ impl OpenID4VCIFinal1_0 {
             identifier_creator,
             credential_schema_importer,
             validity_credential_repository,
+            credential_schema_repository,
             formatter_provider,
             revocation_provider,
             did_method_provider,
@@ -1436,6 +1451,141 @@ impl OpenID4VCIFinal1_0 {
 
         Ok(())
     }
+
+    pub(super) async fn get_etsi_issuer_info(
+        &self,
+        identifier: &Identifier,
+        credential_schema: &CredentialSchema,
+    ) -> Result<Option<Vec<EtsiIssuerInfoResponseDTO>>, IssuanceProtocolError> {
+        let Some(trust_information_list) = identifier.trust_information.as_ref() else {
+            return Ok(None);
+        };
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let format_type = self
+            .config
+            .format
+            .get_fields(&credential_schema.format)
+            .error_while("getting format config")?
+            .r#type;
+
+        let valid_trust_information_list = trust_information_list
+            .iter()
+            .filter(|ti| ti.is_valid(now_utc()))
+            .filter(|ti| ti.is_issuance_allowed_for(&credential_schema.schema_id, &format_type));
+
+        let mut etsi_issuer_info_list = Vec::new();
+        for trust_information in valid_trust_information_list {
+            let certificate = blob_storage
+                .get(&trust_information.blob_id)
+                .await
+                .error_while("getting trust information blob")?
+                .ok_or(IssuanceProtocolError::TrustInformationError(
+                    "Missing registration certificate".to_string(),
+                ))?;
+
+            if certificate.r#type != BlobType::RegistrationCertificate {
+                return Err(IssuanceProtocolError::TrustInformationError(format!(
+                    "Invalid trust information data, expected registration certificate, got {:?}",
+                    certificate.r#type
+                )));
+            }
+
+            etsi_issuer_info_list.push(EtsiIssuerInfoResponseDTO {
+                format: EtsiIssuerInfoAttestationFormat::RegistrationCert,
+                data: String::from_utf8(certificate.value)?,
+                credential_ids: trust_information
+                    .allowed_issuance_types
+                    .iter()
+                    .map(|ti| dcql::CredentialQueryId::from(ti.schema_id.as_str()))
+                    .collect(),
+            })
+        }
+        Ok(Some(etsi_issuer_info_list))
+    }
+
+    pub(super) async fn prepare_issuer_metadata(
+        &self,
+        credential_schema_id: &CredentialSchemaId,
+    ) -> Result<PreparedMetadata, IssuanceProtocolError> {
+        let protocol_base_url =
+            self.protocol_base_url
+                .clone()
+                .ok_or(IssuanceProtocolError::Failed(
+                    "Host URL not specified".to_string(),
+                ))?;
+
+        let schema = self
+            .credential_schema_repository
+            .get_credential_schema(
+                credential_schema_id,
+                &CredentialSchemaRelations {
+                    claim_schemas: Some(ClaimSchemaRelations::default()),
+                    organisation: Some(OrganisationRelations::default()),
+                },
+            )
+            .await
+            .error_while("getting credential schema")?;
+
+        let Some(schema) = schema else {
+            return Err(IssuanceProtocolError::MissingCredentialSchema(
+                *credential_schema_id,
+            ));
+        };
+
+        let format_type = self
+            .config
+            .format
+            .get_fields(&schema.format)
+            .error_while("getting format config")?
+            .r#type;
+
+        let formatter = self
+            .formatter_provider
+            .get_credential_formatter(&schema.format)
+            .ok_or(MissingProviderError::Formatter(schema.format.to_string()))
+            .error_while("getting formatter")?;
+
+        let format_capabilities = formatter.get_capabilities();
+        let credential_signing_alg_values_supported = format_capabilities
+            .signing_key_algorithms
+            .into_iter()
+            .filter_map(|alg_type| {
+                self.key_algorithm_provider
+                    .key_algorithm_from_type(alg_type)
+                    .and_then(|alg| alg.issuance_jose_alg_id())
+            })
+            .collect();
+
+        let credential_configurations_supported: IndexMap<
+            String,
+            OpenID4VCICredentialConfigurationData,
+        > = credential_configurations_supported(
+            &format_type,
+            &schema,
+            map_cryptographic_binding_methods_supported(
+                &self.did_method_provider.supported_method_names(),
+                &format_capabilities.holder_identifier_types,
+            ),
+            map_proof_types_supported(
+                self.key_algorithm_provider
+                    .supported_verification_jose_alg_ids(),
+                schema.key_storage_security.map(|x| x.into()),
+            ),
+            credential_signing_alg_values_supported,
+        )
+        .map_err(OpenIDIssuanceError::OpenID4VCI)?;
+        Ok(PreparedMetadata {
+            protocol_base_url,
+            schema,
+            credential_configurations_supported,
+        })
+    }
 }
 
 #[async_trait]
@@ -2201,6 +2351,30 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
             ],
         }
     }
+
+    async fn issuer_metadata(
+        &self,
+        protocol_id: &str,
+        credential_schema_id: &CredentialSchemaId,
+        issuer_identifier: Option<Arc<Identifier>>,
+    ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, IssuanceProtocolError> {
+        let prepared_metadata = self.prepare_issuer_metadata(credential_schema_id).await?;
+        let issuer_info = if let Some(ref identifier) = issuer_identifier {
+            self.get_etsi_issuer_info(identifier, &prepared_metadata.schema)
+                .await?
+        } else {
+            None
+        };
+
+        create_issuer_metadata_response(
+            protocol_id,
+            prepared_metadata,
+            issuer_info,
+            issuer_identifier.as_deref().map(|i| &i.id),
+        )
+        .map_err(OpenIDIssuanceError::OpenID4VCI)
+        .map_err(Into::into)
+    }
 }
 
 fn requires_wia(token_endpoint_auth_methods: &[TokenEndpointAuthMethod]) -> bool {
@@ -2618,6 +2792,26 @@ async fn create_wallet_unit_attestation_pop(
             .tokenize(Some(&*auth_fn))
             .await
             .error_while("creating proof token")?),
+    }
+}
+
+impl IdentifierTrustInformation {
+    fn is_valid(&self, now: OffsetDateTime) -> bool {
+        let valid_form = self.valid_from.map(|v| v <= now).unwrap_or(true);
+        let valid_to = self.valid_to.map(|v| now <= v).unwrap_or(true);
+        valid_form && valid_to
+    }
+
+    fn is_issuance_allowed_for(&self, schema_id: &str, format_type: &FormatType) -> bool {
+        self.allowed_issuance_types
+            .iter()
+            .any(|sf| sf.is_allowed_for(schema_id, format_type))
+    }
+}
+
+impl SchemaFormat {
+    fn is_allowed_for(&self, schema_id: &str, format_type: &FormatType) -> bool {
+        self.schema_id == schema_id && self.format == (*format_type).into()
     }
 }
 

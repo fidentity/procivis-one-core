@@ -735,9 +735,8 @@ pub(super) struct WalletAttestationResult {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct IssuerMetadata {
+pub(crate) struct PreparedMetadata {
     pub(crate) protocol_base_url: String,
-    pub(crate) protocol_id: String,
     pub(crate) schema: CredentialSchema,
     pub(crate) credential_configurations_supported:
         IndexMap<String, OpenID4VCICredentialConfigurationData>,

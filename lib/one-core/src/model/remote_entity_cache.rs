@@ -33,7 +33,8 @@ pub enum CacheType {
     TrustList,
     X509Crl,
     AndroidAttestationCrl,
-    OpenIDMetadata,
+    OpenIdMetadataHolder,
+    OpenIdMetadataIssuer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]

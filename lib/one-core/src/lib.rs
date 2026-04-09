@@ -78,6 +78,7 @@ use crate::service::key::KeyService;
 use crate::service::nfc::NfcService;
 use crate::service::oid4vci_draft13::OID4VCIDraft13Service;
 use crate::service::oid4vci_final1_0::OID4VCIFinal1_0Service;
+use crate::service::oid4vci_final1_0::resolver::initialize_credential_issuer_metadata_cache_from_config;
 use crate::service::oid4vci_final1_0_swiyu::OID4VCIFinal1_0SwiyuService;
 use crate::service::oid4vp_draft20::OID4VPDraft20Service;
 use crate::service::oid4vp_draft25::OID4VPDraft25Service;
@@ -439,6 +440,7 @@ impl OneCore {
             wrp_validator.clone(),
             data_provider.get_history_repository(),
             session_provider.clone(),
+            data_provider.get_credential_schema_repository(),
         )?;
 
         let verification_provider = verification_protocol_provider_from_config(
@@ -537,6 +539,14 @@ impl OneCore {
             certificate_validator.clone(),
         ));
 
+        let credential_issuer_metadata_cache =
+            initialize_credential_issuer_metadata_cache_from_config(
+                &config,
+                data_provider.get_remote_entity_cache_repository(),
+                key_provider.clone(),
+                key_algorithm_provider.clone(),
+            )?;
+
         Ok(OneCore {
             trust_anchor_service: TrustAnchorService::new(
                 data_provider.get_trust_anchor_repository(),
@@ -615,14 +625,13 @@ impl OneCore {
                 issuance_provider.clone(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                credential_formatter_provider.clone(),
                 revocation_method_provider.clone(),
                 certificate_validator.clone(),
                 blob_storage_provider.clone(),
-                key_provider.clone(),
                 data_provider.get_tx_manager(),
                 wallet_unit_proto.clone(),
                 identifier_creator.clone(),
+                credential_issuer_metadata_cache.clone(),
             ),
             oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService::new(
                 core_base_url.clone(),
@@ -634,14 +643,13 @@ impl OneCore {
                 issuance_provider.clone(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                credential_formatter_provider.clone(),
                 revocation_method_provider.clone(),
                 certificate_validator.clone(),
                 identifier_creator.clone(),
                 data_provider.get_tx_manager(),
                 blob_storage_provider.clone(),
-                key_provider.clone(),
                 wallet_unit_proto.clone(),
+                credential_issuer_metadata_cache,
             ),
             oid4vp_draft20_service: OID4VPDraft20Service::new(
                 data_provider.get_credential_repository(),

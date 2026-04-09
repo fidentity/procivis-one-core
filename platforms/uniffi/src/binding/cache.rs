@@ -34,5 +34,6 @@ pub enum CacheTypeBindingDTO {
     TrustList,
     X509Crl,
     AndroidAttestationCrl,
-    OpenIDMetadata,
+    OpenIdMetadataHolder,
+    OpenIdMetadataIssuer,
 }

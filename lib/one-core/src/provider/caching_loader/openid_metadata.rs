@@ -54,7 +54,7 @@ impl OpenIDMetadataCache {
     ) -> Self {
         Self {
             inner: CachingLoader::new(
-                RemoteEntityType::OpenIDMetadata,
+                RemoteEntityType::OpenIdMetadataHolder,
                 storage,
                 cache_size,
                 cache_refresh_timeout,

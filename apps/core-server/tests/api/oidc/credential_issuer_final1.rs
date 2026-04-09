@@ -120,6 +120,17 @@ async fn test_get_credential_issuer_metadata_jwt_certificate_identifier_with_tru
         credential_schema.schema_id.as_str()
     );
     assert_issuer_metadata(&context, &identifier, &credential_schema, jwt_payload);
+
+    let cache_entry = context
+        .db
+        .remote_entities
+        .get_by_key(&format!(
+            "OPENID4VCI_FINAL1:{}:{}",
+            identifier.id, credential_schema.id
+        ))
+        .await;
+    assert!(cache_entry.is_some());
+    assert_eq!(cache_entry.unwrap().value, body.as_bytes());
 }
 
 #[tokio::test]

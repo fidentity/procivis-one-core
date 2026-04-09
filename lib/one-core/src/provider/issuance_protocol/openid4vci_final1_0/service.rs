@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 use super::mapper::credentials_supported_mdoc;
 use super::model::{
-    EtsiIssuerInfoResponseDTO, IssuerMetadata, OpenID4VCIGrants,
-    OpenID4VCIIssuerInteractionDataDTO, OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO,
+    EtsiIssuerInfoResponseDTO, OpenID4VCIGrants, OpenID4VCIIssuerInteractionDataDTO,
+    OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO,
     OpenID4VCIIssuerMetadataDisplayResponseDTO, OpenID4VCIIssuerMetadataResponseDTO,
     OpenID4VCIPreAuthorizedCodeGrant, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
-    Timestamp,
+    PreparedMetadata, Timestamp,
 };
 use super::validator::throw_if_credential_state_not_eq;
 use crate::config::core_config::FormatType;
@@ -35,14 +35,14 @@ use crate::provider::issuance_protocol::openid4vci_final1_0::validator::{
 };
 
 pub(crate) fn create_issuer_metadata_response(
-    IssuerMetadata {
+    protocol_id: &str,
+    PreparedMetadata {
         protocol_base_url,
-        protocol_id,
         schema,
         credential_configurations_supported,
-    }: IssuerMetadata,
-    identifier_id: Option<&IdentifierId>,
+    }: PreparedMetadata,
     issuer_info: Option<Vec<EtsiIssuerInfoResponseDTO>>,
+    identifier_id: Option<&IdentifierId>,
 ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCIError> {
     let credential_schema_id = schema.id;
     let credential_issuer = if let Some(identifier_id) = identifier_id {

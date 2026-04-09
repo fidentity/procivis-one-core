@@ -15,8 +15,10 @@ pub(crate) enum CacheTypeRestEnum {
     TrustList,
     X509Crl,
     AndroidAttestationCrl,
-    #[serde(rename = "OPENID_METADATA")]
-    OpenIDMetadata,
+    #[serde(rename = "OPENID_METADATA_HOLDER")]
+    OpenIdMetadataHolder,
+    #[serde(rename = "OPENID_METADATA_ISSUER")]
+    OpenIdMetadataIssuer,
 }
 
 #[derive(Clone, Deserialize, Debug, Default, IntoParams, PartialEq, Eq)]

@@ -57,6 +57,9 @@ pub enum CacheType {
     #[sea_orm(string_value = "ANDROID_ATTESTATION_CRL")]
     AndroidAttestationCrl,
 
-    #[sea_orm(string_value = "OPENID_METADATA")]
-    OpenIDMetadata,
+    #[sea_orm(string_value = "OPENID_METADATA_HOLDER")]
+    OpenIdMetadataHolder,
+
+    #[sea_orm(string_value = "OPENID_METADATA_ISSUER")]
+    OpenIdMetadataIssuer,
 }

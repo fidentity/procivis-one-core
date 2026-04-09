@@ -1,3 +1,6 @@
+use std::string::FromUtf8Error;
+
+use shared_types::CredentialSchemaId;
 use thiserror::Error;
 
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
@@ -29,6 +32,8 @@ pub enum IssuanceProtocolError {
     RefreshTooSoon,
     #[error("Issuance not allowed by trust ecosystem")]
     DisallowedCredentialConfiguration,
+    #[error("Credential schema `{0}` not found")]
+    MissingCredentialSchema(CredentialSchemaId),
 
     #[error("JSON error: `{0}`")]
     Json(#[from] serde_json::Error),
@@ -38,6 +43,12 @@ pub enum IssuanceProtocolError {
 
     #[error(transparent)]
     Nested(#[from] NestedError),
+
+    #[error("Invalid trust information: `{0}`")]
+    TrustInformationError(String),
+
+    #[error("From UTF-8 error: `{0}`")]
+    FromUtf8Error(#[from] FromUtf8Error),
 }
 
 impl ErrorCodeMixin for IssuanceProtocolError {
@@ -56,6 +67,8 @@ impl ErrorCodeMixin for IssuanceProtocolError {
             Self::BindingAutogenerationFailure(_) => ErrorCode::BR_0217,
             Self::DisallowedCredentialConfiguration => ErrorCode::BR_0411,
             Self::Suspended | Self::RefreshTooSoon => ErrorCode::BR_0238,
+            Self::FromUtf8Error(_) | Self::TrustInformationError(_) => ErrorCode::BR_0047,
+            Self::MissingCredentialSchema(_) => ErrorCode::BR_0006,
             Self::Nested(nested) => nested.error_code(),
         }
     }

@@ -7,17 +7,16 @@ use crate::proto::identifier_creator::IdentifierCreator;
 use crate::proto::transaction_manager::TransactionManager;
 use crate::proto::wallet_unit::HolderWalletUnitProto;
 use crate::provider::blob_storage_provider::BlobStorageProvider;
-use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::issuance_protocol::openid4vci_final1_0::service::get_protocol_base_url;
 use crate::provider::issuance_protocol::provider::IssuanceProtocolProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
-use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
+use crate::service::oid4vci_final1_0::resolver::CredentialIssuerMetadataFetcher;
 
 pub mod dto;
 pub mod error;
@@ -37,9 +36,7 @@ pub struct OID4VCIFinal1_0Service {
     config: Arc<core_config::CoreConfig>,
     protocol_provider: Arc<dyn IssuanceProtocolProvider>,
     did_method_provider: Arc<dyn DidMethodProvider>,
-    key_provider: Arc<dyn KeyProvider>,
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-    formatter_provider: Arc<dyn CredentialFormatterProvider>,
     revocation_method_provider: Arc<dyn RevocationMethodProvider>,
     certificate_validator: Arc<dyn CertificateValidator>,
     base_url: Option<String>,
@@ -47,6 +44,7 @@ pub struct OID4VCIFinal1_0Service {
     transaction_manager: Arc<dyn TransactionManager>,
     holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
     identifier_creator: Arc<dyn IdentifierCreator>,
+    issuer_metadata_cache: Arc<dyn CredentialIssuerMetadataFetcher>,
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -61,14 +59,13 @@ impl OID4VCIFinal1_0Service {
         protocol_provider: Arc<dyn IssuanceProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-        formatter_provider: Arc<dyn CredentialFormatterProvider>,
         revocation_method_provider: Arc<dyn RevocationMethodProvider>,
         certificate_validator: Arc<dyn CertificateValidator>,
         blob_storage_provider: Arc<dyn BlobStorageProvider>,
-        key_provider: Arc<dyn KeyProvider>,
         transaction_manager: Arc<dyn TransactionManager>,
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
         identifier_creator: Arc<dyn IdentifierCreator>,
+        issuer_metadata_cache: Arc<dyn CredentialIssuerMetadataFetcher>,
     ) -> Self {
         let protocol_base_url = core_base_url.as_ref().map(|url| get_protocol_base_url(url));
         Self {
@@ -81,9 +78,7 @@ impl OID4VCIFinal1_0Service {
             config,
             protocol_provider,
             did_method_provider,
-            key_provider,
             key_algorithm_provider,
-            formatter_provider,
             revocation_method_provider,
             certificate_validator,
             base_url: core_base_url,
@@ -91,6 +86,7 @@ impl OID4VCIFinal1_0Service {
             transaction_manager,
             holder_wallet_unit_proto,
             identifier_creator,
+            issuer_metadata_cache,
         }
     }
 
@@ -106,14 +102,13 @@ impl OID4VCIFinal1_0Service {
         protocol_provider: Arc<dyn IssuanceProtocolProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
-        formatter_provider: Arc<dyn CredentialFormatterProvider>,
         revocation_method_provider: Arc<dyn RevocationMethodProvider>,
         certificate_validator: Arc<dyn CertificateValidator>,
         identifier_creator: Arc<dyn IdentifierCreator>,
         transaction_manager: Arc<dyn TransactionManager>,
         blob_storage_provider: Arc<dyn BlobStorageProvider>,
-        key_provider: Arc<dyn KeyProvider>,
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
+        issuer_metadata_cache: Arc<dyn CredentialIssuerMetadataFetcher>,
     ) -> Self {
         Self {
             protocol_base_url,
@@ -125,9 +120,7 @@ impl OID4VCIFinal1_0Service {
             config,
             protocol_provider,
             did_method_provider,
-            key_provider,
             key_algorithm_provider,
-            formatter_provider,
             revocation_method_provider,
             certificate_validator,
             base_url: core_base_url,
@@ -135,9 +128,11 @@ impl OID4VCIFinal1_0Service {
             transaction_manager,
             blob_storage_provider,
             holder_wallet_unit_proto,
+            issuer_metadata_cache,
         }
     }
 }
 
+pub mod resolver;
 #[cfg(test)]
 mod test;

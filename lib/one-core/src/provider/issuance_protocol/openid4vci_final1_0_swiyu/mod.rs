@@ -1,3 +1,4 @@
+pub mod mapper;
 mod proxy_http_client;
 
 use std::sync::Arc;
@@ -5,12 +6,12 @@ use std::sync::Arc;
 use secrecy::SecretSlice;
 use serde::Deserialize;
 use serde_with::{DurationSeconds, serde_as};
-use shared_types::CredentialId;
+use shared_types::{CredentialId, CredentialSchemaId};
 use time::Duration;
 use url::Url;
 
 use super::dto::{ContinueIssuanceDTO, IssuanceProtocolCapabilities};
-use super::error::IssuanceProtocolError;
+use super::error::{IssuanceProtocolError, OpenIDIssuanceError};
 use super::model::{
     CommonParams, ContinueIssuanceResponseDTO, InvitationResponseEnum, OpenID4VCRedirectUriParams,
     ShareResponse, SubmitIssuerResponse, UpdateResponse,
@@ -18,6 +19,7 @@ use super::model::{
 use super::{HolderBindingInput, IssuanceProtocol};
 use crate::config::core_config::CoreConfig;
 use crate::config::core_config::DidType::WebVh;
+use crate::error::ContextWithErrorCode;
 use crate::mapper::params::deserialize_encryption_key;
 use crate::model::credential::Credential;
 use crate::model::identifier::Identifier;
@@ -37,13 +39,16 @@ use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::issuance_protocol::dto::Features;
 use crate::provider::issuance_protocol::openid4vci_final1_0::OpenID4VCIFinal1_0;
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
-    OpenID4VCIFinal1Params, OpenID4VCNonceParams,
+    OpenID4VCIFinal1Params, OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCNonceParams,
 };
+use crate::provider::issuance_protocol::openid4vci_final1_0::service::create_issuer_metadata_response;
+use crate::provider::issuance_protocol::openid4vci_final1_0_swiyu::mapper::to_swiyu_data_type;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_security_level::provider::KeySecurityLevelProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
@@ -95,6 +100,7 @@ impl From<OpenID4VCISwiyuParams> for OpenID4VCIFinal1Params {
 
 pub(crate) struct OpenID4VCISwiyu {
     inner: OpenID4VCIFinal1_0,
+    config: Arc<CoreConfig>,
 }
 
 impl OpenID4VCISwiyu {
@@ -107,6 +113,7 @@ impl OpenID4VCISwiyu {
         identifier_creator: Arc<dyn IdentifierCreator>,
         credential_schema_importer: Arc<dyn CredentialSchemaImporter>,
         validity_credential_repository: Arc<dyn ValidityCredentialRepository>,
+        credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
         formatter_provider: Arc<dyn CredentialFormatterProvider>,
         revocation_provider: Arc<dyn RevocationMethodProvider>,
         did_method_provider: Arc<dyn DidMethodProvider>,
@@ -139,6 +146,7 @@ impl OpenID4VCISwiyu {
                 identifier_creator,
                 credential_schema_importer,
                 validity_credential_repository,
+                credential_schema_repository,
                 formatter_provider,
                 revocation_provider,
                 did_method_provider,
@@ -147,7 +155,7 @@ impl OpenID4VCISwiyu {
                 key_security_level_provider,
                 blob_storage_provider,
                 base_url,
-                config,
+                config.clone(),
                 params.into(),
                 config_id,
                 holder_wallet_unit_proto,
@@ -157,6 +165,7 @@ impl OpenID4VCISwiyu {
                 history_repository,
                 session_provider,
             ),
+            config,
         }
     }
 }
@@ -228,6 +237,66 @@ impl IssuanceProtocol for OpenID4VCISwiyu {
         self.inner
             .holder_continue_issuance(continue_issuance_dto, organisation, storage_access)
             .await
+    }
+
+    async fn issuer_metadata(
+        &self,
+        protocol_id: &str,
+        credential_schema_id: &CredentialSchemaId,
+        _issuer_identifier: Option<Arc<Identifier>>,
+    ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, IssuanceProtocolError> {
+        let mut prepared_metadata = self
+            .inner
+            .prepare_issuer_metadata(credential_schema_id)
+            .await?;
+
+        let credential_schema_schema_id = prepared_metadata.schema.schema_id.clone();
+
+        let credential_schema_claims = prepared_metadata.schema.claim_schemas.as_ref().ok_or(
+            IssuanceProtocolError::Failed("missing credential schema claims".to_string()),
+        )?;
+
+        // make formats compatible to the swiyu wallet
+        for (key, credential_config) in prepared_metadata
+            .credential_configurations_supported
+            .iter_mut()
+        {
+            if key != &credential_schema_schema_id {
+                // only adjust the schema referenced in the id
+                continue;
+            }
+            if credential_config.format == "dc+sd-jwt" {
+                credential_config.format = "vc+sd-jwt".to_string();
+            }
+            let Some(meta) = credential_config.credential_metadata.as_mut() else {
+                continue;
+            };
+            let Some(claims) = meta.claims.as_mut() else {
+                continue;
+            };
+            for claim in claims {
+                let Some(schema) = credential_schema_claims
+                    .iter()
+                    .find(|cs| cs.key == claim.path.join("/"))
+                else {
+                    continue;
+                };
+                let data_type = self
+                    .config
+                    .datatype
+                    .get_type(&schema.data_type)
+                    .error_while("getting claim data type")?;
+                let additional_values = claim.additional_values.get_or_insert_default();
+                additional_values.insert(
+                    "value_type".to_string(),
+                    serde_json::json!(to_swiyu_data_type(data_type)?),
+                );
+            }
+        }
+
+        create_issuer_metadata_response(protocol_id, prepared_metadata, None, None)
+            .map_err(OpenIDIssuanceError::OpenID4VCI)
+            .map_err(Into::into)
     }
 
     fn get_capabilities(&self) -> IssuanceProtocolCapabilities {

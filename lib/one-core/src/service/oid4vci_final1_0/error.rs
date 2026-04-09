@@ -37,8 +37,6 @@ pub enum OID4VCIFinal1_0ServiceError {
 
     #[error("Identifier missing Authentication capable certificate: {0}")]
     MissingAuthenticationCapableCertificate(IdentifierId),
-    #[error("Invalid trust information: `{0}`")]
-    TrustInformationError(String),
 }
 
 impl ErrorCodeMixin for OID4VCIFinal1_0ServiceError {
@@ -50,9 +48,7 @@ impl ErrorCodeMixin for OID4VCIFinal1_0ServiceError {
             Self::InvalidCredentialState(_) => ErrorCode::BR_0002,
             Self::MissingCredentialSchema(_) => ErrorCode::BR_0006,
             Self::ValidationError(_) => ErrorCode::BR_0323,
-            Self::TrustInformationError(_) | Self::FromUtf8Error(_) | Self::MappingError(_) => {
-                ErrorCode::BR_0047
-            }
+            Self::FromUtf8Error(_) | Self::MappingError(_) => ErrorCode::BR_0047,
             Self::OpenID4VCIError(_) => ErrorCode::BR_0048,
             Self::Nested(nested) => nested.error_code(),
             Self::IdentifierNotFound(_) => ErrorCode::BR_0207,

@@ -11,7 +11,9 @@ use one_crypto::utilities::generate_alphanumeric;
 use one_dto_mapper::convert_inner;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
-use shared_types::{BlobId, CredentialFormat, CredentialId, DidValue, InteractionId};
+use shared_types::{
+    BlobId, CredentialFormat, CredentialId, CredentialSchemaId, DidValue, InteractionId,
+};
 use standardized_types::jwk::PublicJwk;
 use time::{Duration, OffsetDateTime};
 use url::Url;
@@ -60,6 +62,7 @@ use crate::provider::credential_formatter::model::{
 };
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
+use crate::provider::issuance_protocol;
 use crate::provider::issuance_protocol::dto::Features;
 use crate::provider::issuance_protocol::error::TxCodeError;
 use crate::provider::issuance_protocol::mapper::{
@@ -1036,6 +1039,21 @@ impl IssuanceProtocol for OpenID4VCI13 {
         .await
     }
 
+    async fn holder_continue_issuance(
+        &self,
+        continue_issuance_dto: ContinueIssuanceDTO,
+        organisation: Organisation,
+        storage_access: &StorageAccess,
+    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
+        self.holder_continue_issuance_with_protocol(
+            continue_issuance_dto,
+            organisation,
+            IssuanceProtocolType::OpenId4VciDraft13,
+            storage_access,
+        )
+        .await
+    }
+
     async fn issuer_share_credential(
         &self,
         credential: &Credential,
@@ -1355,19 +1373,16 @@ impl IssuanceProtocol for OpenID4VCI13 {
         })
     }
 
-    async fn holder_continue_issuance(
+    async fn issuer_metadata(
         &self,
-        continue_issuance_dto: ContinueIssuanceDTO,
-        organisation: Organisation,
-        storage_access: &StorageAccess,
-    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
-        self.holder_continue_issuance_with_protocol(
-            continue_issuance_dto,
-            organisation,
-            IssuanceProtocolType::OpenId4VciDraft13,
-            storage_access,
+        _protocol_id: &str,
+        _credential_schema_id: &CredentialSchemaId,
+        _issuer_identifier: Option<Arc<Identifier>>,
+    ) -> Result<issuance_protocol::dto::OpenID4VCIIssuerMetadataResponseDTO, IssuanceProtocolError>
+    {
+        unimplemented!(
+            "issuer_metadata is only usable by OpenVCIv1-final - as draft 13 is about to be removed soon"
         )
-        .await
     }
 
     fn get_capabilities(&self) -> IssuanceProtocolCapabilities {

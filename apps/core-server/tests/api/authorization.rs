@@ -24,7 +24,7 @@ async fn test_authorization_success_no_permission_required() {
 async fn test_authorization_success_has_required_permission() {
     test_authorization(
         Method::DELETE,
-        "/api/cache/v1?types[]=OPENID_METADATA",
+        "/api/cache/v1?types[]=OPENID_METADATA_HOLDER",
         vec!["CACHE_DELETE"],
         StatusCode::NO_CONTENT,
     )
@@ -35,7 +35,7 @@ async fn test_authorization_success_has_required_permission() {
 async fn test_authorization_failed_missing_required_permission() {
     test_authorization(
         Method::DELETE,
-        "/api/cache/v1?types[]=OPENID_METADATA",
+        "/api/cache/v1?types[]=OPENID_METADATA_HOLDER",
         vec![],
         StatusCode::FORBIDDEN,
     )

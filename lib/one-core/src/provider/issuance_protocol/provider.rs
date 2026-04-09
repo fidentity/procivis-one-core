@@ -29,6 +29,7 @@ use crate::provider::key_security_level::provider::KeySecurityLevelProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::credential_schema_repository::CredentialSchemaRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
@@ -101,6 +102,7 @@ pub(crate) fn issuance_protocol_provider_from_config(
     wrp_validator: Arc<dyn WRPValidator>,
     history_repository: Arc<dyn HistoryRepository>,
     session_provider: Arc<dyn SessionProvider>,
+    credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
 ) -> Result<Arc<dyn IssuanceProtocolProvider>, ConfigValidationError> {
     let mut protocols: HashMap<String, Arc<dyn IssuanceProtocol>> = HashMap::new();
 
@@ -124,6 +126,7 @@ pub(crate) fn issuance_protocol_provider_from_config(
                     identifier_creator.clone(),
                     credential_schema_importer.clone(),
                     validity_credential_repository.clone(),
+                    credential_schema_repository.clone(),
                     formatter_provider.clone(),
                     revocation_provider.clone(),
                     did_method_provider.clone(),
@@ -195,6 +198,7 @@ pub(crate) fn issuance_protocol_provider_from_config(
                     identifier_creator.clone(),
                     credential_schema_importer.clone(),
                     validity_credential_repository.clone(),
+                    credential_schema_repository.clone(),
                     formatter_provider.clone(),
                     revocation_provider.clone(),
                     did_method_provider.clone(),

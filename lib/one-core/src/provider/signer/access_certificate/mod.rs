@@ -69,8 +69,8 @@ enum AccessCertificatePolicy {
 }
 
 impl AccessCertificatePolicy {
-    fn to_certificate_policy_extension(&self) -> CustomExtension {
-        const OID_CERTIFICATE_POLICY: [u64; 4] = [2, 5, 29, 32];
+    fn to_certificate_policies_extension(&self) -> CustomExtension {
+        const OID_CERTIFICATE_POLICIES_EXTENSION: [u64; 4] = [2, 5, 29, 32];
         const OID_CERTIFICATE_POLICY_NATURAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 0];
         const OID_CERTIFICATE_POLICY_LEGAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 1];
 
@@ -81,11 +81,16 @@ impl AccessCertificatePolicy {
 
         let certificate_policy_ext_content = yasna::construct_der(|writer| {
             writer.write_sequence(|writer| {
-                writer.next().write_oid(&ObjectIdentifier::from_slice(&oid));
+                writer.next().write_sequence(|writer| {
+                    writer.next().write_oid(&ObjectIdentifier::from_slice(&oid));
+                });
             });
         });
         // Not critical according to ETSI EN 319 412-2
-        CustomExtension::from_oid_content(&OID_CERTIFICATE_POLICY, certificate_policy_ext_content)
+        CustomExtension::from_oid_content(
+            &OID_CERTIFICATE_POLICIES_EXTENSION,
+            certificate_policy_ext_content,
+        )
     }
 }
 
@@ -169,7 +174,7 @@ impl Signer for AccessCertificateSigner {
 
         cert_params
             .custom_extensions
-            .push(request_data.policy.to_certificate_policy_extension());
+            .push(request_data.policy.to_certificate_policies_extension());
         add_extended_key_usages(&mut cert_params);
         cert_params
             .subject_alt_names

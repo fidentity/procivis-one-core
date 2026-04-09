@@ -155,7 +155,7 @@ impl OID4VCIFinal1_0Service {
             .get_signature_provider(signing_key.key(), kid, self.key_algorithm_provider.clone())
             .error_while("getting signature provider")?;
 
-        let key_info = match signing_key {
+        let (key_info, issuer) = match signing_key {
             SelectedKey::Key(key) => {
                 let key_handle = self
                     .key_provider
@@ -166,14 +166,20 @@ impl OID4VCIFinal1_0Service {
                     .error_while("getting key storage")?
                     .key_handle(key)
                     .error_while("getting key storage")?;
-                Some(JwtPublicKeyInfo::Jwk(
-                    key_handle.public_key_as_jwk().error_while("getting JWK")?,
-                ))
+                (
+                    Some(JwtPublicKeyInfo::Jwk(
+                        key_handle.public_key_as_jwk().error_while("getting JWK")?,
+                    )),
+                    None,
+                )
             }
-            SelectedKey::Certificate { certificate, .. } => Some(JwtPublicKeyInfo::X5c(
-                pem_chain_into_x5c(&certificate.chain).error_while("parsing PEM chain")?,
-            )),
-            SelectedKey::Did { .. } => None,
+            SelectedKey::Certificate { certificate, .. } => (
+                Some(JwtPublicKeyInfo::X5c(
+                    pem_chain_into_x5c(&certificate.chain).error_while("parsing PEM chain")?,
+                )),
+                None,
+            ),
+            SelectedKey::Did { did, .. } => (None, Some(did.did.to_string())),
         };
 
         let now = now_utc();
@@ -190,7 +196,7 @@ impl OID4VCIFinal1_0Service {
                 issued_at: Some(now),
                 expires_at: None,
                 invalid_before: Some(now),
-                issuer: None,
+                issuer,
                 subject: Some(issuer_metadata.credential_issuer.to_owned()),
                 audience: None,
                 jwt_id: None,

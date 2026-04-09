@@ -36,7 +36,9 @@ use crate::proto::http_client::reqwest_client::ReqwestClient;
 use crate::proto::identifier_creator::{
     CreateLocalIdentifierRequest, IdentifierRole, MockIdentifierCreator, RemoteIdentifierRelation,
 };
+use crate::proto::session_provider::NoSessionProvider;
 use crate::proto::wallet_unit::MockHolderWalletUnitProto;
+use crate::proto::wrp_validator::MockWRPValidator;
 use crate::provider::blob_storage_provider::MockBlobStorageProvider;
 use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
@@ -71,6 +73,7 @@ use crate::provider::key_storage::model::{KeyStorageCapabilities, StorageGenerat
 use crate::provider::key_storage::provider::MockKeyProvider;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
+use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
@@ -97,6 +100,8 @@ struct TestInputs {
     pub certificate_validator: MockCertificateValidator,
     pub holder_wallet_unit_proto: MockHolderWalletUnitProto,
     pub holder_wallet_unit_repository: MockHolderWalletUnitRepository,
+    pub wrp_validator: MockWRPValidator,
+    pub history_repository: MockHistoryRepository,
     pub config: CoreConfig,
     pub params: Option<OpenID4VCIFinal1Params>,
 }
@@ -140,6 +145,9 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VCIFinal1_0 {
         Arc::new(inputs.holder_wallet_unit_proto),
         Arc::new(inputs.holder_wallet_unit_repository),
         Arc::new(inputs.certificate_validator),
+        Arc::new(inputs.wrp_validator),
+        Arc::new(inputs.history_repository),
+        Arc::new(NoSessionProvider),
     )
 }
 
@@ -440,6 +448,8 @@ async fn test_holder_accept_credential_success() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -666,6 +676,8 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -900,6 +912,8 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -1172,6 +1186,8 @@ async fn test_holder_reject_credential() {
             notification_id: Some("notification_id".to_string()),
             protocol: "OPENID4VCI_FINAL1".to_string(),
             format: "jwt_vc_json".to_string(),
+            access_certificate: None,
+            registration_certificate: None,
         };
 
         credential.interaction = Some(Interaction {
@@ -1768,6 +1784,8 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -1890,6 +1908,8 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {

@@ -436,6 +436,9 @@ impl OneCore {
             credential_schema_import_parser.clone(),
             wallet_unit_proto.clone(),
             data_provider.get_holder_wallet_unit_repository(),
+            wrp_validator.clone(),
+            data_provider.get_history_repository(),
+            session_provider.clone(),
         )?;
 
         let verification_provider = verification_protocol_provider_from_config(

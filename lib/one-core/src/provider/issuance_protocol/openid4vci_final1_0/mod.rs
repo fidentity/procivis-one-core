@@ -1,6 +1,7 @@
 //! Implementation of OpenID4VCI.
 //! https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -48,6 +49,7 @@ use super::{
 use crate::config::core_config::{CoreConfig, DidType as ConfigDidType, FormatType};
 use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin, ErrorCodeMixinExt};
 use crate::mapper::oidc::map_from_oidc_format_to_core_detailed;
+use crate::mapper::x509::x5c_into_pem_chain;
 use crate::model::blob::{Blob, BlobType, UpdateBlobRequest};
 use crate::model::certificate::CertificateRelations;
 use crate::model::claim::ClaimRelations;
@@ -58,6 +60,9 @@ use crate::model::credential_schema::{
     UpdateCredentialSchemaRequest,
 };
 use crate::model::did::{DidRelations, KeyRole};
+use crate::model::history::{
+    History, HistoryAction, HistoryEntityType, HistoryMetadata, HistorySource,
+};
 use crate::model::holder_wallet_unit::HolderWalletUnit;
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
 use crate::model::interaction::{Interaction, UpdateInteractionRequest};
@@ -74,13 +79,16 @@ use crate::proto::identifier_creator::{
 use crate::proto::jwt::Jwt;
 use crate::proto::jwt::model::{DecomposedJwt, JWTPayload};
 use crate::proto::key_verification::KeyVerification;
+use crate::proto::session_provider::{SessionExt, SessionProvider};
 use crate::proto::wallet_unit::{HolderWalletUnitProto, IssueWalletAttestationRequest};
+use crate::proto::wrp_validator::error::WRPValidatorError;
+use crate::proto::wrp_validator::{AccessCertificateResult, WRPValidator};
 use crate::provider::blob_storage_provider::{BlobStorageProvider, BlobStorageType};
 use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::credential_formatter::mapper::credential_data_from_credential_detail_response;
 use crate::provider::credential_formatter::mdoc_formatter;
 use crate::provider::credential_formatter::model::{
-    AuthenticationFn, CertificateDetails, IdentifierDetails,
+    AuthenticationFn, CertificateDetails, IdentifierDetails, PublicKeySource, VerificationFn,
 };
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
@@ -88,6 +96,7 @@ use crate::provider::issuance_protocol::mapper::{
     autogenerate_holder_binding, generate_transaction_code,
 };
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
+    EtsiIssuerInfoResponseDTO, OpenID4VCICredentialConfigurationData,
     OpenID4VCICredentialRequestIdentifier, OpenID4VCICredentialRequestProofs,
     OpenID4VCIFinal1CredentialOfferDTO, TokenRequestWalletAttestationRequest,
     WalletAttestationResult,
@@ -96,7 +105,9 @@ use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_security_level::provider::KeySecurityLevelProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
+use crate::provider::signer::registration_certificate;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
@@ -148,6 +159,9 @@ pub(crate) struct OpenID4VCIFinal1_0 {
     holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
     holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
     certificate_validator: Arc<dyn CertificateValidator>,
+    wrp_validator: Arc<dyn WRPValidator>,
+    history_repository: Arc<dyn HistoryRepository>,
+    session_provider: Arc<dyn SessionProvider>,
 }
 
 impl OpenID4VCIFinal1_0 {
@@ -174,6 +188,9 @@ impl OpenID4VCIFinal1_0 {
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
         holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
         certificate_validator: Arc<dyn CertificateValidator>,
+        wrp_validator: Arc<dyn WRPValidator>,
+        history_repository: Arc<dyn HistoryRepository>,
+        session_provider: Arc<dyn SessionProvider>,
     ) -> Self {
         let protocol_base_url = base_url.as_ref().map(|url| get_protocol_base_url(url));
         Self {
@@ -199,6 +216,9 @@ impl OpenID4VCIFinal1_0 {
             holder_wallet_unit_repository,
             key_security_level_provider,
             certificate_validator,
+            wrp_validator,
+            history_repository,
+            session_provider,
         }
     }
 
@@ -226,6 +246,9 @@ impl OpenID4VCIFinal1_0 {
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
         holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
         certificate_validator: Arc<dyn CertificateValidator>,
+        wrp_validator: Arc<dyn WRPValidator>,
+        history_repository: Arc<dyn HistoryRepository>,
+        session_provider: Arc<dyn SessionProvider>,
     ) -> Self {
         Self {
             client,
@@ -250,6 +273,9 @@ impl OpenID4VCIFinal1_0 {
             holder_wallet_unit_repository,
             key_security_level_provider,
             certificate_validator,
+            wrp_validator,
+            history_repository,
+            session_provider,
         }
     }
 
@@ -782,15 +808,8 @@ impl OpenID4VCIFinal1_0 {
                 IssuanceProtocolError::Failed(format!("{format_type} formatter not found"))
             })?;
 
-        let verification_fn = Box::new(KeyVerification {
-            key_algorithm_provider: self.key_algorithm_provider.clone(),
-            did_method_provider: self.did_method_provider.clone(),
-            key_role: KeyRole::AssertionMethod,
-            certificate_validator: self.certificate_validator.clone(),
-        });
-
         let mut credential = formatter
-            .parse_credential(&issuer_response.credential, verification_fn)
+            .parse_credential(&issuer_response.credential, self.verification_fn())
             .await
             .map_err(|e| IssuanceProtocolError::CredentialVerificationFailed(e.into()))?;
 
@@ -912,6 +931,26 @@ impl OpenID4VCIFinal1_0 {
             &mut credential,
         )
         .await?;
+
+        if let Some(access_certificate) = &interaction_data.access_certificate {
+            self.store_certificate_history_event(
+                HistoryAction::WrpAcReceived,
+                credential.id,
+                organisation.id,
+                access_certificate.to_owned(),
+            )
+            .await?;
+        }
+
+        if let Some(registration_certificate) = &interaction_data.registration_certificate {
+            self.store_certificate_history_event(
+                HistoryAction::WrpRcReceived,
+                credential.id,
+                organisation.id,
+                registration_certificate.to_owned(),
+            )
+            .await?;
+        }
 
         Ok(UpdateResponse {
             result: issuer_response,
@@ -1085,6 +1124,318 @@ impl OpenID4VCIFinal1_0 {
         )
         .await
     }
+
+    #[tracing::instrument(level = "debug", skip(self), err(level = "info"))]
+    async fn fetch_issuer_metadata(
+        &self,
+        credential_issuer: &str,
+        validate_trust: Option<OrganisationId>,
+    ) -> Result<IssuerMetadataRepresentation, IssuanceProtocolError> {
+        let credential_issuer_endpoint: Url = credential_issuer.parse().map_err(|_| {
+            IssuanceProtocolError::InvalidRequest(format!(
+                "Invalid credential issuer url {credential_issuer}",
+            ))
+        })?;
+
+        if !self.params.request_signed_metadata {
+            return Ok(IssuerMetadataRepresentation::Unsigned(
+                fetch_metadata_json_with_fallback(
+                    self.metadata_cache.as_ref(),
+                    &credential_issuer_endpoint,
+                    "openid-credential-issuer",
+                )
+                .await?,
+            ));
+        }
+
+        let jwt = fetch_metadata_jwt_with_fallback(
+            self.metadata_cache.as_ref(),
+            &credential_issuer_endpoint,
+            "openid-credential-issuer",
+        )
+        .await?;
+
+        self.validate_jwt(&jwt)
+            .await
+            .error_while("validating issuer metadata JWT")?;
+
+        let Some(x5c) = jwt.header.x5c.as_ref() else {
+            tracing::debug!("Issuer metadata signed via DID or JWK, skipping trust check");
+            return Ok(IssuerMetadataRepresentation::Signed(jwt, None));
+        };
+
+        let access_certificate = if let Some(organsation_id) = validate_trust {
+            let pem_chain = x5c_into_pem_chain(x5c).error_while("converting x5c")?;
+            match self
+                .wrp_validator
+                .validate_access_certificate_trust(&pem_chain, Some(organsation_id))
+                .await
+            {
+                Ok(result) => Some((
+                    result,
+                    x5c.first()
+                        .ok_or(IssuanceProtocolError::Failed("empty x5c".to_string()))?
+                        .to_owned(),
+                )),
+                Err(WRPValidatorError::TrustManagementDisabled) => {
+                    // trust management disabled, skipping other checks
+                    None
+                }
+                Err(err) => {
+                    return Err(err.error_while("validating access certificate").into());
+                }
+            }
+        } else {
+            None
+        };
+
+        Ok(IssuerMetadataRepresentation::Signed(
+            jwt,
+            access_certificate,
+        ))
+    }
+
+    async fn validate_jwt<T: Debug>(
+        &self,
+        jwt: &DecomposedJwt<T>,
+    ) -> Result<(), IssuanceProtocolError> {
+        let issuer_did = jwt
+            .payload
+            .issuer
+            .as_ref()
+            .and_then(|did| did.parse::<DidValue>().ok());
+
+        let public_key_source = match (issuer_did, &jwt.header.x5c, &jwt.header.jwk) {
+            (Some(issuer_did), None, None) => PublicKeySource::Did {
+                did: Cow::Owned(issuer_did),
+                key_id: jwt.header.key_id.as_deref(),
+            },
+            (None, Some(x5c), None) => PublicKeySource::X5c { x5c },
+            (None, None, Some(jwk)) => PublicKeySource::Jwk {
+                jwk: Cow::Owned(jwk.to_owned()),
+            },
+            (None, None, None) => {
+                return Err(IssuanceProtocolError::Failed(
+                    "Missing public key information for JWT".to_string(),
+                ));
+            }
+            (did, x5c, jwk) => {
+                return Err(IssuanceProtocolError::Failed(format!(
+                    "Mixed specification of public key info: did:{did:?}, x5c:{x5c:?}, jwk:{jwk:?}",
+                )));
+            }
+        };
+
+        jwt.verify_signature(public_key_source, &self.verification_fn())
+            .await
+            .error_while("verifying JWT signature")?;
+
+        Ok(())
+    }
+
+    fn verification_fn(&self) -> VerificationFn {
+        Box::new(KeyVerification {
+            key_algorithm_provider: self.key_algorithm_provider.clone(),
+            did_method_provider: self.did_method_provider.clone(),
+            key_role: KeyRole::AssertionMethod,
+            certificate_validator: self.certificate_validator.clone(),
+        })
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    async fn prepare_issuance_interaction(
+        &self,
+        organisation: Organisation,
+        token_endpoint: String,
+        issuer_metadata: IssuerMetadataRepresentation,
+        oauth_authorization_server_metadata: Option<OAuthAuthorizationServerMetadataResponseDTO>,
+        grants: OpenID4VCIGrants,
+        configuration_ids: &[String],
+        storage_access: &StorageAccess,
+        continue_issuance: Option<ContinueIssuanceDTO>,
+    ) -> Result<PrepareIssuanceSuccess, IssuanceProtocolError> {
+        // We only support one credential at a time currently
+        let configuration_id = configuration_ids.first().ok_or_else(|| {
+            IssuanceProtocolError::Failed("Credential offer is missing credentials".to_string())
+        })?;
+
+        let credential_config = issuer_metadata
+            .metadata()
+            .credential_configurations_supported
+            .get(configuration_id)
+            .ok_or_else(|| {
+                IssuanceProtocolError::Failed(format!(
+                    "Credential configuration is missing for {configuration_id}"
+                ))
+            })?;
+
+        let (access_certificate, registration_certificate) =
+            if let IssuerMetadataRepresentation::Signed(jwt, Some(access_certificate)) =
+                &issuer_metadata
+                // skip checks if no registration certificate provided
+                && !jwt.payload.custom.issuer_info.is_empty()
+            {
+                let registration_certificate = self
+                    .validate_credential_config_trust(
+                        credential_config,
+                        &jwt.payload.custom.issuer_info,
+                        &access_certificate.0.rp_id,
+                        organisation.id,
+                    )
+                    .await?;
+
+                (
+                    Some(access_certificate.1.to_owned()),
+                    Some(registration_certificate),
+                )
+            } else {
+                (None, None)
+            };
+
+        // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-ID1.html#section-11.2.3-2.2
+        if let Some(authorization_server) = grants.authorization_server()
+            && issuer_metadata
+                .metadata()
+                .authorization_servers
+                .as_ref()
+                .is_none_or(|servers| !servers.contains(authorization_server))
+        {
+            return Err(IssuanceProtocolError::InvalidRequest(format!(
+                "Authorization server missing in issuer metadata: {authorization_server}"
+            )));
+        }
+
+        let token_endpoint_auth_methods_supported = oauth_authorization_server_metadata
+            .as_ref()
+            .map(|oauth_metadata| oauth_metadata.token_endpoint_auth_methods_supported.clone());
+
+        let challenge_endpoint = oauth_authorization_server_metadata
+            .as_ref()
+            .and_then(|oauth_metadata| oauth_metadata.challenge_endpoint.clone());
+
+        let holder_data = HolderInteractionData {
+            issuer_url: issuer_metadata.metadata().credential_issuer.clone(),
+            credential_endpoint: issuer_metadata.metadata().credential_endpoint.clone(),
+            notification_endpoint: issuer_metadata.metadata().notification_endpoint.to_owned(),
+            nonce_endpoint: issuer_metadata.metadata().nonce_endpoint.to_owned(),
+            challenge_endpoint,
+            token_endpoint: Some(token_endpoint),
+            grants: Some(grants),
+            continue_issuance,
+            access_token: None,
+            access_token_expires_at: None,
+            refresh_token: None,
+            refresh_token_expires_at: None,
+            credential_signing_alg_values_supported: credential_config
+                .credential_signing_alg_values_supported
+                .clone(),
+            cryptographic_binding_methods_supported: credential_config
+                .cryptographic_binding_methods_supported
+                .clone(),
+            proof_types_supported: credential_config.proof_types_supported.clone(),
+            token_endpoint_auth_methods_supported,
+            credential_metadata: credential_config.credential_metadata.clone(),
+            credential_configuration_id: configuration_id.to_owned(),
+            notification_id: None,
+            protocol: self.config_id.to_owned(),
+            format: credential_config.format.to_owned(),
+            access_certificate,
+            registration_certificate,
+        };
+        let data = serialize_interaction_data(&holder_data)?;
+
+        let interaction =
+            create_and_store_interaction(storage_access, data, Some(organisation)).await?;
+        let (key_algorithms, key_storage_security) =
+            credential_config_to_holder_signing_algs_and_key_storage_security(
+                self.key_algorithm_provider.as_ref(),
+                credential_config,
+            );
+        Ok(PrepareIssuanceSuccess {
+            interaction_id: interaction.id,
+            key_storage_security,
+            key_algorithms,
+        })
+    }
+
+    async fn validate_credential_config_trust(
+        &self,
+        credential_config: &OpenID4VCICredentialConfigurationData,
+        issuer_info: &[EtsiIssuerInfoResponseDTO],
+        expected_rp_id: &str,
+        organisation_id: OrganisationId,
+    ) -> Result<String, IssuanceProtocolError> {
+        for reg_cert in issuer_info {
+            if self
+                .credential_config_matches_reg_cert(
+                    credential_config,
+                    reg_cert,
+                    expected_rp_id,
+                    organisation_id,
+                )
+                .await
+            {
+                return Ok(reg_cert.data.to_owned());
+            }
+        }
+
+        Err(IssuanceProtocolError::DisallowedCredentialConfiguration)
+    }
+
+    async fn credential_config_matches_reg_cert(
+        &self,
+        credential_config: &OpenID4VCICredentialConfigurationData,
+        issuer_info: &EtsiIssuerInfoResponseDTO,
+        expected_rp_id: &str,
+        organisation_id: OrganisationId,
+    ) -> bool {
+        let Ok(reg_cert) = self
+            .wrp_validator
+            .validate_registration_certificate(
+                &issuer_info.data,
+                expected_rp_id,
+                Some(organisation_id),
+            )
+            .await
+        else {
+            return false;
+        };
+
+        let Some(provides_attestations) = reg_cert.payload.custom.provides_attestations else {
+            return false;
+        };
+
+        provides_attestations.iter().any(|attestation| {
+            credential_config_matches_reg_cert_attestation(credential_config, attestation)
+        })
+    }
+
+    async fn store_certificate_history_event(
+        &self,
+        action: HistoryAction,
+        credential_id: CredentialId,
+        organisation_id: OrganisationId,
+        certificate_content: String,
+    ) -> Result<(), IssuanceProtocolError> {
+        self.history_repository
+            .create_history(History {
+                id: Uuid::new_v4().into(),
+                created_date: crate::clock::now_utc(),
+                action,
+                name: Default::default(),
+                target: None,
+                source: HistorySource::Core,
+                entity_id: Some(credential_id.into()),
+                entity_type: HistoryEntityType::Credential,
+                metadata: Some(HistoryMetadata::Certificate(certificate_content)),
+                organisation_id: Some(organisation_id),
+                user: self.session_provider.session().user(),
+            })
+            .await
+            .error_while("storing history")?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1104,12 +1455,8 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
         async {
             let credential_offer =
                 resolve_credential_offer(self.client.as_ref(), url.to_owned()).await?;
-            fetch_issuer_metadata(
-                self.metadata_cache.as_ref(),
-                &credential_offer.credential_issuer,
-                self.params.request_signed_metadata,
-            )
-            .await
+            self.fetch_issuer_metadata(&credential_offer.credential_issuer, None)
+                .await
         }
         .await
         .is_ok()
@@ -1122,19 +1469,108 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
         storage_access: &StorageAccess,
         redirect_uri: Option<String>,
     ) -> Result<InvitationResponseEnum, IssuanceProtocolError> {
-        handle_credential_invitation(
-            url,
-            organisation,
-            &*self.client,
-            &*self.metadata_cache,
-            storage_access,
-            redirect_uri,
-            &self.config,
-            self.config_id.to_owned(),
-            &*self.key_algorithm_provider,
-            &self.params,
+        let credential_offer = resolve_credential_offer(self.client.as_ref(), url).await?;
+
+        let issuer_metadata = self
+            .fetch_issuer_metadata(&credential_offer.credential_issuer, Some(organisation.id))
+            .await?;
+
+        let AuthorizationMetadata {
+            token_endpoint,
+            oauth_metadata,
+            ..
+        } = get_authorization_metadata(
+            self.metadata_cache.as_ref(),
+            issuer_metadata.metadata(),
+            &credential_offer.credential_issuer,
+            credential_offer.grants.authorization_server(),
         )
-        .await
+        .await?;
+
+        if let OpenID4VCIGrants::AuthorizationCode(authorization_code) = credential_offer.grants {
+            let params = self
+                .config
+                .credential_issuer
+                .entities
+                .iter()
+                .filter(|(_, entity)| entity.enabled.unwrap_or(true))
+                .filter_map(|(key, entity)| {
+                    parse_credential_issuer_params(key, &entity.params).ok()
+                })
+                .find(|params| params.issuer == credential_offer.credential_issuer)
+                .ok_or(IssuanceProtocolError::InvalidRequest(format!(
+                    "No config entry for Authorization Code found, issuer: {}",
+                    credential_offer.credential_issuer
+                )))?;
+
+            let credential_configuration_ids = credential_offer.credential_configuration_ids;
+            if credential_configuration_ids.is_empty() {
+                return Err(IssuanceProtocolError::InvalidRequest(
+                    "No credential_configuration_ids provided".to_string(),
+                ));
+            }
+
+            let scope = credential_configuration_ids
+                .iter()
+                .map(|id| {
+                    issuer_metadata
+                        .metadata()
+                        .credential_configurations_supported
+                        .get(id)
+                        .and_then(|c| c.scope.clone())
+                })
+                .collect::<Option<Vec<String>>>();
+
+            return Ok(InvitationResponseEnum::AuthorizationFlow {
+                organisation_id: organisation.id,
+                issuer: params.issuer,
+                scope,
+                client_id: params.client_id,
+                redirect_uri,
+                authorization_details: Some(
+                    credential_configuration_ids
+                        .into_iter()
+                        .map(
+                            |credential_configuration_id| InitiateIssuanceAuthorizationDetailDTO {
+                                r#type: "openid_credential".to_string(),
+                                credential_configuration_id,
+                            },
+                        )
+                        .collect(),
+                ),
+                issuer_state: authorization_code.issuer_state,
+                authorization_server: authorization_code.authorization_server,
+            });
+        }
+
+        let tx_code = credential_offer.grants.tx_code().cloned();
+        let requires_wallet_instance_attestation =
+            requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
+
+        let PrepareIssuanceSuccess {
+            interaction_id,
+            key_storage_security,
+            key_algorithms,
+        } = self
+            .prepare_issuance_interaction(
+                organisation,
+                token_endpoint,
+                issuer_metadata,
+                Some(oauth_metadata),
+                credential_offer.grants,
+                &credential_offer.credential_configuration_ids,
+                storage_access,
+                None,
+            )
+            .await?;
+
+        Ok(InvitationResponseEnum::Credential {
+            interaction_id,
+            tx_code,
+            key_storage_security,
+            key_algorithms,
+            requires_wallet_instance_attestation,
+        })
     }
 
     async fn holder_accept_credential(
@@ -1672,16 +2108,81 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
         organisation: Organisation,
         storage_access: &StorageAccess,
     ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
-        handle_continue_issuance(
-            continue_issuance_dto,
-            organisation,
-            &*self.metadata_cache,
-            storage_access,
-            self.config_id.to_owned(),
-            &*self.key_algorithm_provider,
-            &self.params,
+        let issuer_metadata = self
+            .fetch_issuer_metadata(
+                &continue_issuance_dto.credential_issuer,
+                Some(organisation.id),
+            )
+            .await?;
+
+        let AuthorizationMetadata {
+            token_endpoint,
+            oauth_metadata,
+            ..
+        } = get_authorization_metadata(
+            self.metadata_cache.as_ref(),
+            issuer_metadata.metadata(),
+            &continue_issuance_dto.credential_issuer,
+            continue_issuance_dto.authorization_server.as_ref(),
         )
-        .await
+        .await?;
+
+        let scope_to_id: HashMap<&String, &String> = issuer_metadata
+            .metadata()
+            .credential_configurations_supported
+            .iter()
+            .filter_map(|(id, c)| c.scope.as_ref().map(|s| (s, id)))
+            .collect();
+
+        let scope_credential_config_ids = continue_issuance_dto
+            .scope
+            .iter()
+            .map(|s| {
+                scope_to_id
+                    .get(&s)
+                    .map(|s| s.to_string())
+                    .ok_or(IssuanceProtocolError::Failed(format!(
+                        "Issuance requested scope doesnt exists: {s}"
+                    )))
+            })
+            .collect::<Result<Vec<String>, IssuanceProtocolError>>()?;
+
+        let all_credential_configuration_ids = [
+            &scope_credential_config_ids[..],
+            &continue_issuance_dto.credential_configuration_ids[..],
+        ]
+        .concat();
+
+        let requires_wallet_instance_attestation =
+            requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
+
+        let PrepareIssuanceSuccess {
+            interaction_id,
+            key_storage_security,
+            key_algorithms,
+        } = self
+            .prepare_issuance_interaction(
+                organisation,
+                token_endpoint,
+                issuer_metadata,
+                Some(oauth_metadata),
+                OpenID4VCIGrants::AuthorizationCode(OpenID4VCIAuthorizationCodeGrant {
+                    issuer_state: None, // issuer state was used at the authorization request stage so it is not relevant anymore
+                    authorization_server: continue_issuance_dto.authorization_server.to_owned(),
+                }),
+                &all_credential_configuration_ids,
+                storage_access,
+                Some(continue_issuance_dto),
+            )
+            .await?;
+
+        Ok(ContinueIssuanceResponseDTO {
+            interaction_id,
+            key_storage_security_levels: key_storage_security,
+            key_algorithms,
+            requires_wallet_instance_attestation,
+            protocol: self.config_id.to_owned(),
+        })
     }
 
     fn get_capabilities(&self) -> IssuanceProtocolCapabilities {
@@ -1702,124 +2203,6 @@ impl IssuanceProtocol for OpenID4VCIFinal1_0 {
     }
 }
 
-#[expect(clippy::too_many_arguments)]
-async fn handle_credential_invitation(
-    invitation_url: Url,
-    organisation: Organisation,
-    client: &dyn HttpClient,
-    fetcher: &dyn OpenIDMetadataFetcher,
-    storage_access: &StorageAccess,
-    redirect_uri: Option<String>,
-    config: &CoreConfig,
-    protocol: String,
-    key_algorithm_provider: &dyn KeyAlgorithmProvider,
-    params: &OpenID4VCIFinal1Params,
-) -> Result<InvitationResponseEnum, IssuanceProtocolError> {
-    let credential_offer = resolve_credential_offer(client, invitation_url).await?;
-
-    let issuer_metadata = fetch_issuer_metadata(
-        fetcher,
-        &credential_offer.credential_issuer,
-        params.request_signed_metadata,
-    )
-    .await?;
-
-    let AuthorizationMetadata {
-        token_endpoint,
-        oauth_metadata,
-        ..
-    } = get_authorization_metadata(
-        fetcher,
-        issuer_metadata.metadata(),
-        &credential_offer.credential_issuer,
-        credential_offer.grants.authorization_server(),
-    )
-    .await?;
-
-    if let OpenID4VCIGrants::AuthorizationCode(authorization_code) = credential_offer.grants {
-        let params = config
-            .credential_issuer
-            .entities
-            .iter()
-            .filter(|(_, entity)| entity.enabled.unwrap_or(true))
-            .filter_map(|(key, entity)| parse_credential_issuer_params(key, &entity.params).ok())
-            .find(|params| params.issuer == credential_offer.credential_issuer)
-            .ok_or(IssuanceProtocolError::InvalidRequest(format!(
-                "No config entry for Authorization Code found, issuer: {}",
-                credential_offer.credential_issuer
-            )))?;
-
-        let credential_configuration_ids = credential_offer.credential_configuration_ids;
-        if credential_configuration_ids.is_empty() {
-            return Err(IssuanceProtocolError::InvalidRequest(
-                "No credential_configuration_ids provided".to_string(),
-            ));
-        }
-
-        let scope = credential_configuration_ids
-            .iter()
-            .map(|id| {
-                issuer_metadata
-                    .metadata()
-                    .credential_configurations_supported
-                    .get(id)
-                    .and_then(|c| c.scope.clone())
-            })
-            .collect::<Option<Vec<String>>>();
-
-        return Ok(InvitationResponseEnum::AuthorizationFlow {
-            organisation_id: organisation.id,
-            issuer: params.issuer,
-            scope,
-            client_id: params.client_id,
-            redirect_uri,
-            authorization_details: Some(
-                credential_configuration_ids
-                    .into_iter()
-                    .map(
-                        |credential_configuration_id| InitiateIssuanceAuthorizationDetailDTO {
-                            r#type: "openid_credential".to_string(),
-                            credential_configuration_id,
-                        },
-                    )
-                    .collect(),
-            ),
-            issuer_state: authorization_code.issuer_state,
-            authorization_server: authorization_code.authorization_server,
-        });
-    }
-
-    let tx_code = credential_offer.grants.tx_code().cloned();
-    let requires_wallet_instance_attestation =
-        requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
-
-    let PrepareIssuanceSuccess {
-        interaction_id,
-        key_storage_security,
-        key_algorithms,
-    } = prepare_issuance_interaction(
-        organisation,
-        token_endpoint,
-        issuer_metadata.into(),
-        Some(oauth_metadata),
-        credential_offer.grants,
-        &credential_offer.credential_configuration_ids,
-        storage_access,
-        None,
-        protocol,
-        key_algorithm_provider,
-    )
-    .await?;
-
-    Ok(InvitationResponseEnum::Credential {
-        interaction_id,
-        tx_code,
-        key_storage_security,
-        key_algorithms,
-        requires_wallet_instance_attestation,
-    })
-}
-
 fn requires_wia(token_endpoint_auth_methods: &[TokenEndpointAuthMethod]) -> bool {
     // See https://gitlab.procivis.ch/procivis/one/one-core/-/merge_requests/2585#note_86705
     // Some issuers advertise "public", which is not documented / defined by any specification
@@ -1833,187 +2216,10 @@ fn requires_wia(token_endpoint_auth_methods: &[TokenEndpointAuthMethod]) -> bool
         && !public_auth_supported
 }
 
-async fn handle_continue_issuance(
-    continue_issuance_dto: ContinueIssuanceDTO,
-    organisation: Organisation,
-    fetcher: &dyn OpenIDMetadataFetcher,
-    storage_access: &StorageAccess,
-    protocol: String,
-    key_algorithm_provider: &dyn KeyAlgorithmProvider,
-    params: &OpenID4VCIFinal1Params,
-) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
-    let issuer_metadata = fetch_issuer_metadata(
-        fetcher,
-        &continue_issuance_dto.credential_issuer,
-        params.request_signed_metadata,
-    )
-    .await?;
-
-    let AuthorizationMetadata {
-        token_endpoint,
-        oauth_metadata,
-        ..
-    } = get_authorization_metadata(
-        fetcher,
-        issuer_metadata.metadata(),
-        &continue_issuance_dto.credential_issuer,
-        continue_issuance_dto.authorization_server.as_ref(),
-    )
-    .await?;
-
-    let scope_to_id: HashMap<&String, &String> = issuer_metadata
-        .metadata()
-        .credential_configurations_supported
-        .iter()
-        .filter_map(|(id, c)| c.scope.as_ref().map(|s| (s, id)))
-        .collect();
-
-    let scope_credential_config_ids = continue_issuance_dto
-        .scope
-        .iter()
-        .map(|s| {
-            scope_to_id
-                .get(&s)
-                .map(|s| s.to_string())
-                .ok_or(IssuanceProtocolError::Failed(format!(
-                    "Issuance requested scope doesnt exists: {s}"
-                )))
-        })
-        .collect::<Result<Vec<String>, IssuanceProtocolError>>()?;
-
-    let all_credential_configuration_ids = [
-        &scope_credential_config_ids[..],
-        &continue_issuance_dto.credential_configuration_ids[..],
-    ]
-    .concat();
-
-    let requires_wallet_instance_attestation =
-        requires_wia(&oauth_metadata.token_endpoint_auth_methods_supported);
-
-    let PrepareIssuanceSuccess {
-        interaction_id,
-        key_storage_security,
-        key_algorithms,
-    } = prepare_issuance_interaction(
-        organisation,
-        token_endpoint,
-        issuer_metadata.into(),
-        Some(oauth_metadata),
-        OpenID4VCIGrants::AuthorizationCode(OpenID4VCIAuthorizationCodeGrant {
-            issuer_state: None, // issuer state was used at the authorization request stage so it is not relevant anymore
-            authorization_server: continue_issuance_dto.authorization_server.to_owned(),
-        }),
-        &all_credential_configuration_ids,
-        storage_access,
-        Some(continue_issuance_dto),
-        protocol.clone(),
-        key_algorithm_provider,
-    )
-    .await?;
-
-    Ok(ContinueIssuanceResponseDTO {
-        interaction_id,
-        key_storage_security_levels: key_storage_security,
-        key_algorithms,
-        requires_wallet_instance_attestation,
-        protocol,
-    })
-}
-
 struct PrepareIssuanceSuccess {
     interaction_id: InteractionId,
     key_storage_security: Option<Vec<KeyStorageSecurity>>,
     key_algorithms: Option<Vec<String>>,
-}
-
-#[expect(clippy::too_many_arguments)]
-async fn prepare_issuance_interaction(
-    organisation: Organisation,
-    token_endpoint: String,
-    issuer_metadata: OpenID4VCIIssuerMetadataResponseDTO,
-    oauth_authorization_server_metadata: Option<OAuthAuthorizationServerMetadataResponseDTO>,
-    grants: OpenID4VCIGrants,
-    configuration_ids: &[String],
-    storage_access: &StorageAccess,
-    continue_issuance: Option<ContinueIssuanceDTO>,
-    protocol: String,
-    key_algorithm_provider: &dyn KeyAlgorithmProvider,
-) -> Result<PrepareIssuanceSuccess, IssuanceProtocolError> {
-    // We only support one credential at the time now
-    let configuration_id = configuration_ids.first().ok_or_else(|| {
-        IssuanceProtocolError::Failed("Credential offer is missing credentials".to_string())
-    })?;
-
-    let credential_config = issuer_metadata
-        .credential_configurations_supported
-        .get(configuration_id)
-        .ok_or_else(|| {
-            IssuanceProtocolError::Failed(format!(
-                "Credential configuration is missing for {configuration_id}"
-            ))
-        })?;
-
-    // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-ID1.html#section-11.2.3-2.2
-    if let Some(authorization_server) = grants.authorization_server()
-        && issuer_metadata
-            .authorization_servers
-            .as_ref()
-            .is_none_or(|servers| !servers.contains(authorization_server))
-    {
-        return Err(IssuanceProtocolError::InvalidRequest(format!(
-            "Authorization server missing in issuer metadata: {authorization_server}"
-        )));
-    }
-
-    let token_endpoint_auth_methods_supported = oauth_authorization_server_metadata
-        .as_ref()
-        .map(|oauth_metadata| oauth_metadata.token_endpoint_auth_methods_supported.clone());
-
-    let challenge_endpoint = oauth_authorization_server_metadata
-        .as_ref()
-        .and_then(|oauth_metadata| oauth_metadata.challenge_endpoint.clone());
-
-    let holder_data = HolderInteractionData {
-        issuer_url: issuer_metadata.credential_issuer.clone(),
-        credential_endpoint: issuer_metadata.credential_endpoint.clone(),
-        notification_endpoint: issuer_metadata.notification_endpoint.to_owned(),
-        nonce_endpoint: issuer_metadata.nonce_endpoint.to_owned(),
-        challenge_endpoint,
-        token_endpoint: Some(token_endpoint),
-        grants: Some(grants),
-        continue_issuance,
-        access_token: None,
-        access_token_expires_at: None,
-        refresh_token: None,
-        refresh_token_expires_at: None,
-        credential_signing_alg_values_supported: credential_config
-            .credential_signing_alg_values_supported
-            .clone(),
-        cryptographic_binding_methods_supported: credential_config
-            .cryptographic_binding_methods_supported
-            .clone(),
-        proof_types_supported: credential_config.proof_types_supported.clone(),
-        token_endpoint_auth_methods_supported,
-        credential_metadata: credential_config.credential_metadata.clone(),
-        credential_configuration_id: configuration_id.to_owned(),
-        notification_id: None,
-        protocol,
-        format: credential_config.format.to_owned(),
-    };
-    let data = serialize_interaction_data(&holder_data)?;
-
-    let interaction =
-        create_and_store_interaction(storage_access, data, Some(organisation)).await?;
-    let (key_algorithms, key_storage_security) =
-        credential_config_to_holder_signing_algs_and_key_storage_security(
-            key_algorithm_provider,
-            credential_config,
-        );
-    Ok(PrepareIssuanceSuccess {
-        interaction_id: interaction.id,
-        key_storage_security,
-        key_algorithms,
-    })
 }
 
 async fn resolve_credential_offer(
@@ -2056,59 +2262,21 @@ async fn resolve_credential_offer(
 }
 
 #[expect(clippy::large_enum_variant)]
-enum IssuerMetadata {
+enum IssuerMetadataRepresentation {
     Unsigned(OpenID4VCIIssuerMetadataResponseDTO),
-    Signed(DecomposedJwt<OpenID4VCIIssuerMetadataResponseDTO>),
+    Signed(
+        DecomposedJwt<OpenID4VCIIssuerMetadataResponseDTO>,
+        Option<(AccessCertificateResult, String)>,
+    ),
 }
 
-impl IssuerMetadata {
+impl IssuerMetadataRepresentation {
     fn metadata(&self) -> &OpenID4VCIIssuerMetadataResponseDTO {
         match &self {
-            IssuerMetadata::Unsigned(metadata) => metadata,
-            IssuerMetadata::Signed(jwt) => &jwt.payload.custom,
+            Self::Unsigned(metadata) => metadata,
+            Self::Signed(jwt, _) => &jwt.payload.custom,
         }
     }
-}
-
-impl From<IssuerMetadata> for OpenID4VCIIssuerMetadataResponseDTO {
-    fn from(value: IssuerMetadata) -> Self {
-        match value {
-            IssuerMetadata::Unsigned(metadata) => metadata,
-            IssuerMetadata::Signed(jwt) => jwt.payload.custom,
-        }
-    }
-}
-
-async fn fetch_issuer_metadata(
-    fetcher: &dyn OpenIDMetadataFetcher,
-    credential_issuer: &str,
-    request_signed_metadata: bool,
-) -> Result<IssuerMetadata, IssuanceProtocolError> {
-    let credential_issuer_endpoint: Url = credential_issuer.parse().map_err(|_| {
-        IssuanceProtocolError::InvalidRequest(format!(
-            "Invalid credential issuer url {credential_issuer}",
-        ))
-    })?;
-
-    Ok(if request_signed_metadata {
-        IssuerMetadata::Signed(
-            fetch_metadata_jwt_with_fallback(
-                fetcher,
-                &credential_issuer_endpoint,
-                "openid-credential-issuer",
-            )
-            .await?,
-        )
-    } else {
-        IssuerMetadata::Unsigned(
-            fetch_metadata_json_with_fallback(
-                fetcher,
-                &credential_issuer_endpoint,
-                "openid-credential-issuer",
-            )
-            .await?,
-        )
-    })
 }
 
 struct AuthorizationMetadata {
@@ -2450,5 +2618,37 @@ async fn create_wallet_unit_attestation_pop(
             .tokenize(Some(&*auth_fn))
             .await
             .error_while("creating proof token")?),
+    }
+}
+
+fn credential_config_matches_reg_cert_attestation(
+    credential_config: &OpenID4VCICredentialConfigurationData,
+    reg_cert_attestation: &registration_certificate::model::Credential,
+) -> bool {
+    if credential_config.format != reg_cert_attestation.format.to_string() {
+        return false;
+    }
+
+    match &reg_cert_attestation.meta {
+        dcql::CredentialMeta::MsoMdoc { doctype_value } => credential_config
+            .doctype
+            .as_ref()
+            .is_some_and(|doctype| doctype == doctype_value),
+        dcql::CredentialMeta::SdJwtVc { vct_values } => credential_config
+            .vct
+            .as_ref()
+            .is_some_and(|vct| vct_values.contains(vct)),
+        dcql::CredentialMeta::W3cVc { type_values } => credential_config
+            .credential_definition
+            .as_ref()
+            .is_some_and(|credential_definition| {
+                // TODO: support context expansion
+                type_values.iter().any(|types| {
+                    credential_definition
+                        .r#type
+                        .iter()
+                        .all(|r#type| types.contains(r#type))
+                })
+            }),
     }
 }

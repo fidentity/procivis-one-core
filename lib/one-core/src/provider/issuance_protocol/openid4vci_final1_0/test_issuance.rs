@@ -24,7 +24,9 @@ use crate::proto::certificate_validator::MockCertificateValidator;
 use crate::proto::credential_schema::importer::MockCredentialSchemaImporter;
 use crate::proto::http_client::MockHttpClient;
 use crate::proto::identifier_creator::MockIdentifierCreator;
+use crate::proto::session_provider::NoSessionProvider;
 use crate::proto::wallet_unit::MockHolderWalletUnitProto;
+use crate::proto::wrp_validator::MockWRPValidator;
 use crate::provider::blob_storage_provider::{MockBlobStorage, MockBlobStorageProvider};
 use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
@@ -42,6 +44,7 @@ use crate::provider::revocation::MockRevocationMethod;
 use crate::provider::revocation::model::CredentialRevocationInfo;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
+use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
@@ -203,6 +206,9 @@ async fn test_issuer_submit_succeeds() {
         Arc::new(MockHolderWalletUnitProto::new()),
         Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     let result = provider
@@ -356,6 +362,9 @@ async fn test_issue_credential_for_mdoc_creates_validity_credential() {
         Arc::new(MockHolderWalletUnitProto::new()),
         Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     service
@@ -498,6 +507,9 @@ async fn test_issue_credential_for_existing_mdoc_creates_new_validity_credential
         Arc::new(MockHolderWalletUnitProto::new()),
         Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     service
@@ -602,6 +614,9 @@ async fn test_issue_credential_for_existing_mdoc_with_expected_update_in_the_fut
         Arc::new(MockHolderWalletUnitProto::new()),
         Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     assert!(matches!(

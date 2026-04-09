@@ -27,6 +27,8 @@ pub enum IssuanceProtocolError {
     Suspended,
     #[error("Credential refresh is not yet possible")]
     RefreshTooSoon,
+    #[error("Issuance not allowed by trust ecosystem")]
+    DisallowedCredentialConfiguration,
 
     #[error("JSON error: `{0}`")]
     Json(#[from] serde_json::Error),
@@ -52,6 +54,7 @@ impl ErrorCodeMixin for IssuanceProtocolError {
             | Self::CertificateMismatch
             | Self::CredentialVerificationFailed(_) => ErrorCode::BR_0173,
             Self::BindingAutogenerationFailure(_) => ErrorCode::BR_0217,
+            Self::DisallowedCredentialConfiguration => ErrorCode::BR_0411,
             Self::Suspended | Self::RefreshTooSoon => ErrorCode::BR_0238,
             Self::Nested(nested) => nested.error_code(),
         }

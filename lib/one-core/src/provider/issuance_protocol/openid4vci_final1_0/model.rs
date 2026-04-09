@@ -158,6 +158,11 @@ pub(crate) struct HolderInteractionData {
 
     /// OpenID4VCI credential format (of the offered credential)
     pub format: String,
+
+    #[serde(default)]
+    pub access_certificate: Option<String>,
+    #[serde(default)]
+    pub registration_certificate: Option<String>,
 }
 
 // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-12.2.4

@@ -16,7 +16,9 @@ use crate::proto::credential_schema::importer::CredentialSchemaImporter;
 use crate::proto::credential_schema::parser::CredentialSchemaImportParser;
 use crate::proto::http_client::HttpClient;
 use crate::proto::identifier_creator::IdentifierCreator;
+use crate::proto::session_provider::SessionProvider;
 use crate::proto::wallet_unit::HolderWalletUnitProto;
+use crate::proto::wrp_validator::WRPValidator;
 use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::caching_loader::vct::VctTypeMetadataFetcher;
@@ -27,6 +29,7 @@ use crate::provider::key_security_level::provider::KeySecurityLevelProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
@@ -95,6 +98,9 @@ pub(crate) fn issuance_protocol_provider_from_config(
     credential_schema_import_parser: Arc<dyn CredentialSchemaImportParser>,
     wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
     holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
+    wrp_validator: Arc<dyn WRPValidator>,
+    history_repository: Arc<dyn HistoryRepository>,
+    session_provider: Arc<dyn SessionProvider>,
 ) -> Result<Arc<dyn IssuanceProtocolProvider>, ConfigValidationError> {
     let mut protocols: HashMap<String, Arc<dyn IssuanceProtocol>> = HashMap::new();
 
@@ -132,6 +138,9 @@ pub(crate) fn issuance_protocol_provider_from_config(
                     wallet_unit_proto.clone(),
                     holder_wallet_unit_repository.clone(),
                     certificate_validator.clone(),
+                    wrp_validator.clone(),
+                    history_repository.clone(),
+                    session_provider.clone(),
                 ))
             }
             IssuanceProtocolType::OpenId4VciDraft13 => {
@@ -200,6 +209,9 @@ pub(crate) fn issuance_protocol_provider_from_config(
                     wallet_unit_proto.clone(),
                     holder_wallet_unit_repository.clone(),
                     certificate_validator.clone(),
+                    wrp_validator.clone(),
+                    history_repository.clone(),
+                    session_provider.clone(),
                 ))
             }
         };

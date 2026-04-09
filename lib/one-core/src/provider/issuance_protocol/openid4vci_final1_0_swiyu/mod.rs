@@ -27,7 +27,9 @@ use crate::proto::certificate_validator::CertificateValidator;
 use crate::proto::credential_schema::importer::CredentialSchemaImporter;
 use crate::proto::http_client::HttpClient;
 use crate::proto::identifier_creator::IdentifierCreator;
+use crate::proto::session_provider::SessionProvider;
 use crate::proto::wallet_unit::HolderWalletUnitProto;
+use crate::proto::wrp_validator::WRPValidator;
 use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
@@ -42,6 +44,7 @@ use crate::provider::key_security_level::provider::KeySecurityLevelProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::provider::RevocationMethodProvider;
 use crate::repository::credential_repository::CredentialRepository;
+use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::key_repository::KeyRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
@@ -118,6 +121,9 @@ impl OpenID4VCISwiyu {
         holder_wallet_unit_proto: Arc<dyn HolderWalletUnitProto>,
         holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
         certificate_validator: Arc<dyn CertificateValidator>,
+        wrp_validator: Arc<dyn WRPValidator>,
+        history_repository: Arc<dyn HistoryRepository>,
+        session_provider: Arc<dyn SessionProvider>,
     ) -> Self {
         let protocol_base_url = base_url
             .as_ref()
@@ -147,6 +153,9 @@ impl OpenID4VCISwiyu {
                 holder_wallet_unit_proto,
                 holder_wallet_unit_repository,
                 certificate_validator,
+                wrp_validator,
+                history_repository,
+                session_provider,
             ),
         }
     }

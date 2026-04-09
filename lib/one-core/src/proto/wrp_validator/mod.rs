@@ -9,14 +9,14 @@ pub(crate) mod error;
 pub(crate) mod validator;
 mod x509;
 
-#[expect(unused)]
 pub(crate) struct AccessCertificateResult {
+    #[expect(unused)]
     pub trust_entity: Option<TrustEntityResponse>,
     pub rp_id: String,
 }
 
-#[expect(unused)]
 pub(crate) struct RegistrationCertificateResult {
+    #[expect(unused)]
     pub trust_entity: Option<TrustEntityResponse>,
     pub payload: JWTPayload<Payload>,
 }

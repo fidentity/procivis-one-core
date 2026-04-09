@@ -191,7 +191,7 @@ impl OID4VCIFinal1_0Service {
                 expires_at: None,
                 invalid_before: Some(now),
                 issuer: None,
-                subject: None,
+                subject: Some(issuer_metadata.credential_issuer.to_owned()),
                 audience: None,
                 jwt_id: None,
                 proof_of_possession_key: None,

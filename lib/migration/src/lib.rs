@@ -231,6 +231,7 @@ mod m20260331_090207_fix_trust_unique_indexes;
 mod m20260331_132248_certificate_roles;
 mod m20260410_120000_history_metadata_to_text;
 mod m20260410_130000_add_metadata_blob_to_history;
+mod m20260410_133852_openid_metadata_cache_types;
 mod migrate_enum;
 mod soft_delete_unique_idx;
 
@@ -463,6 +464,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260331_132248_certificate_roles::Migration),
             Box::new(m20260410_120000_history_metadata_to_text::Migration),
             Box::new(m20260410_130000_add_metadata_blob_to_history::Migration),
+            Box::new(m20260410_133852_openid_metadata_cache_types::Migration),
         ]
     }
 }

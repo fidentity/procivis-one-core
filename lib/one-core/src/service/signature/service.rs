@@ -5,17 +5,18 @@ use uuid::Uuid;
 
 use super::SignatureService;
 use crate::error::ContextWithErrorCode;
+use crate::model::blob::{Blob, BlobType};
 use crate::model::certificate::CertificateRelations;
 use crate::model::did::DidRelations;
-use crate::model::history::{
-    History, HistoryAction, HistoryEntityType, HistoryMetadata, HistorySource,
-};
+use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::model::identifier::IdentifierRelations;
 use crate::model::key::KeyRelations;
 use crate::model::organisation::OrganisationRelations;
 use crate::model::revocation_list::{RevocationListEntityInfo, RevocationListRelations};
 use crate::proto::session_provider::SessionExt;
+use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::signer::dto::{CreateSignatureResponseDTO, Issuer};
+use crate::service::error::MissingProviderError;
 use crate::service::signature::dto::{CreateSignatureRequestDTO, SignatureStatusInfo};
 use crate::service::signature::error::SignatureServiceError;
 use crate::validator::permissions::RequiredPermissions;
@@ -74,7 +75,6 @@ impl SignatureService {
         }
 
         let issuer_id = issuer.id;
-        let request_data = request.data.clone();
 
         // Note: signer providers must check the permissions internally for signing
         let result = signer
@@ -90,21 +90,7 @@ impl SignatureService {
             .error_while("signing signature request")?;
 
         if let Err(error) = self
-            .history
-            .create_history(History {
-                id: Uuid::new_v4().into(),
-                created_date: crate::clock::now_utc(),
-                source: HistorySource::Core,
-                action: HistoryAction::Created,
-                entity_id: Some(result.id.into()),
-                entity_type: HistoryEntityType::Signature,
-                metadata: Some(HistoryMetadata::External(request_data)),
-                metadata_blob_id: None,
-                name: signature_type.to_owned(),
-                target: Some(issuer_id.to_string()),
-                organisation_id: Some(organisation_id),
-                user: self.session_provider.session().user(),
-            })
+            .store_sign_history(&result, &signature_type, issuer_id, organisation_id)
             .await
         {
             tracing::warn!("Failed to write history entry: {}", error);
@@ -186,6 +172,52 @@ impl SignatureService {
         }
 
         tracing::info!("Revoked signature {}", id);
+        Ok(())
+    }
+
+    async fn store_sign_history(
+        &self,
+        create_signature_response: &CreateSignatureResponseDTO,
+        signature_type: &str,
+        issuer_id: shared_types::IdentifierId,
+        organisation_id: shared_types::OrganisationId,
+    ) -> Result<(), SignatureServiceError> {
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob = Blob::new(
+            create_signature_response.result.clone(),
+            BlobType::HistoryMetadata,
+        );
+
+        let blob_id = blob.id;
+        blob_storage
+            .create(blob)
+            .await
+            .error_while("creating history metadata blob")?;
+
+        self.history
+            .create_history(History {
+                id: Uuid::new_v4().into(),
+                created_date: crate::clock::now_utc(),
+                source: HistorySource::Core,
+                action: HistoryAction::Created,
+                entity_id: Some(create_signature_response.id.into()),
+                entity_type: HistoryEntityType::Signature,
+                metadata: None,
+                metadata_blob_id: Some(blob_id),
+                name: signature_type.to_owned(),
+                target: Some(issuer_id.to_string()),
+                organisation_id: Some(organisation_id),
+                user: self.session_provider.session().user(),
+            })
+            .await
+            .error_while("creating signature history entry")?;
+
         Ok(())
     }
 

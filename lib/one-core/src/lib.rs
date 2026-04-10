@@ -821,7 +821,7 @@ impl OneCore {
                 data_provider.get_trust_collection_repository(),
                 data_provider.get_trust_list_subscription_repository(),
                 data_provider.get_identifier_trust_information_repository(),
-                blob_storage_provider,
+                blob_storage_provider.clone(),
                 identifier_creator,
                 config.clone(),
                 session_provider.clone(),
@@ -866,6 +866,7 @@ impl OneCore {
                 data_provider.get_revocation_list_repository(),
                 data_provider.get_identifier_repository(),
                 data_provider.get_history_repository(),
+                blob_storage_provider.clone(),
                 session_provider.clone(),
             ),
             statistics_service: StatisticsService::new(

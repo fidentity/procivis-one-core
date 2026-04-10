@@ -31,8 +31,12 @@ use crate::serialize::front_time;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[try_into(T = CreateTrustCollectionRequestDTO, Error = ServiceError)]
 pub struct CreateTrustCollectionRestDTO {
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS mode
+    /// this value is derived from the token.
     #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
+    /// Provide a name for this collection.
     #[try_into(infallible)]
     pub name: String,
 }
@@ -149,10 +153,15 @@ pub(crate) enum SortableTrustCollectionColumnRestEnum {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[into(CreateTrustListSubscriptionRequestDTO)]
 pub struct CreateTrustListSubscriptionRequestRestDTO {
+    /// Provide a name for this subscription.
     pub name: String,
+    /// Specify which ecosystem role this list corresponds to.
     #[into(with_fn = convert_inner)]
     pub role: Option<TrustListRoleRestEnum>,
+    /// Provide the reference URL for the trust list.
     pub reference: Url,
+    /// The configured `trustListSubscriber` instance the trust list
+    /// conforms to.
     pub r#type: TrustListSubscriberId,
 }
 

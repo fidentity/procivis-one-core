@@ -33,8 +33,8 @@ pub struct CreateTrustListRequestRestDTO {
     #[try_into(infallible)]
     pub r#type: String,
     /// Required when not using STS authentication mode. Specifies the
-    /// organizational context for this operation. When using STS
-    /// authentication, this value is derived from the token.    
+    /// organizational context for this operation. When using STS mode
+    /// this value is derived from the token.
     #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// ID of identifier used to sign each publication of the list.
@@ -109,7 +109,7 @@ pub(crate) struct TrustListPublicationListItemResponseRestDTO {
     #[serde(serialize_with = "front_time")]
     pub last_modified: OffsetDateTime,
     pub organisation_id: OrganisationId,
-    /// The configured trust list publisher instance used to
+    /// The configured `trustListPublisher` instance used to
     /// publish the list.
     pub r#type: TrustListPublisherId,
     /// The profile this trust list conforms to.
@@ -138,7 +138,7 @@ pub(crate) struct GetTrustListPublicationResponseRestDTO {
     pub name: String,
     /// Identifier used for signing the trust list.
     pub identifier: GetIdentifierListItemResponseRestDTO,
-    /// The configured trust list publisher instance used to
+    /// The configured `trustListPublisher` instance used to
     /// publish this list.
     pub r#type: TrustListPublisherId,
     /// The profile this trust list conforms to.

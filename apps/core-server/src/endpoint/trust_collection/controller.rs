@@ -29,7 +29,7 @@ use crate::router::AppState;
         ("bearer" = [])
     ),
     summary = "Create a trust collection",
-    description = "Create a trust collection.",
+    description = "Creates an empty collection of trust lists.",
 )]
 pub(crate) async fn post_trust_collection(
     state: State<AppState>,
@@ -64,8 +64,8 @@ pub(crate) async fn post_trust_collection(
     security(
         ("bearer" = [])
     ),
-    summary = "Retrieve an trust collection",
-    description = "Returns detailed information about an trust collection.",
+    summary = "Retrieve a trust collection",
+    description = "Returns detailed information about a trust collection.",
 )]
 pub(crate) async fn get_trust_collection(
     state: State<AppState>,
@@ -91,7 +91,7 @@ pub(crate) async fn get_trust_collection(
         ("bearer" = [])
     ),
     summary = "List trust collections",
-    description = "Returns a list of trust collections in an organization.",
+    description = "Returns a filterable list of trust collections in an organization.",
 )]
 pub(crate) async fn get_trust_collection_list(
     state: State<AppState>,
@@ -127,7 +127,7 @@ pub(crate) async fn get_trust_collection_list(
         ("bearer" = [])
     ),
     summary = "Delete a trust collection",
-    description = "Delete a trust collection.",
+    description = "Permanently removes a trust collection.",
 )]
 pub(crate) async fn delete_trust_collection(
     state: State<AppState>,
@@ -155,7 +155,7 @@ pub(crate) async fn delete_trust_collection(
         ("bearer" = [])
     ),
     summary = "Create a trust list subscription",
-    description = "",
+    description = "Adds a trust list subscription to a trust collection.",
 )]
 pub(crate) async fn post_trust_list_subscription(
     state: State<AppState>,
@@ -220,7 +220,7 @@ pub(crate) async fn delete_trust_list_subscription(
     security(
         ("bearer" = [])
     ),
-    summary = "List trust list subscription entries",
+    summary = "List trust list subscriptions",
     description = "Returns a filterable list of trust list subscriptions in a trust collection.",
 )]
 pub(crate) async fn get_trust_list_subscription_entries(

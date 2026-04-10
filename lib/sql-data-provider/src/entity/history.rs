@@ -6,7 +6,7 @@ use one_dto_mapper::{From, Into};
 use sea_orm::IntoSimpleExpr;
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::SimpleExpr;
-use shared_types::{EntityId, HistoryId, OrganisationId};
+use shared_types::{BlobId, EntityId, HistoryId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -19,6 +19,7 @@ pub struct Model {
     pub action: HistoryAction,
     pub entity_id: Option<EntityId>,
     pub entity_type: HistoryEntityType,
+    #[sea_orm(column_type = "Text", nullable)]
     pub metadata: Option<String>,
     pub name: String,
     pub source: HistorySource,
@@ -26,6 +27,7 @@ pub struct Model {
     pub user: Option<String>,
 
     pub organisation_id: Option<OrganisationId>,
+    pub metadata_blob_id: Option<BlobId>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

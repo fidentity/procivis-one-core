@@ -18,6 +18,7 @@ async fn test_db_schema_history() {
             "target",
             "user",
             "source",
+            "metadata_blob_id",
         ])
         .index("index-History-EntityId", false, &["entity_id"])
         .index("index-History-Metadata", false, &["metadata"])
@@ -59,7 +60,7 @@ async fn test_db_schema_history() {
         .foreign_key("fk-History-OrganisationId-new", "organisation", "id");
     history
         .column("metadata")
-        .r#type(ColumnType::String(None))
+        .r#type(ColumnType::Text)
         .nullable(true);
     history
         .column("name")
@@ -79,4 +80,9 @@ async fn test_db_schema_history() {
         .r#type(ColumnType::String(None))
         .nullable(false)
         .default(None);
+    history
+        .column("metadata_blob_id")
+        .r#type(ColumnType::Uuid)
+        .nullable(true)
+        .foreign_key("fk-History-MetadataBlobId", "blob_storage", "id");
 }

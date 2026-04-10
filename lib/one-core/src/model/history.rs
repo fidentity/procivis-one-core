@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId, ProofId,
-    ProofSchemaId,
+    BlobId, CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId,
+    ProofId, ProofSchemaId,
 };
 use time::OffsetDateTime;
 
@@ -63,6 +63,7 @@ pub struct History {
     pub metadata: Option<HistoryMetadata>,
     pub organisation_id: Option<OrganisationId>,
     pub user: Option<String>,
+    pub metadata_blob_id: Option<BlobId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

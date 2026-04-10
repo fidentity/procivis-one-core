@@ -179,6 +179,7 @@ impl TrustEntityHistoryDecorator {
                 entity_id: Some(id.into()),
                 entity_type: HistoryEntityType::TrustEntity,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: organisation.map(|o| o.id),
                 user: self.session_provider.session().user(),
             })

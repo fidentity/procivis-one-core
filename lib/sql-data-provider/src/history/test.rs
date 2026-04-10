@@ -436,6 +436,7 @@ async fn test_create_history() {
             metadata: None,
             organisation_id: Some(organisation.id),
             user: Some("testUser".to_string()),
+            metadata_blob_id: None,
         })
         .await;
 
@@ -1894,6 +1895,7 @@ async fn add_history(
         source: Set(history::HistorySource::Core),
         target: Set(None),
         user: Set(None),
+        metadata_blob_id: Set(None),
     }
     .insert(database)
     .await

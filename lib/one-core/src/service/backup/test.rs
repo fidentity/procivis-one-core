@@ -125,6 +125,7 @@ fn dummy_unexportable_entities() -> UnexportableEntities {
             metadata: None,
             organisation_id: None,
             user: None,
+            metadata_blob_id: None,
         }],
         total_credentials: 5,
         total_keys: 5,

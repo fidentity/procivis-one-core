@@ -46,6 +46,7 @@ impl IdentifierHistoryDecorator {
                 entity_id: Some(id.into()),
                 entity_type: HistoryEntityType::Identifier,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

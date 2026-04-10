@@ -55,6 +55,7 @@ impl HistoriesDB {
             source: params.source.unwrap_or(HistorySource::Core),
             target: params.target,
             user: params.user,
+            metadata_blob_id: None,
         };
 
         self.repository
@@ -82,6 +83,7 @@ impl HistoriesDB {
             target: params.target,
             //TODO: pass user
             user: None,
+            metadata_blob_id: None,
         };
 
         self.repository

@@ -1443,6 +1443,7 @@ impl OpenID4VCIFinal1_0 {
                 entity_id: Some(credential_id.into()),
                 entity_type: HistoryEntityType::Credential,
                 metadata: Some(HistoryMetadata::Certificate(certificate_content)),
+                metadata_blob_id: None,
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

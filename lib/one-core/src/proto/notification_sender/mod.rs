@@ -197,6 +197,7 @@ impl NotificationSenderImpl {
                     entity_id: Some(notification.id.into()),
                     entity_type: HistoryEntityType::Notification,
                     metadata,
+                    metadata_blob_id: None,
                     organisation_id: Some(notification.organisation_id),
                     user: self.session_provider.session().user(),
                 })

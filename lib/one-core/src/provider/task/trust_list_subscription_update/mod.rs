@@ -87,6 +87,7 @@ impl TrustListSubscriptionUpdateTask {
                     entity_id: Some(subscription.id.into()),
                     entity_type: HistoryEntityType::TrustListSubscription,
                     metadata: state.metadata(),
+                    metadata_blob_id: None,
                     organisation_id: Some(org_id),
                     user: self.session_provider.session().user(),
                 })

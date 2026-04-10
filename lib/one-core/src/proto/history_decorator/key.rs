@@ -33,6 +33,7 @@ impl KeyRepository for KeyHistoryDecorator {
                 entity_id: Some(key_id.into()),
                 entity_type: HistoryEntityType::Key,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(request.organisation.ok_or(DataLayerError::MappingError)?.id),
                 user: self.session_provider.session().user(),
             })

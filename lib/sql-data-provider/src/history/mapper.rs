@@ -45,6 +45,7 @@ impl TryFrom<history::Model> for History {
             source: value.source.into(),
             target: value.target,
             user: value.user,
+            metadata_blob_id: value.metadata_blob_id,
         })
     }
 }
@@ -72,6 +73,7 @@ impl TryFrom<History> for history::ActiveModel {
             source: Set(value.source.into()),
             target: Set(value.target),
             user: Set(value.user),
+            metadata_blob_id: Set(value.metadata_blob_id),
         })
     }
 }

@@ -300,6 +300,7 @@ impl WalletProviderService {
                 entity_id: Some(EntityId::from(*wallet_unit_id)),
                 entity_type: HistoryEntityType::WalletUnit,
                 metadata,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

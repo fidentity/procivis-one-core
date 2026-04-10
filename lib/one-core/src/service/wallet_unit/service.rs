@@ -189,6 +189,7 @@ impl WalletUnitService {
                 entity_id: Some(holder_wallet_unit_id.into()),
                 entity_type: HistoryEntityType::WalletUnit,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation.id),
                 user: self.session_provider.session().user(),
             })
@@ -325,6 +326,7 @@ impl WalletUnitService {
                     entity_id: Some(id.into()),
                     entity_type: HistoryEntityType::WalletUnit,
                     metadata: None,
+                    metadata_blob_id: None,
                     organisation_id: holder_wallet_unit.organisation.map(|o| o.id),
                     user: self.session_provider.session().user(),
                     created_date: self.clock.now_utc(),

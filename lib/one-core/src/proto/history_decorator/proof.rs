@@ -90,6 +90,7 @@ impl ProofHistoryDecorator {
                 entity_id: Some(proof_id.into()),
                 entity_type: HistoryEntityType::Proof,
                 metadata: error_info.map(HistoryMetadata::ErrorMetadata),
+                metadata_blob_id: None,
                 organisation_id,
                 user: self.session_provider.session().user(),
             })

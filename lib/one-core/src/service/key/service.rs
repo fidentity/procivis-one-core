@@ -203,6 +203,7 @@ impl KeyService {
                 entity_id: Some(key.id.into()),
                 entity_type: HistoryEntityType::Key,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(
                     key.organisation
                         .ok_or(KeyServiceError::MappingError(

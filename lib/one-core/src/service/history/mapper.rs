@@ -33,6 +33,7 @@ impl From<CreateHistoryRequestDTO> for History {
             metadata: value.metadata.map(HistoryMetadata::External),
             organisation_id: value.organisation_id,
             user: None,
+            metadata_blob_id: None,
         }
     }
 }

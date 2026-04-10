@@ -149,6 +149,7 @@ impl CredentialSchemaHistoryDecorator {
                 entity_id: Some(credential_schema.id.into()),
                 entity_type: HistoryEntityType::CredentialSchema,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation.id),
                 user: self.session_provider.session().user(),
             })

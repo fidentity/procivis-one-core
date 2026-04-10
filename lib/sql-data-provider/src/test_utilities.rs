@@ -601,6 +601,7 @@ pub async fn insert_history(
         target: Set(None),
         //TODO: pass user
         user: Set(None),
+        metadata_blob_id: Set(None),
     }
     .insert(database)
     .await?;

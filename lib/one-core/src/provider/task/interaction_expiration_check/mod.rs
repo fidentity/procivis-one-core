@@ -99,6 +99,7 @@ impl Task for InteractionExpirationCheckProvider {
                     entity_id: Some((*credential_id).into()),
                     entity_type: HistoryEntityType::Credential,
                     metadata: None,
+                    metadata_blob_id: None,
                     organisation_id: schema.organisation.map(|o| o.id),
                     user: self.session_provider.session().user(),
                 })
@@ -150,6 +151,7 @@ impl Task for InteractionExpirationCheckProvider {
                     entity_id: Some((*proof_id).into()),
                     entity_type: HistoryEntityType::Proof,
                     metadata: None,
+                    metadata_blob_id: None,
                     organisation_id: organisation.map(|o| o.id),
                     user: self.session_provider.session().user(),
                 })

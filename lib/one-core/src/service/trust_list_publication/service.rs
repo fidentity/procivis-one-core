@@ -4,6 +4,7 @@ use shared_types::{
     CertificateId, IdentifierId, KeyId, OrganisationId, TrustEntryId, TrustListPublicationId,
     TrustListPublisherId,
 };
+use tracing::info;
 
 use crate::error::ContextWithErrorCode;
 use crate::mapper::{list_response_into, list_response_try_into};
@@ -54,10 +55,9 @@ impl TrustListPublicationService {
             request.certificate_id,
             trust_list_publisher.get_capabilities(),
         )?;
-
-        Ok(trust_list_publisher
+        let trust_list_publication_id = trust_list_publisher
             .create_trust_list(CreateTrustListRequest {
-                name: request.name,
+                name: request.name.clone(),
                 role: request.role,
                 organisation_id: request.organisation_id,
                 identifier,
@@ -66,7 +66,13 @@ impl TrustListPublicationService {
                 params: request.params,
             })
             .await
-            .error_while("creating trust list")?)
+            .error_while("creating trust list")?;
+
+        info!(
+            "Created trust list publication `{}` ({})",
+            request.name, trust_list_publication_id,
+        );
+        Ok(trust_list_publication_id)
     }
 
     pub async fn delete_trust_list_publication(
@@ -82,8 +88,13 @@ impl TrustListPublicationService {
         self.trust_list_publication_repository
             .delete(id)
             .await
-            .error_while("deleting trust list publication")
-            .map_err(Into::into)
+            .error_while("deleting trust list publication")?;
+
+        info!(
+            "Removed trust list publication `{}` ({})",
+            trust_list.name, trust_list.id
+        );
+        Ok(())
     }
 
     pub async fn create_trust_entry(
@@ -108,10 +119,19 @@ impl TrustListPublicationService {
         )?;
         validate_organisation_matches(&identifier, trust_list_publication.organisation_id)?;
 
-        Ok(trust_list_publisher
-            .add_entry(trust_list_publication, identifier, request.params)
+        let trust_entry_id = trust_list_publisher
+            .add_entry(&trust_list_publication, &identifier, request.params)
             .await
-            .error_while("adding entry to trust list")?)
+            .error_while("adding entry to trust list")?;
+
+        info!(
+            "Created trust list publication entry ({}): identifier ({}) : trust list publication `{}` ({})",
+            trust_entry_id,
+            request.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(trust_entry_id)
     }
 
     pub async fn update_trust_entry(
@@ -134,10 +154,18 @@ impl TrustListPublicationService {
             .fetch_trust_list_provider(&trust_list_publication.r#type)
             .await?;
 
-        Ok(trust_list_publisher
-            .update_entry(trust_entry, request.state, request.params)
+        trust_list_publisher
+            .update_entry(&trust_entry, request.state, request.params)
             .await
-            .error_while("updating trust list entry")?)
+            .error_while("updating trust list entry")?;
+        info!(
+            "Updated trust list publication entry ({}): identifier `{}` : trust list publication `{}` ({})",
+            trust_entry.id,
+            trust_entry.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(())
     }
 
     pub async fn delete_trust_entry(
@@ -159,10 +187,18 @@ impl TrustListPublicationService {
             .fetch_trust_list_provider(&trust_list_publication.r#type)
             .await?;
 
-        Ok(trust_list_publisher
-            .remove_entry(trust_entry)
+        trust_list_publisher
+            .remove_entry(&trust_entry)
             .await
-            .error_while("removing entry from trust list")?)
+            .error_while("removing entry from trust list")?;
+        info!(
+            "Removed trust list publication entry ({}): identifier `{}` : trust list publication `{}` ({})",
+            trust_entry.id,
+            trust_entry.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(())
     }
 
     pub async fn get_trust_list_publication(

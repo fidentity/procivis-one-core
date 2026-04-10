@@ -41,19 +41,19 @@ pub trait TrustListPublisher: Send + Sync {
 
     async fn add_entry(
         &self,
-        publication: TrustListPublication,
-        identifier: Identifier,
+        publication: &TrustListPublication,
+        identifier: &Identifier,
         params: Option<serde_json::Value>,
     ) -> Result<TrustEntryId, TrustListPublisherError>;
 
     async fn update_entry(
         &self,
-        entry: TrustEntry,
+        entry: &TrustEntry,
         state: Option<TrustEntryStateEnum>,
         params: Option<serde_json::Value>,
     ) -> Result<(), TrustListPublisherError>;
 
-    async fn remove_entry(&self, entry: TrustEntry) -> Result<(), TrustListPublisherError>;
+    async fn remove_entry(&self, entry: &TrustEntry) -> Result<(), TrustListPublisherError>;
 
     async fn generate_trust_list_content(
         &self,

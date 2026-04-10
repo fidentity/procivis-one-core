@@ -608,7 +608,7 @@ async fn test_lifecycle_create_add_update_remove() {
 
     let publication = repos.stored_publication.lock().unwrap().clone().unwrap();
     let entry_id = publisher
-        .add_entry(publication, identifier_for_add_entry, None)
+        .add_entry(&publication, &identifier_for_add_entry, None)
         .await
         .unwrap();
 
@@ -638,7 +638,7 @@ async fn test_lifecycle_create_add_update_remove() {
         ..dummy_entry(vec![])
     };
     publisher
-        .update_entry(entry, Some(TrustEntryStateEnum::Active), None)
+        .update_entry(&entry, Some(TrustEntryStateEnum::Active), None)
         .await
         .unwrap();
 
@@ -658,7 +658,7 @@ async fn test_lifecycle_create_add_update_remove() {
             .id,
         ..dummy_entry(vec![])
     };
-    publisher.remove_entry(entry).await.unwrap();
+    publisher.remove_entry(&entry).await.unwrap();
 
     {
         let pub_entity = repos.stored_publication.lock().unwrap().clone().unwrap();
@@ -742,7 +742,7 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
     );
 
     publisher
-        .add_entry(publication, identifier_for_add_entry, None)
+        .add_entry(&publication, &identifier_for_add_entry, None)
         .await
         .unwrap();
 

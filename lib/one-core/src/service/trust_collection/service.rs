@@ -64,7 +64,7 @@ impl TrustCollectionService {
             .await
             .error_while("deleting trust collection")?;
         info!(
-            "Deleted trust collection `{}` ({})",
+            "Removed trust collection `{}` ({})",
             trust_collection.name, trust_collection.id
         );
         Ok(())
@@ -171,7 +171,7 @@ impl TrustCollectionService {
             .await
             .error_while("deleting trust list subscription")?;
         info!(
-            "Deleted trust list subscription `{}` ({}): trust list collection `{}` ({})",
+            "Removed trust list subscription `{}` ({}): trust list collection `{}` ({})",
             trust_list_subscription.name,
             trust_list_subscription.id,
             trust_collection.name,

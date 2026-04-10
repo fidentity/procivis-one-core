@@ -163,8 +163,8 @@ impl TrustListPublisher for EtsiLotePublisher {
 
     async fn add_entry(
         &self,
-        publication: TrustListPublication,
-        identifier: Identifier,
+        publication: &TrustListPublication,
+        identifier: &Identifier,
         params: Option<serde_json::Value>,
     ) -> Result<TrustEntryId, TrustListPublisherError> {
         let entry_params = params
@@ -198,7 +198,7 @@ impl TrustListPublisher for EtsiLotePublisher {
 
     async fn update_entry(
         &self,
-        entry: TrustEntry,
+        entry: &TrustEntry,
         state: Option<TrustEntryStateEnum>,
         params: Option<serde_json::Value>,
     ) -> Result<(), TrustListPublisherError> {
@@ -222,7 +222,7 @@ impl TrustListPublisher for EtsiLotePublisher {
         Ok(())
     }
 
-    async fn remove_entry(&self, entry: TrustEntry) -> Result<(), TrustListPublisherError> {
+    async fn remove_entry(&self, entry: &TrustEntry) -> Result<(), TrustListPublisherError> {
         self.trust_entry_repository
             .delete(entry.id)
             .await

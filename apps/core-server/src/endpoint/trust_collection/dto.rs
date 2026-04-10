@@ -210,13 +210,13 @@ pub(crate) struct TrustListSubscriptionFilterQueryParamsRestDTO {
     #[param(nullable = false)]
     #[try_into(infallible)]
     pub reference: Option<String>,
-    #[param(nullable = false)]
+    #[param(rename = "roles[]", nullable = false)]
     #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub roles: Option<Vec<TrustListRoleRestEnum>>,
-    #[param(nullable = false)]
+    #[param(rename = "states[]", nullable = false)]
     #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub states: Option<Vec<TrustListSubscriptionStateRestEnum>>,
-    #[param(nullable = false)]
+    #[param(rename = "types[]", nullable = false)]
     #[try_into(infallible)]
     pub types: Option<Vec<TrustListSubscriberId>>,
     /// Set which filters apply in an exact way.

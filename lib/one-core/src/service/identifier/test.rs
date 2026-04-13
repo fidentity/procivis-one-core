@@ -648,6 +648,7 @@ async fn test_create_identifier_with_trust_information() {
             Ok(AccessCertificateResult {
                 trust_entity: None,
                 rp_id: "test_wrp".to_string(),
+                registry_url: None,
             })
         });
     wrp_validator

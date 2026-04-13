@@ -1,28 +1,34 @@
-use asn1_rs::Oid;
+use asn1_rs::{Oid, oid};
 use x509_parser::pem::Pem;
 use x509_parser::prelude::ParsedExtension;
 
 use super::WRPValidatorError;
 
-const OID_SERIAL_NUMBER: [u64; 4] = [2, 5, 4, 5];
-const OID_ORG_ID: [u64; 4] = [2, 5, 4, 97];
+const OID_SERIAL_NUMBER: Oid<'static> = oid!(2.5.4.5);
+const OID_CONTENT_URL: Oid<'static> = oid!(2.5.4.81);
+const OID_ORG_ID: Oid<'static> = oid!(2.5.4.97);
 
-const OID_CERTIFICATE_POLICIES_EXTENSION: [u64; 4] = [2, 5, 29, 32];
-const OID_CERTIFICATE_POLICY_NATURAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 0];
-const OID_CERTIFICATE_POLICY_LEGAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 1];
+const OID_CERTIFICATE_POLICIES_EXTENSION: Oid<'static> = oid!(2.5.29.32);
+const OID_CERTIFICATE_POLICY_NATURAL_PERSON: Oid<'static> = oid!(0.4.0.194112.1.0);
+const OID_CERTIFICATE_POLICY_LEGAL_PERSON: Oid<'static> = oid!(0.4.0.194112.1.1);
 
-pub(super) fn rp_id_from_pem_chain(pem_chain: &str) -> Result<String, WRPValidatorError> {
+pub(super) struct EtsiIdentifiers {
+    pub rp_id: String,
+    pub registry_url: Option<String>,
+}
+
+pub(super) fn etsi_identifiers_from_pem_chain(
+    pem_chain: &str,
+) -> Result<EtsiIdentifiers, WRPValidatorError> {
     let leaf_pem = Pem::iter_from_buffer(pem_chain.as_bytes())
         .next()
         .ok_or(WRPValidatorError::EmptyChain)??;
 
     let certificate = leaf_pem.parse_x509()?;
-    let subject = certificate.subject();
 
     let policies = certificate
-        .get_extension_unique(&Oid::from(&OID_CERTIFICATE_POLICIES_EXTENSION)?)?
+        .get_extension_unique(&OID_CERTIFICATE_POLICIES_EXTENSION)?
         .ok_or(WRPValidatorError::MissingOrganisationIdentifier)?;
-
     let ParsedExtension::CertificatePolicies(policies) = policies.parsed_extension() else {
         return Err(WRPValidatorError::MissingOrganisationIdentifier);
     };
@@ -31,27 +37,37 @@ pub(super) fn rp_id_from_pem_chain(pem_chain: &str) -> Result<String, WRPValidat
         .map(|policy| policy.policy_id.to_owned())
         .collect();
 
-    let identifier = if policies.contains(&Oid::from(&OID_CERTIFICATE_POLICY_NATURAL_PERSON)?) {
+    let subject = certificate.subject();
+    let rp_id = if policies.contains(&OID_CERTIFICATE_POLICY_NATURAL_PERSON) {
         // ETSI 119 475 Table 3: identifier (natural person) → serialNumber (clause 5.1.5)
-        subject.iter_by_oid(&Oid::from(&OID_SERIAL_NUMBER)?).next()
-    } else if policies.contains(&Oid::from(&OID_CERTIFICATE_POLICY_LEGAL_PERSON)?) {
+        subject.iter_by_oid(&OID_SERIAL_NUMBER).next()
+    } else if policies.contains(&OID_CERTIFICATE_POLICY_LEGAL_PERSON) {
         // ETSI 119 475 Table 1: identifier (legal person) → organizationIdentifier (clause 5.1.3)
-        subject.iter_by_oid(&Oid::from(&OID_ORG_ID)?).next()
+        subject.iter_by_oid(&OID_ORG_ID).next()
     } else {
         return Err(WRPValidatorError::MissingOrganisationIdentifier);
+    }
+    .ok_or(WRPValidatorError::MissingOrganisationIdentifier)?
+    .as_str()?
+    .to_string();
+
+    let registry_url = if let Some(entry) = subject.iter_by_oid(&OID_CONTENT_URL).next() {
+        Some(entry.as_str()?.to_string())
+    } else {
+        None
     };
 
-    Ok(identifier
-        .ok_or(WRPValidatorError::MissingOrganisationIdentifier)?
-        .as_str()?
-        .to_string())
+    Ok(EtsiIdentifiers {
+        rp_id,
+        registry_url,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use similar_asserts::assert_eq;
 
-    use super::rp_id_from_pem_chain;
+    use super::etsi_identifiers_from_pem_chain;
 
     const NATURAL_PERSON: &str = r#"-----BEGIN CERTIFICATE-----
 MIIDAzCCAqugAwIBAgIRAfgZjZvWyEMdh9hZcC5L3vUwCgYIKoZIzj0EAwIwEjEQ
@@ -116,13 +132,15 @@ KqyEej23GXbZ9gL6
 
     #[test]
     fn test_natual_person_access_certificate() {
-        let rp_id = rp_id_from_pem_chain(NATURAL_PERSON).unwrap();
-        assert_eq!(rp_id, "orgId");
+        let res = etsi_identifiers_from_pem_chain(NATURAL_PERSON).unwrap();
+        assert_eq!(res.rp_id, "orgId");
+        assert_eq!(res.registry_url.unwrap(), "https://some-url.com");
     }
 
     #[test]
     fn test_legal_person_access_certificate() {
-        let rp_id = rp_id_from_pem_chain(LEGAL_PERSON).unwrap();
-        assert_eq!(rp_id, "orgId");
+        let res = etsi_identifiers_from_pem_chain(LEGAL_PERSON).unwrap();
+        assert_eq!(res.rp_id, "orgId");
+        assert_eq!(res.registry_url.unwrap(), "https://some-url.com");
     }
 }

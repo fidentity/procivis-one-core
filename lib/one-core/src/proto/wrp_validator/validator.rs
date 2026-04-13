@@ -3,7 +3,7 @@ use std::sync::Arc;
 use shared_types::OrganisationId;
 
 use super::error::WRPValidatorError;
-use super::x509::rp_id_from_pem_chain;
+use super::x509::{EtsiIdentifiers, etsi_identifiers_from_pem_chain};
 use super::{AccessCertificateResult, RegistrationCertificateResult, WRPValidator};
 use crate::error::ContextWithErrorCode;
 use crate::mapper::x509::x5c_into_pem_chain;
@@ -67,9 +67,15 @@ impl WRPValidator for WRPValidatorImpl {
             None
         };
 
+        let EtsiIdentifiers {
+            rp_id,
+            registry_url,
+        } = etsi_identifiers_from_pem_chain(pem_chain)?;
+
         Ok(AccessCertificateResult {
             trust_entity,
-            rp_id: rp_id_from_pem_chain(pem_chain)?,
+            rp_id,
+            registry_url,
         })
     }
 

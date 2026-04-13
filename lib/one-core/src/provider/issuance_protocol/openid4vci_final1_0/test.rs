@@ -1615,6 +1615,7 @@ async fn test_handle_invitation_signed_metadata() {
             Ok(AccessCertificateResult {
                 trust_entity: None,
                 rp_id: rp_id.to_string(),
+                registry_url: None,
             })
         });
     wrp_validator

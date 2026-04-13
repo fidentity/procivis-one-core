@@ -24,8 +24,6 @@ pub(crate) enum WRPValidatorError {
     X509NomError(#[from] x509_parser::nom::Err<x509_parser::error::X509Error>),
     #[error("X509 error: `{0}`")]
     X509ParserError(#[from] x509_parser::error::X509Error),
-    #[error("OID parse error: `{0}`")]
-    OidParseError(#[from] asn1_rs::OidParseError),
 
     #[error("URL parsing error: `{0}`")]
     URLParsing(#[from] url::ParseError),
@@ -47,8 +45,7 @@ impl ErrorCodeMixin for WRPValidatorError {
             | Self::MissingIssuer
             | Self::PEMError(_)
             | Self::X509NomError(_)
-            | Self::X509ParserError(_)
-            | Self::OidParseError(_) => ErrorCode::BR_0224,
+            | Self::X509ParserError(_) => ErrorCode::BR_0224,
             Self::URLParsing(_) => ErrorCode::BR_0047,
             Self::Nested(nested) => nested.error_code(),
         }

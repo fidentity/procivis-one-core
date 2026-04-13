@@ -246,9 +246,14 @@ fn authority_information_access_extension(
                 writer
                     .next()
                     .write_oid(&ObjectIdentifier::from_slice(&OID_ID_AD_CA_ISSUERS));
-                writer.next().write_tagged(Tag::context(6), |writer| {
-                    writer.write_ia5_string(&format!("{}/ssi/ca/{}", core_base_url, certificate_id))
-                });
+                writer
+                    .next()
+                    .write_tagged_implicit(Tag::context(6), |writer| {
+                        writer.write_ia5_string(&format!(
+                            "{}/ssi/ca/{}",
+                            core_base_url, certificate_id
+                        ))
+                    });
             });
         });
     });

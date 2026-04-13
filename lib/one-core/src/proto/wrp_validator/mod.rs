@@ -13,6 +13,8 @@ pub(crate) struct AccessCertificateResult {
     #[expect(unused)]
     pub trust_entity: Option<TrustEntityResponse>,
     pub rp_id: String,
+    #[expect(unused)]
+    pub registry_url: Option<String>,
 }
 
 pub(crate) struct RegistrationCertificateResult {

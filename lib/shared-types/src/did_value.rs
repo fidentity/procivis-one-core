@@ -11,8 +11,6 @@ use url::Url;
 static DID_ALLOWLIST_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9:._%-]+$").expect("Failed to compile regex"));
 
-const QUERY_PARAM_DID_METHODS_EXCEPTIONS: &[&str] = &["sd_jwt_vc_issuer_metadata"];
-
 #[derive(Debug, Error)]
 pub enum DidValueError {
     #[error("Incorrect URL scheme: `{0}`")]
@@ -106,7 +104,7 @@ impl FromStr for DidValue {
             .split_once(":")
             .ok_or(DidValueError::DidMethodNotFound)?;
 
-        if url.query().is_some() && !QUERY_PARAM_DID_METHODS_EXCEPTIONS.contains(&method) {
+        if url.query().is_some() {
             return Err(DidValueError::IncorrectDidValue(
                 "Contains URL query".to_string(),
             ));

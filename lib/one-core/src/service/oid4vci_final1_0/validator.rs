@@ -196,15 +196,9 @@ pub(crate) async fn validate_key_attestation(
         return Err(OpenID4VCIError::InvalidRequest.into());
     }
 
-    let wua_issuer_key = match (&wua.header.jwk, &wua.header.x5c) {
-        (Some(jwk), None) => jwk.into(),
-        (None, Some(x5c)) => PublicKeySource::X5c { x5c },
-        _ => {
-            tracing::info!("WUA issuer not specified");
-            return Err(OpenID4VCIError::InvalidRequest.into());
-        }
-    };
-
+    let wua_issuer_key = wua
+        .public_key_source(None)
+        .error_while("extracting public key from WUA JWT")?;
     wua.verify_signature(wua_issuer_key, verifier)
         .await
         .error_while("validating WUA token")?;

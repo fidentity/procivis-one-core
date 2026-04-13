@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use anyhow::Context;
 use async_trait::async_trait;
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
 use mapper::{bin_to_b64url_string, string_to_b64url_string};
@@ -142,14 +141,9 @@ where
         verification: Option<&VerificationFn>,
         issuer_did: Option<DidValue>,
     ) -> Result<Jwt<CustomPayload>, TokenError> {
-        let DecomposedJwt {
-            header,
-            mut payload,
-            signature,
-            unverified_jwt,
-        } = Jwt::decompose_token(token)?;
+        let token = Jwt::decompose_token(token)?;
 
-        if let (Some(issuer), Some(issuer_did)) = (&payload.issuer, &issuer_did)
+        if let (Some(issuer), Some(issuer_did)) = (&token.payload.issuer, &issuer_did)
             && issuer != issuer_did.as_str()
         {
             return Err(TokenError::ValidationFailed(format!(
@@ -157,65 +151,21 @@ where
             )));
         }
 
-        payload.issuer = payload.issuer.map(|issuer| {
-            if issuer.starts_with("did:") {
-                issuer
-            } else {
-                format!(
-                    "did:sd_jwt_vc_issuer_metadata:{}",
-                    urlencoding::encode(&issuer)
-                )
-            }
-        });
-
-        if let Some(verification) = verification {
-            let (_, algorithm) = verification
-                .key_algorithm_provider()
-                .key_algorithm_from_jose_alg(&header.algorithm)
-                .ok_or(TokenError::MissingJOSEAlgorithm(
-                    header.algorithm.to_owned(),
-                ))?;
-
-            let issuer_did = payload
-                .issuer
-                .as_ref()
-                .map(|did| did.parse::<DidValue>().context("did parsing error"))
-                .transpose()
-                .map_err(|e| TokenError::ValidationFailed(e.to_string()))?
-                .or(issuer_did);
-
-            let public_key_source = match (issuer_did, &header.x5c, &header.jwk) {
-                (Some(issuer_did), None, None) => PublicKeySource::Did {
-                    did: Cow::Owned(issuer_did),
-                    key_id: header.key_id.as_deref(),
-                },
-                (None, Some(x5c), None) => PublicKeySource::X5c { x5c },
-                (None, None, Some(jwk)) => PublicKeySource::Jwk {
-                    jwk: Cow::Owned(jwk.to_owned()),
-                },
-                (None, None, None) => {
-                    return Err(TokenError::ValidationFailed(
-                        "Missing public key information for JWT".to_string(),
-                    ));
-                }
-                (did, x5c, jwk) => {
-                    return Err(TokenError::ValidationFailed(format!(
-                        "Mixed specification of public key info: did:{did:?}, x5c:{x5c:?}, jwk:{jwk:?}",
-                    )));
-                }
-            };
-
-            verification
-                .verify(
-                    public_key_source,
-                    algorithm.algorithm_type(),
-                    unverified_jwt.as_bytes(),
-                    &signature,
-                )
+        if let Some(token_verifier) = verification {
+            let public_key_source =
+                token.public_key_source(issuer_did.map(|did| PublicKeySource::Did {
+                    did: Cow::Owned(did),
+                    key_id: token.header.key_id.as_deref(),
+                }))?;
+            token
+                .verify_signature(public_key_source, token_verifier)
                 .await?;
         }
 
-        Ok(Jwt { header, payload })
+        Ok(Jwt {
+            header: token.header,
+            payload: token.payload,
+        })
     }
 
     pub fn decompose_token(token: &str) -> Result<DecomposedJwt<CustomPayload>, TokenError> {
@@ -285,6 +235,48 @@ impl<CustomPayload: Serialize> Jwt<CustomPayload> {
 }
 
 impl<T> DecomposedJwt<T> {
+    pub fn public_key_source<'a>(
+        &'a self,
+        externally_defined: Option<PublicKeySource<'a>>,
+    ) -> Result<PublicKeySource<'a>, TokenError> {
+        let did = self
+            .payload
+            .issuer
+            .as_ref()
+            .and_then(|did| did.parse::<DidValue>().ok());
+
+        let extracted = match (did, &self.header.x5c, &self.header.jwk) {
+            (Some(did), None, None) => PublicKeySource::Did {
+                did: Cow::Owned(did),
+                key_id: self.header.key_id.as_deref(),
+            },
+            (None, Some(x5c), None) => PublicKeySource::X5c { x5c },
+            (None, None, Some(jwk)) => PublicKeySource::Jwk {
+                jwk: Cow::Owned(jwk.to_owned()),
+            },
+            (None, None, None) => {
+                return externally_defined.ok_or(TokenError::ValidationFailed(
+                    "Missing public key information for JWT".to_string(),
+                ));
+            }
+            (did, x5c, jwk) => {
+                return Err(TokenError::ValidationFailed(format!(
+                    "Mixed specification of public key info: did:{did:?}, x5c:{x5c:?}, jwk:{jwk:?}",
+                )));
+            }
+        };
+
+        if let Some(external) = externally_defined
+            && extracted != external
+        {
+            return Err(TokenError::ValidationFailed(format!(
+                "Token issuer `{extracted:?}` does not match externally defined `{external:?}`",
+            )));
+        }
+
+        Ok(extracted)
+    }
+
     pub async fn verify_signature(
         &self,
         public_key_source: PublicKeySource<'_>,

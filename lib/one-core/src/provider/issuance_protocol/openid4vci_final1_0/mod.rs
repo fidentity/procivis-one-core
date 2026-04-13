@@ -1,7 +1,6 @@
 //! Implementation of OpenID4VCI.
 //! https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -97,7 +96,7 @@ use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::credential_formatter::mapper::credential_data_from_credential_detail_response;
 use crate::provider::credential_formatter::mdoc_formatter;
 use crate::provider::credential_formatter::model::{
-    AuthenticationFn, CertificateDetails, IdentifierDetails, PublicKeySource, VerificationFn,
+    AuthenticationFn, CertificateDetails, IdentifierDetails, VerificationFn,
 };
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
@@ -1214,33 +1213,9 @@ impl OpenID4VCIFinal1_0 {
         &self,
         jwt: &DecomposedJwt<T>,
     ) -> Result<(), IssuanceProtocolError> {
-        let issuer_did = jwt
-            .payload
-            .issuer
-            .as_ref()
-            .and_then(|did| did.parse::<DidValue>().ok());
-
-        let public_key_source = match (issuer_did, &jwt.header.x5c, &jwt.header.jwk) {
-            (Some(issuer_did), None, None) => PublicKeySource::Did {
-                did: Cow::Owned(issuer_did),
-                key_id: jwt.header.key_id.as_deref(),
-            },
-            (None, Some(x5c), None) => PublicKeySource::X5c { x5c },
-            (None, None, Some(jwk)) => PublicKeySource::Jwk {
-                jwk: Cow::Owned(jwk.to_owned()),
-            },
-            (None, None, None) => {
-                return Err(IssuanceProtocolError::Failed(
-                    "Missing public key information for JWT".to_string(),
-                ));
-            }
-            (did, x5c, jwk) => {
-                return Err(IssuanceProtocolError::Failed(format!(
-                    "Mixed specification of public key info: did:{did:?}, x5c:{x5c:?}, jwk:{jwk:?}",
-                )));
-            }
-        };
-
+        let public_key_source = jwt
+            .public_key_source(None)
+            .error_while("extracting public key info from JWT")?;
         jwt.verify_signature(public_key_source, &self.verification_fn())
             .await
             .error_while("verifying JWT signature")?;

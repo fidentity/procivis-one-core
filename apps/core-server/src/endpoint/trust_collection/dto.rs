@@ -205,7 +205,7 @@ pub(crate) struct TrustListSubscriptionFilterQueryParamsRestDTO {
     #[param(nullable = false)]
     #[try_into(infallible)]
     pub name: Option<String>,
-    /// Return only trust list subscriptions with a name starting with this string.
+    /// Return only trust list subscriptions with a reference starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
     #[try_into(infallible)]

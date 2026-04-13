@@ -463,6 +463,7 @@ impl OneCore {
             data_provider.get_history_repository(),
             session_provider.clone(),
             wrp_validator.clone(),
+            blob_storage_provider.clone(),
         )?;
 
         let config = Arc::new(config);

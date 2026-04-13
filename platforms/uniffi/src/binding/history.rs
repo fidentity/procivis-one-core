@@ -125,7 +125,6 @@ pub enum HistoryMetadataBinding {
         value: HistoryErrorMetadataBindingDTO,
     },
     WalletUnitJWT(String),
-    Certificate(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

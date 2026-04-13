@@ -15,10 +15,9 @@ use super::model::{
 use super::{OpenID4VPFinal1_0, encode_client_id_with_scheme};
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::x509::{pem_chain_into_x5c, x5c_into_pem_chain};
+use crate::model::blob::{Blob, BlobType};
 use crate::model::did::KeyRole;
-use crate::model::history::{
-    History, HistoryAction, HistoryEntityType, HistoryMetadata, HistorySource,
-};
+use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::proto::certificate_validator::{CertificateValidationOptions, ParsedCertificate};
 use crate::proto::jwt::Jwt;
 use crate::proto::jwt::model::DecomposedJwt;
@@ -26,6 +25,7 @@ use crate::proto::key_verification::KeyVerification;
 use crate::proto::session_provider::SessionExt;
 use crate::proto::wrp_validator::AccessCertificateResult;
 use crate::proto::wrp_validator::error::WRPValidatorError;
+use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::credential_formatter::model::{
     CertificateDetails, IdentifierDetails, TokenVerifier,
 };
@@ -40,6 +40,7 @@ use crate::provider::verification_protocol::openid4vp::validator::{
     validate_against_redirect_uris, validate_san_dns_matching_client_id,
     validate_x509_hash_matching_client_id,
 };
+use crate::service::error::MissingProviderError;
 use crate::validator::x509::is_dns_name_matching;
 
 impl OpenID4VPFinal1_0 {
@@ -615,6 +616,21 @@ impl OpenID4VPFinal1_0 {
         organisation_id: OrganisationId,
         certificate_content: String,
     ) -> Result<(), VerificationProtocolError> {
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob = Blob::new(certificate_content, BlobType::HistoryMetadata);
+
+        let blob_id = blob.id;
+        blob_storage
+            .create(blob)
+            .await
+            .error_while("creating history metadata blob")?;
+
         self.history_repository
             .create_history(History {
                 id: Uuid::new_v4().into(),
@@ -625,8 +641,8 @@ impl OpenID4VPFinal1_0 {
                 source: HistorySource::Core,
                 entity_id: Some(proof_id.into()),
                 entity_type: HistoryEntityType::Proof,
-                metadata: Some(HistoryMetadata::Certificate(certificate_content)),
-                metadata_blob_id: None,
+                metadata: None,
+                metadata_blob_id: Some(blob_id),
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

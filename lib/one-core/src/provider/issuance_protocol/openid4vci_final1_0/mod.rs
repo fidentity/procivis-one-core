@@ -67,9 +67,7 @@ use crate::model::credential_schema::{
     UpdateCredentialSchemaRequest,
 };
 use crate::model::did::{DidRelations, KeyRole};
-use crate::model::history::{
-    History, HistoryAction, HistoryEntityType, HistoryMetadata, HistorySource,
-};
+use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::model::holder_wallet_unit::HolderWalletUnit;
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
 use crate::model::identifier_trust_information::{IdentifierTrustInformation, SchemaFormat};
@@ -1407,18 +1405,33 @@ impl OpenID4VCIFinal1_0 {
         organisation_id: OrganisationId,
         certificate_content: String,
     ) -> Result<(), IssuanceProtocolError> {
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let blob = Blob::new(certificate_content, BlobType::HistoryMetadata);
+
+        let blob_id = blob.id;
+        blob_storage
+            .create(blob)
+            .await
+            .error_while("creating history metadata blob")?;
+
         self.history_repository
             .create_history(History {
                 id: Uuid::new_v4().into(),
-                created_date: crate::clock::now_utc(),
+                created_date: now_utc(),
                 action,
                 name: Default::default(),
                 target: None,
                 source: HistorySource::Core,
                 entity_id: Some(credential_id.into()),
                 entity_type: HistoryEntityType::Credential,
-                metadata: Some(HistoryMetadata::Certificate(certificate_content)),
-                metadata_blob_id: None,
+                metadata: None,
+                metadata_blob_id: Some(blob_id),
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

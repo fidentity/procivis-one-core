@@ -30,6 +30,7 @@ use crate::proto::certificate_validator::CertificateValidator;
 use crate::proto::http_client::HttpClient;
 use crate::proto::session_provider::SessionProvider;
 use crate::proto::wrp_validator::WRPValidator;
+use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
@@ -93,6 +94,7 @@ pub(crate) struct OpenID4VPFinal1_0 {
     history_repository: Arc<dyn HistoryRepository>,
     session_provider: Arc<dyn SessionProvider>,
     wrp_validator: Arc<dyn WRPValidator>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
     base_url: Option<String>,
     params: Params,
     config: Arc<CoreConfig>,
@@ -116,6 +118,7 @@ impl OpenID4VPFinal1_0 {
         history_repository: Arc<dyn HistoryRepository>,
         session_provider: Arc<dyn SessionProvider>,
         wrp_validator: Arc<dyn WRPValidator>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
         client: Arc<dyn HttpClient>,
         params: Params,
         config: Arc<CoreConfig>,
@@ -134,6 +137,7 @@ impl OpenID4VPFinal1_0 {
             client,
             params,
             config,
+            blob_storage_provider,
         }
     }
 

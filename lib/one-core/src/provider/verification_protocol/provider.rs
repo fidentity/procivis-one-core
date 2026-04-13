@@ -28,6 +28,7 @@ use crate::proto::mqtt_client::MqttClient;
 use crate::proto::nfc::hce::NfcHce;
 use crate::proto::session_provider::SessionProvider;
 use crate::proto::wrp_validator::WRPValidator;
+use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::caching_loader::openid_metadata::OpenIDMetadataFetcher;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
@@ -97,6 +98,7 @@ pub(crate) fn verification_protocol_provider_from_config(
     history_repository: Arc<dyn HistoryRepository>,
     session_provider: Arc<dyn SessionProvider>,
     wrp_validator: Arc<dyn WRPValidator>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
 ) -> Result<Arc<dyn VerificationProtocolProvider>, ConfigValidationError> {
     let mut protocols: HashMap<String, Arc<dyn VerificationProtocol>> = HashMap::new();
 
@@ -126,6 +128,7 @@ pub(crate) fn verification_protocol_provider_from_config(
                     history_repository.clone(),
                     session_provider.clone(),
                     wrp_validator.clone(),
+                    blob_storage_provider.clone(),
                     client.clone(),
                     params.clone(),
                     core_config.clone(),

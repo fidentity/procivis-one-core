@@ -20,7 +20,6 @@ pub enum HistoryMetadataResponse {
     UnexportableEntities(UnexportableEntitiesResponseDTO),
     ErrorMetadata(HistoryErrorMetadataDTO),
     WalletUnitJWT(String),
-    Certificate(String),
     External(serde_json::Value),
 }
 

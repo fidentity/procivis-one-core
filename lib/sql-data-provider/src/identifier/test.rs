@@ -519,7 +519,7 @@ async fn test_list_identifier_filter_trust_info() {
 }
 
 #[tokio::test]
-async fn test_list_identifier_filter_certificate() {
+async fn test_list_identifier_filter_certificate_role() {
     let setup = setup().await;
     let id = Uuid::new_v4().into();
 
@@ -528,7 +528,7 @@ async fn test_list_identifier_filter_certificate() {
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
         name: "test_identifier".to_string(),
-        r#type: IdentifierType::Did,
+        r#type: IdentifierType::Certificate,
         is_remote: false,
         state: IdentifierState::Active,
         organisation: Some(setup.organisation.clone()),

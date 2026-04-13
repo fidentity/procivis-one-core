@@ -159,7 +159,9 @@ impl IntoFilterCondition for IdentifierFilterValue {
                     r#match: StringMatchType::Contains,
                     value: role.to_string(),
                 },
-            ),
+            )
+            .or(identifier::Column::Type.ne(identifier::IdentifierType::Certificate))
+            .into_condition(),
             Self::TrustAllowedIssuanceTypes(schema_format) => trust_info_condition(
                 now,
                 &schema_format,

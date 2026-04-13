@@ -36,6 +36,7 @@ pub struct RequestData {
     pub intermediary: Option<Intermediary>,
 }
 
+#[serde_with::skip_serializing_none]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Payload {

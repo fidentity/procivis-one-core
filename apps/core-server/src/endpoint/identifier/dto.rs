@@ -340,6 +340,7 @@ pub(crate) enum SortableIdentifierColumnRest {
 #[options_not_nullable]
 #[derive(Debug, Serialize, ToSchema, From)]
 #[from(IdentifierTrustInformationResponseDTO)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct IdentifierTrustInformationResponseRestDTO {
     pub data: String,
     pub r#type: IdentifierTrustInformationTypeRestEnum,

@@ -1,14 +1,15 @@
 use one_core::service::error::ServiceError;
 use one_core::service::wallet_unit::dto;
-use one_dto_mapper::{From, Into, TryFrom, TryInto};
+use one_dto_mapper::{From, Into, TryFrom, TryInto, convert_inner, try_convert_inner};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
-use shared_types::{HolderWalletUnitId, OrganisationId, WalletUnitId};
+use shared_types::{HolderWalletUnitId, OrganisationId, TrustCollectionId, WalletUnitId};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
 
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::key::dto::KeyListItemResponseRestDTO;
+use crate::endpoint::ssi::wallet_provider::dto::ProviderTrustCollectionRestDTO;
 use crate::endpoint::wallet_provider::dto::WalletUnitStatusRestEnum;
 use crate::mapper::MapperError;
 use crate::serialize::front_time;
@@ -28,6 +29,14 @@ pub(crate) struct HolderRegisterWalletUnitRequestRestDTO {
     pub wallet_provider: WalletProviderRestDTO,
     #[try_into(infallible)]
     pub key_type: String,
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[from(dto::HolderWalletUnitRegisterResponseDTO)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HolderRegisterWalletUnitResponseRestDTO {
+    pub id: HolderWalletUnitId,
+    pub status: WalletUnitStatusRestEnum,
 }
 
 #[derive(Clone, Debug, Deserialize, ToSchema, Into, From)]
@@ -70,5 +79,32 @@ pub(crate) struct HolderWalletUnitDetailRestDTO {
     pub wallet_provider_name: String,
     #[try_from(infallible)]
     pub status: WalletUnitStatusRestEnum,
-    pub authentication_key: KeyListItemResponseRestDTO,
+    #[try_from(with_fn = try_convert_inner)]
+    pub authentication_key: Option<KeyListItemResponseRestDTO>,
+}
+
+#[derive(Clone, Debug, Deserialize, ToSchema, Into)]
+#[into(dto::EditHolderWalletUnitRequestDTO)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EditHolderWalletUnitRequestRestDTO {
+    pub trust_collections: Vec<TrustCollectionId>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[from(dto::TrustCollectionsDetailResponseDTO)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrustCollectionsDetailRestDTO {
+    #[from(with_fn = convert_inner)]
+    pub trust_collections: Vec<TrustCollectionInfoRestDTO>,
+}
+
+#[options_not_nullable]
+#[derive(Clone, Debug, Serialize, ToSchema, From)]
+#[from(dto::TrustCollectionInfoDTO)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrustCollectionInfoRestDTO {
+    pub selected: bool,
+    #[serde(flatten)]
+    pub collection: ProviderTrustCollectionRestDTO,
 }

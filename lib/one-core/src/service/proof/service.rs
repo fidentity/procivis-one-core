@@ -2,15 +2,14 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use shared_types::{CredentialFormat, CredentialId, OrganisationId, ProofId};
-use time::OffsetDateTime;
+use shared_types::{CredentialFormat, CredentialId, ProofId};
 use uuid::Uuid;
 
 use super::ProofService;
 use super::dto::{
-    CreateProofInteractionData, CreateProofRequestDTO, GetProofListResponseDTO, GetProofQueryDTO,
-    ProofDetailResponseDTO, ProposeProofRequestDTO, ProposeProofResponseDTO, ShareProofRequestDTO,
-    ShareProofResponseDTO,
+    CreateProofInteractionData, CreateProofRequestDTO, GetProofListResponseDTO,
+    ProofDetailResponseDTO, ProofFilterParamsDTO, ProposeProofRequestDTO, ProposeProofResponseDTO,
+    ShareProofRequestDTO, ShareProofResponseDTO,
 };
 use super::error::ProofServiceError;
 use super::mapper::{
@@ -33,10 +32,10 @@ use crate::config::validator::transport::{
 };
 use crate::error::ContextWithErrorCode;
 use crate::mapper::list_response_try_into;
-use crate::model::certificate::CertificateRelations;
+use crate::model::certificate::{CertificateRelations, CertificateRole};
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
-use crate::model::credential::{CredentialFilterValue, CredentialRelations, GetCredentialQuery};
+use crate::model::credential::{CredentialFilterValue, CredentialListQuery, CredentialRelations};
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::did::{DidRelations, KeyRole};
 use crate::model::history::{HistoryAction, HistoryFilterValue, HistoryListQuery};
@@ -47,7 +46,8 @@ use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
 use crate::model::proof::{
-    Proof, ProofClaimRelations, ProofRelations, ProofRole, ProofStateEnum, UpdateProofRequest,
+    Proof, ProofClaimRelations, ProofRelations, ProofRole, ProofStateEnum, SortableProofColumn,
+    UpdateProofRequest,
 };
 use crate::model::proof_schema::{
     ProofInputSchemaRelations, ProofSchemaClaimRelations, ProofSchemaRelations,
@@ -69,6 +69,7 @@ use crate::provider::verification_protocol::iso_mdl::device_engagement::{
 use crate::provider::verification_protocol::iso_mdl::nfc::create_nfc_handover_select_message;
 use crate::provider::verification_protocol::openid4vp::mapper::create_format_map;
 use crate::provider::verification_protocol::{FormatMapper, TypeToDescriptorMapper};
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::credential_schema::validator::validate_key_storage_security_supported;
 use crate::service::error::MissingProviderError;
 use crate::service::storage_proxy::StorageProxyImpl;
@@ -286,14 +287,17 @@ impl ProofService {
     /// * `query` - query parameters
     pub async fn get_proof_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: GetProofQueryDTO,
+        filter_params: ListQueryDTO<SortableProofColumn, ProofFilterParamsDTO>,
     ) -> Result<GetProofListResponseDTO, ProofServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
         let result = self
             .proof_repository
-            .get_proof_list(query)
+            .get_proof_list(filter_params.into())
             .await
             .error_while("getting proofs")?;
         list_response_try_into(result)
@@ -333,7 +337,7 @@ impl ProofService {
             self.notification_scheduler.as_ref(),
         )?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let proof_schema_id = request.proof_schema_id;
         let proof_schema = self
             .proof_schema_repository
@@ -474,6 +478,7 @@ impl ProofService {
                 did: request.verifier_did_id,
                 certificate: request.verifier_certificate,
                 key_filter: Some(KeyFilter::role_filter(KeyRole::Authentication)),
+                ..Default::default()
             })
             .error_while("selecting key")?;
         let (verifier_key, verifier_certificate) = match selection {
@@ -498,6 +503,12 @@ impl ProofService {
                 (&key.key, None)
             }
         };
+
+        if let Some(cert) = &verifier_certificate
+            && !cert.roles.contains(&CertificateRole::Authentication)
+        {
+            return Err(ProofServiceError::NoKeyWithRole(KeyRole::Authentication));
+        }
 
         if verifier_key.key_type == "BBS_PLUS" {
             return Err(ProofServiceError::BBSNotSupported);
@@ -742,12 +753,12 @@ impl ProofService {
 
         let credential_blob_ids = self
             .credential_repository
-            .get_credential_list(GetCredentialQuery {
+            .get_credential_list(CredentialListQuery {
                 filtering: Some(
                     CredentialFilterValue::CredentialIds(Vec::from_iter(credential_ids.clone()))
                         .condition(),
                 ),
-                ..GetCredentialQuery::default()
+                ..CredentialListQuery::default()
             })
             .await
             .error_while("getting credentials")?
@@ -823,7 +834,7 @@ impl ProofService {
             .as_ref()
             .ok_or_else(|| ProofServiceError::Other("BLE is missing in service".into()))?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let ble_server = start_mdl_server(ble)
             .await
             .error_while("starting mDL server")?;

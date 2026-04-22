@@ -7,6 +7,7 @@ use serde_json::json;
 use shared_types::TrustListPublicationId;
 use similar_asserts::assert_eq;
 use standardized_types::etsi_119_602::{LoTEPayload, LoTEType, MultiLangString};
+use time::format_description::well_known::Rfc3339;
 use time::macros::datetime;
 use uuid::Uuid;
 
@@ -18,6 +19,7 @@ use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::key::Key;
 use crate::proto::clock::DefaultClock;
 use crate::proto::jwt::Jwt;
+use crate::proto::xades::MockXAdESProto;
 use crate::provider::credential_formatter::model::MockSignatureProvider;
 use crate::provider::key_algorithm::ecdsa::Ecdsa;
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
@@ -42,21 +44,19 @@ fn dummy_certificate(pem: String) -> Certificate {
         id: Uuid::new_v4().into(),
         identifier_id: Uuid::new_v4().into(),
         organisation_id: None,
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
-        expiry_date: OffsetDateTime::now_utc() + time::Duration::days(365),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
+        expiry_date: crate::clock::now_utc() + time::Duration::days(365),
         name: "test-cert".into(),
         chain: pem,
         fingerprint: "test".into(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     }
 }
 
-fn dummy_publication(
-    role: TrustListPublicationRoleEnum,
-    metadata: Vec<u8>,
-) -> TrustListPublication {
+fn dummy_publication(role: TrustListRoleEnum, metadata: Vec<u8>) -> TrustListPublication {
     TrustListPublication {
         id: TrustListPublicationId::from(Uuid::new_v4()),
         created_date: datetime!(2025-01-01 0:00 UTC),
@@ -84,7 +84,7 @@ fn dummy_entry(metadata: Vec<u8>) -> TrustEntry {
         id: Uuid::new_v4().into(),
         created_date: datetime!(2025-01-01 0:00 UTC),
         last_modified: datetime!(2025-01-01 0:00 UTC),
-        status: TrustEntryStatusEnum::Active,
+        state: TrustEntryStateEnum::Active,
         metadata,
         trust_list_publication_id: Uuid::new_v4().into(),
         identifier_id: Uuid::new_v4().into(),
@@ -197,7 +197,7 @@ fn mock_publication_repo(
             content_log.lock().unwrap().push(bytes.clone());
             publication.content = bytes.to_owned();
         }
-        publication.last_modified = OffsetDateTime::now_utc();
+        publication.last_modified = crate::clock::now_utc();
         Ok(())
     });
 
@@ -235,8 +235,8 @@ fn mock_entry_repo() -> MockTrustEntryRepository {
     repo.expect_update().returning(move |id, request| {
         let mut entries = store.lock().unwrap();
         if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-            if let Some(state) = request.status {
-                entry.status = state;
+            if let Some(state) = request.state {
+                entry.state = state;
             }
             if let Some(metadata) = request.metadata {
                 entry.metadata = metadata;
@@ -288,15 +288,18 @@ fn make_publisher(
     pub_repo: MockTrustListPublicationRepository,
     entry_repo: MockTrustEntryRepository,
     identifier_repo: MockIdentifierRepository,
+    xades_proto: MockXAdESProto,
 ) -> EtsiLotePublisher {
     EtsiLotePublisher {
         method_id: "ETSI_LOTE".into(),
         params: EtsiLoteParams {
             refresh_interval_seconds: time::Duration::seconds(86400),
+            content_type: LoteContentType::Jwt,
         },
         clock: Arc::new(DefaultClock),
         key_provider: Arc::new(key_provider),
         key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: Arc::new(xades_proto),
         trust_list_publication_repository: Arc::new(pub_repo),
         trust_entry_repository: Arc::new(entry_repo),
         identifier_repository: Arc::new(identifier_repo),
@@ -317,11 +320,11 @@ fn test_build_lote_payload_basic() {
     let entry = dummy_entry(entry_metadata);
 
     let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
-    let mut publication =
-        dummy_publication(TrustListPublicationRoleEnum::PidProvider, pub_metadata);
+    let mut publication = dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata);
     publication.sequence_number = 42;
 
-    let now = datetime!(2025-06-15 12:00 UTC);
+    // add fractional seconds to the publication date, to make sure it's rounded off
+    let now = datetime!(2025-06-15 12:00:00.55 UTC);
 
     let payload = build_lote_payload(
         &publication,
@@ -339,26 +342,31 @@ fn test_build_lote_payload_basic() {
     assert_eq!(payload.list_and_scheme_information.lote_sequence_number, 42);
     assert_eq!(
         payload.list_and_scheme_information.lote_type,
-        "http://uri.etsi.org/19602/LoTEType/EUPIDProvidersList"
+        Some(LoTEType::EuPidProvidersList),
     );
     assert_eq!(
         payload.list_and_scheme_information.list_issue_date_time,
-        "2025-06-15T12:00:00Z"
+        OffsetDateTime::parse("2025-06-15T12:00:00Z", &Rfc3339).unwrap()
     );
     assert_eq!(
         payload.list_and_scheme_information.next_update,
-        "2025-06-16T12:00:00Z"
+        OffsetDateTime::parse("2025-06-16T12:00:00Z", &Rfc3339).unwrap()
     );
     assert_eq!(
         payload.list_and_scheme_information.scheme_operator_name[0].value,
         "Test Operator"
     );
-    assert_eq!(payload.list_and_scheme_information.scheme_territory, "EU");
+    assert_eq!(
+        payload.list_and_scheme_information.scheme_territory,
+        Some("EU".to_string())
+    );
     assert_eq!(
         payload
             .list_and_scheme_information
             .status_determination_approach,
-        LoTEType::EuPidProvidersList.status_determination_approach()
+        LoTEType::EuPidProvidersList
+            .status_determination_approach()
+            .unwrap()
     );
     assert_eq!(payload.trusted_entities_list.as_ref().unwrap().len(), 1);
     let entity = &payload.trusted_entities_list.as_ref().unwrap()[0];
@@ -401,9 +409,12 @@ fn test_parse_and_verify_sprind_lote() {
     assert_eq!(info.lote_sequence_number, 1);
     assert_eq!(
         info.lote_type,
-        "http://uri.etsi.org/19602/LoTEType/RegistrarsAndRegistersListProvidersList"
+        Some(LoTEType::Other(
+            "http://uri.etsi.org/19602/LoTEType/RegistrarsAndRegistersListProvidersList"
+                .to_string()
+        ))
     );
-    assert_eq!(info.scheme_territory, "EU");
+    assert_eq!(info.scheme_territory, Some("EU".to_string()));
     assert_eq!(info.scheme_operator_name[0].value, "SPRIND GmbH");
 
     let entities = payload.trusted_entities_list.as_ref().unwrap();
@@ -423,7 +434,7 @@ async fn test_format_trust_list_empty_list() {
     let publication = TrustListPublication {
         key: Some(key),
         certificate: Some(certificate),
-        ..dummy_publication(TrustListPublicationRoleEnum::PidProvider, pub_metadata)
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
     };
 
     let publisher = make_publisher(
@@ -432,6 +443,7 @@ async fn test_format_trust_list_empty_list() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let jws = publisher
@@ -451,7 +463,7 @@ async fn test_format_trust_list_with_entry() {
     let mut publication = TrustListPublication {
         key: Some(key),
         certificate: Some(certificate),
-        ..dummy_publication(TrustListPublicationRoleEnum::PidProvider, pub_metadata)
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
     };
     publication.sequence_number = 2;
 
@@ -470,6 +482,7 @@ async fn test_format_trust_list_with_entry() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let jws = publisher
@@ -490,12 +503,16 @@ async fn test_format_trust_list_with_entry() {
         entities[0].trusted_entity_services[0]
             .service_information
             .service_type_identifier
+            .clone()
+            .unwrap()
             .contains("PID/Issuance")
     );
     assert!(
         entities[0].trusted_entity_services[1]
             .service_information
             .service_type_identifier
+            .clone()
+            .unwrap()
             .contains("PID/Revocation")
     );
 }
@@ -515,12 +532,13 @@ async fn test_create_trust_list_rejects_identifier_without_certificate() {
         MockTrustListPublicationRepository::new(),
         MockTrustEntryRepository::new(),
         MockIdentifierRepository::new(),
+        MockXAdESProto::new(),
     );
 
     let result = publisher
         .create_trust_list(CreateTrustListRequest {
             name: "Test".into(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: Uuid::new_v4().into(),
             identifier,
             key_id: None,
@@ -557,6 +575,7 @@ async fn test_lifecycle_create_add_update_remove() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -564,12 +583,13 @@ async fn test_lifecycle_create_add_update_remove() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
         .create_trust_list(CreateTrustListRequest {
             name: "EU PID Providers".into(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: Uuid::new_v4().into(),
             identifier: identifier_for_create,
             key_id: Some(key.id),
@@ -588,7 +608,7 @@ async fn test_lifecycle_create_add_update_remove() {
 
     let publication = repos.stored_publication.lock().unwrap().clone().unwrap();
     let entry_id = publisher
-        .add_entry(publication, identifier_for_add_entry, None)
+        .add_entry(&publication, &identifier_for_add_entry, None)
         .await
         .unwrap();
 
@@ -618,7 +638,7 @@ async fn test_lifecycle_create_add_update_remove() {
         ..dummy_entry(vec![])
     };
     publisher
-        .update_entry(entry, Some(TrustEntryStatusEnum::Active), None)
+        .update_entry(&entry, Some(TrustEntryStateEnum::Active), None)
         .await
         .unwrap();
 
@@ -638,7 +658,7 @@ async fn test_lifecycle_create_add_update_remove() {
             .id,
         ..dummy_entry(vec![])
     };
-    publisher.remove_entry(entry).await.unwrap();
+    publisher.remove_entry(&entry).await.unwrap();
 
     {
         let pub_entity = repos.stored_publication.lock().unwrap().clone().unwrap();
@@ -671,7 +691,7 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
 
     let org_id = shared_types::OrganisationId::from(Uuid::new_v4());
     let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
-    let publication = dummy_publication(TrustListPublicationRoleEnum::PidProvider, pub_metadata);
+    let publication = dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata);
 
     let mut pub_repo = MockTrustListPublicationRepository::new();
     let key_for_get = key;
@@ -680,12 +700,12 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
         Ok(Some(TrustListPublication {
             id,
             metadata: serde_json::to_vec(&sample_list_params()).unwrap(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: org_id,
             key: Some(key_for_get.clone()),
             certificate: Some(cert_for_get.clone()),
             organisation: Some(dummy_organisation(Some(org_id))),
-            ..dummy_publication(TrustListPublicationRoleEnum::PidProvider, vec![])
+            ..dummy_publication(TrustListRoleEnum::PidProvider, vec![])
         }))
     });
     pub_repo.expect_update().returning(|_, _| Ok(()));
@@ -710,6 +730,7 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
     identifier_repo
         .expect_get()
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -717,10 +738,11 @@ async fn test_add_entry_includes_certificate_in_digital_identity() {
         pub_repo,
         entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
-        .add_entry(publication, identifier_for_add_entry, None)
+        .add_entry(&publication, &identifier_for_add_entry, None)
         .await
         .unwrap();
 
@@ -806,6 +828,8 @@ fn test_build_trusted_entity_with_params() {
         entity.trusted_entity_services[0]
             .service_information
             .service_type_identifier
+            .clone()
+            .unwrap()
             .contains("PID/Issuance")
     );
     assert!(
@@ -837,6 +861,7 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -844,6 +869,7 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     let params = json!({
@@ -858,7 +884,7 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
     publisher
         .create_trust_list(CreateTrustListRequest {
             name: "Test List".into(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: Uuid::new_v4().into(),
             identifier: identifier_for_create,
             key_id: Some(key.id),
@@ -882,8 +908,8 @@ async fn test_create_trust_list_with_params_enriches_scheme_info() {
     let info = &payload.list_and_scheme_information;
     assert_eq!(info.scheme_operator_name[0].lang, "de");
     assert_eq!(info.scheme_operator_name[0].value, "Betreiber GmbH");
-    assert_eq!(info.scheme_territory, "DE");
-    assert!(info.lote_type.contains("PID"));
+    assert_eq!(info.scheme_territory, Some("DE".to_string()));
+    assert_eq!(info.lote_type, Some(LoTEType::EuPidProvidersList));
     assert!(info.status_determination_approach.contains("PID"));
     assert!(info.scheme_type_community_rules.is_some());
 
@@ -922,18 +948,21 @@ async fn test_generate_trust_list_content_returns_fresh_content() {
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
 
+    let xades_proto = MockXAdESProto::new();
+
     let publisher = make_publisher(
         key_provider,
         key_algorithm_provider,
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
         .create_trust_list(CreateTrustListRequest {
             name: "Test List".into(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: Uuid::new_v4().into(),
             identifier: identifier_for_create,
             key_id: Some(key.id),
@@ -952,12 +981,14 @@ async fn test_generate_trust_list_content_returns_fresh_content() {
         .sequence_number;
 
     let publication = repos.stored_publication.lock().unwrap().clone().unwrap();
-    let jwt = publisher
+    let result = publisher
         .generate_trust_list_content(publication)
         .await
         .unwrap();
-    assert!(!jwt.is_empty());
-    assert_eq!(jwt.split('.').count(), 3);
+
+    assert_eq!(result.content_type, LoteContentType::Jwt);
+    assert!(!result.content.is_empty());
+    assert_eq!(result.content.split('.').count(), 3);
 
     let final_seq = repos
         .stored_publication
@@ -989,6 +1020,7 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         .returning(move |_id, _relations| Ok(Some(identifier.clone())));
 
     let repos = make_stateful_repos(key.clone(), certificate.clone());
+    let xades_proto = MockXAdESProto::new();
 
     let publisher = make_publisher(
         key_provider,
@@ -996,12 +1028,13 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         repos.pub_repo,
         repos.entry_repo,
         identifier_repo,
+        xades_proto,
     );
 
     publisher
         .create_trust_list(CreateTrustListRequest {
             name: "Test List".into(),
-            role: TrustListPublicationRoleEnum::PidProvider,
+            role: TrustListRoleEnum::PidProvider,
             organisation_id: Uuid::new_v4().into(),
             identifier: identifier_for_create,
             key_id: Some(key.id),
@@ -1026,12 +1059,13 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
     }
 
     let publication = repos.stored_publication.lock().unwrap().clone().unwrap();
-    let jwt = publisher
+    let result = publisher
         .generate_trust_list_content(publication)
         .await
         .unwrap();
-    assert!(!jwt.is_empty());
-    assert_eq!(jwt.split('.').count(), 3);
+    assert_eq!(result.content_type, LoteContentType::Jwt);
+    assert!(!result.content.is_empty());
+    assert_eq!(result.content.split('.').count(), 3);
 
     let seq_after_get = repos
         .stored_publication
@@ -1045,6 +1079,111 @@ async fn test_generate_trust_list_content_resigns_stale_content() {
         seq_after_create + 1,
         "should have re-signed (sequence incremented)"
     );
+}
+
+#[tokio::test]
+async fn test_format_trust_list_xml_empty_list() {
+    let (key_provider, key_algorithm_provider, key, certificate, _) = make_signing_mocks();
+
+    let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
+    let publication = TrustListPublication {
+        key: Some(key),
+        certificate: Some(certificate),
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
+    };
+
+    let publisher = EtsiLotePublisher {
+        method_id: "ETSI_LOTE_XML".into(),
+        params: EtsiLoteParams {
+            refresh_interval_seconds: time::Duration::seconds(86400),
+            content_type: LoteContentType::Xml,
+        },
+        clock: Arc::new(DefaultClock),
+        key_provider: Arc::new(key_provider),
+        key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: {
+            let mut mock = MockXAdESProto::new();
+            mock.expect_create_enveloped_signature()
+                .once()
+                .returning(|unsigned_xml, _, _| {
+                    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>{unsigned_xml}");
+                    Box::pin(async move { Ok(xml) })
+                });
+            Arc::new(mock)
+        },
+        trust_list_publication_repository: Arc::new(MockTrustListPublicationRepository::new()),
+        trust_entry_repository: Arc::new(MockTrustEntryRepository::new()),
+        identifier_repository: Arc::new(MockIdentifierRepository::new()),
+    };
+
+    let xml = publisher
+        .format_trust_list(&publication, "Test Operator", &[])
+        .await
+        .unwrap();
+
+    let xml_str = String::from_utf8(xml).unwrap();
+    assert!(xml_str.starts_with("<?xml"));
+    assert!(xml_str.contains("<ListOfTrustedEntities"));
+    assert!(xml_str.contains("xmlns=\"http://uri.etsi.org/019602/v1#\""));
+    assert!(xml_str.contains("<Name xml:lang=\"en\">Test Operator</Name>"));
+    assert!(!xml_str.contains("<TrustedEntitiesList>"));
+}
+
+#[tokio::test]
+async fn test_format_trust_list_xml_with_entry() {
+    let (key_provider, key_algorithm_provider, key, certificate, _) = make_signing_mocks();
+
+    let pub_metadata = serde_json::to_vec(&sample_list_params()).unwrap();
+    let publication = TrustListPublication {
+        key: Some(key),
+        certificate: Some(certificate),
+        ..dummy_publication(TrustListRoleEnum::PidProvider, pub_metadata)
+    };
+
+    let identifier = Identifier {
+        name: "Test Entity".into(),
+        r#type: IdentifierType::Certificate,
+        certificates: Some(vec![dummy_certificate(generate_self_signed_pem())]),
+        ..dummy_identifier()
+    };
+    let entry_params = AddEntryParams::default();
+    let entry = dummy_entry(serde_json::to_vec(&entry_params).unwrap());
+
+    let publisher = EtsiLotePublisher {
+        method_id: "ETSI_LOTE_XML".into(),
+        params: EtsiLoteParams {
+            refresh_interval_seconds: time::Duration::seconds(86400),
+            content_type: LoteContentType::Xml,
+        },
+        clock: Arc::new(DefaultClock),
+        key_provider: Arc::new(key_provider),
+        key_algorithm_provider: Arc::new(key_algorithm_provider),
+        xades_proto: {
+            let mut mock = MockXAdESProto::new();
+            mock.expect_create_enveloped_signature()
+                .once()
+                .returning(|unsigned_xml, _, _| {
+                    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>{unsigned_xml}");
+                    Box::pin(async move { Ok(xml) })
+                });
+            Arc::new(mock)
+        },
+        trust_list_publication_repository: Arc::new(MockTrustListPublicationRepository::new()),
+        trust_entry_repository: Arc::new(MockTrustEntryRepository::new()),
+        identifier_repository: Arc::new(MockIdentifierRepository::new()),
+    };
+
+    let xml = publisher
+        .format_trust_list(&publication, "Test Operator", &[(entry, identifier)])
+        .await
+        .unwrap();
+
+    let xml_str = String::from_utf8(xml).unwrap();
+    assert!(xml_str.contains("<TrustedEntitiesList>"));
+    assert!(xml_str.contains("<TrustedEntity>"));
+    assert!(xml_str.contains("<Name xml:lang=\"en\">Test Entity</Name>"));
+    assert!(xml_str.contains("<X509Certificate>"));
+    assert!(xml_str.contains("SvcType/PID/Issuance"));
 }
 
 #[tokio::test]

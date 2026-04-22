@@ -1,11 +1,10 @@
 use one_core::model::wallet_unit::{WalletProviderType, WalletUnitStatus};
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::fixtures::TestingKeyParams;
 use crate::utils::context::TestContext;
-use crate::utils::db_clients::holder_wallet_unit::TestHolderWalletUnit;
+use crate::utils::db_clients::holder_wallet_unit::TestHolderWalletUnitParams;
 
 #[tokio::test]
 async fn test_holder_wallet_unit_status_not_found() {
@@ -31,7 +30,7 @@ async fn test_holder_wallet_unit_status_not_found() {
 async fn test_holder_wallet_unit_status_already_revoked() {
     // GIVEN - Wallet unit that's already revoked should return success without checking
     let (context, org) = TestContext::new_with_organisation(None).await;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let authentication_key = context
         .db
@@ -57,8 +56,8 @@ async fn test_holder_wallet_unit_status_already_revoked() {
         .holder_wallet_units
         .create(
             org.clone(),
-            authentication_key.clone(),
-            TestHolderWalletUnit {
+            Some(authentication_key.clone()),
+            TestHolderWalletUnitParams {
                 status: Some(WalletUnitStatus::Revoked),
                 wallet_provider_type: Some(WalletProviderType::ProcivisOne),
                 wallet_provider_name: Some("PROCIVIS_ONE".to_string()),

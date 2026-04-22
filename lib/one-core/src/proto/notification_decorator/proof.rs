@@ -10,7 +10,7 @@ use crate::model::common::LockType;
 use crate::model::history::HistoryErrorMetadata;
 use crate::model::interaction::InteractionRelations;
 use crate::model::proof::{
-    GetProofList, GetProofQuery, Proof, ProofRelations, ProofStateEnum, UpdateProofRequest,
+    GetProofList, Proof, ProofListQuery, ProofRelations, ProofStateEnum, UpdateProofRequest,
 };
 use crate::model::proof_schema::ProofSchemaRelations;
 use crate::proto::notification_scheduler::{NotificationPayload, NotificationScheduler};
@@ -148,7 +148,7 @@ impl ProofRepository for ProofNotificationDecorator {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError> {
         self.inner.get_proof_list(query_params).await
     }

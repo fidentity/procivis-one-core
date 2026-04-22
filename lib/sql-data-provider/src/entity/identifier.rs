@@ -44,6 +44,8 @@ pub enum Relation {
     Key,
     #[sea_orm(has_many = "super::certificate::Entity")]
     Certificate,
+    #[sea_orm(has_many = "super::identifier_trust_information::Entity")]
+    TrustInformation,
 }
 
 impl Related<super::organisation::Entity> for Entity {
@@ -67,6 +69,12 @@ impl Related<super::key::Entity> for Entity {
 impl Related<super::certificate::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Certificate.def()
+    }
+}
+
+impl Related<super::identifier_trust_information::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::TrustInformation.def()
     }
 }
 

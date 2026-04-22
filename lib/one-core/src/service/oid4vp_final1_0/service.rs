@@ -7,10 +7,10 @@ use tracing::warn;
 
 use super::OID4VPFinal1_0Service;
 use super::error::OID4VPFinal1_0ServiceError;
-use super::mapper::parse_interaction_content;
 use super::proof_request::{
     generate_authorization_request_params_final1_0, select_key_agreement_key_from_proof,
 };
+use crate::clock::now_utc;
 use crate::config::core_config::VerificationProtocolType;
 use crate::error::ContextWithErrorCode;
 use crate::error::ErrorCode::BR_0000;
@@ -20,7 +20,10 @@ use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::did::DidRelations;
 use crate::model::history::HistoryErrorMetadata;
-use crate::model::identifier::IdentifierRelations;
+use crate::model::identifier::{Identifier, IdentifierRelations};
+use crate::model::identifier_trust_information::{
+    IdentifierTrustInformation, IdentifierTrustInformationRelations,
+};
 use crate::model::interaction::InteractionRelations;
 use crate::model::key::KeyRelations;
 use crate::model::organisation::OrganisationRelations;
@@ -32,6 +35,9 @@ use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::verification_protocol::openid4vp::error::OpenID4VCError;
 use crate::provider::verification_protocol::openid4vp::final1_0::mappers::{
     create_open_id_for_vp_client_metadata_final1_0, decode_client_id_with_scheme,
+};
+use crate::provider::verification_protocol::openid4vp::final1_0::model::{
+    VerifierInfoAttestation, VerifierInfoAttestationFormat,
 };
 use crate::provider::verification_protocol::openid4vp::mapper::{
     format_authorization_request_client_id_scheme_did,
@@ -75,6 +81,7 @@ impl OID4VPFinal1_0Service {
                             key: Some(KeyRelations::default()),
                             ..Default::default()
                         }),
+                        trust_information: Some(IdentifierTrustInformationRelations {}),
                         ..Default::default()
                     }),
                     verifier_key: Some(Default::default()),
@@ -103,13 +110,15 @@ impl OID4VPFinal1_0Service {
         )
         .error_while("validating protocol type")?;
 
-        let interaction =
-            proof
-                .interaction
-                .as_ref()
-                .ok_or(OID4VPFinal1_0ServiceError::MappingError(
-                    "missing proof interaction".to_string(),
-                ))?;
+        let interaction = proof
+            .interaction
+            .as_ref()
+            .ok_or(OID4VPFinal1_0ServiceError::MissingInteractionData)?;
+
+        let interaction_data = interaction
+            .data
+            .as_ref()
+            .ok_or(OID4VPFinal1_0ServiceError::MissingInteractionData)?;
 
         let OpenID4VPVerifierInteractionContent {
             nonce,
@@ -118,16 +127,12 @@ impl OID4VPFinal1_0Service {
             response_uri: Some(response_uri),
             client_id_scheme: Some(client_id_scheme),
             ..
-        } = parse_interaction_content(interaction.data.as_ref())
+        } = serde_json::from_slice(interaction_data)
+            .map_err(OID4VPFinal1_0ServiceError::from)
             .error_while("parsing interaction data")?
         else {
-            return Err(OID4VPFinal1_0ServiceError::MappingError(
-                "missing interaction data".to_string(),
-            ));
+            return Err(OID4VPFinal1_0ServiceError::MissingInteractionData);
         };
-
-        let (client_id_without_prefix, _) =
-            decode_client_id_with_scheme(&client_id).error_while("decoding clientId")?;
 
         let key_handle = select_key_agreement_key_from_proof(
             &proof,
@@ -135,6 +140,18 @@ impl OID4VPFinal1_0Service {
             &self.config,
         )
         .error_while("selecting agreement key")?;
+
+        let verifier_info = match client_id_scheme {
+            ClientIdScheme::X509SanDns | ClientIdScheme::X509Hash => {
+                let verifier_identifier = proof.verifier_identifier.as_ref().ok_or(
+                    OID4VPFinal1_0ServiceError::MappingError("missing verifier".to_string()),
+                )?;
+                self.resolve_verifier_info(verifier_identifier)
+                    .await
+                    .error_while("generating verifier_info object")?
+            }
+            _ => vec![],
+        };
 
         let authorization_request = generate_authorization_request_params_final1_0(
             nonce.clone(),
@@ -144,6 +161,7 @@ impl OID4VPFinal1_0Service {
             &interaction.id,
             create_open_id_for_vp_client_metadata_final1_0(key_handle)
                 .error_while("creating metadata")?,
+            verifier_info,
         )
         .error_while("generating authorization request")?;
 
@@ -154,6 +172,9 @@ impl OID4VPFinal1_0Service {
                     .error_while("formatting authorization request")?
             }
             ClientIdScheme::VerifierAttestation => {
+                let (client_id_without_prefix, _) =
+                    decode_client_id_with_scheme(&client_id).error_while("decoding clientId")?;
+
                 format_authorization_request_client_id_scheme_verifier_attestation(
                     &proof,
                     &self.key_algorithm_provider,
@@ -299,16 +320,19 @@ impl OID4VPFinal1_0Service {
                 "missing organisation".to_string(),
             ))?;
 
-        let interaction =
-            proof
-                .interaction
-                .as_ref()
-                .ok_or(OID4VPFinal1_0ServiceError::MappingError(
-                    "missing interaction".to_string(),
-                ))?;
+        let interaction = proof
+            .interaction
+            .as_ref()
+            .ok_or(OID4VPFinal1_0ServiceError::MissingInteractionData)?;
+
+        let interaction_data = interaction
+            .data
+            .as_ref()
+            .ok_or(OID4VPFinal1_0ServiceError::MissingInteractionData)?;
 
         let interaction_data: OpenID4VPVerifierInteractionContent =
-            parse_interaction_content(interaction.data.as_ref())
+            serde_json::from_slice(interaction_data)
+                .map_err(OID4VPFinal1_0ServiceError::from)
                 .error_while("parsing interaction data")?;
 
         if let Some(used_key_id) = unpacked_request.encryption_key {
@@ -336,11 +360,9 @@ impl OID4VPFinal1_0Service {
             .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
             .error_while("getting blob storage")?;
 
-        let blob_value = serde_json::to_string(&unpacked_request.submission_data).map_err(|e| {
-            OID4VPFinal1_0ServiceError::MappingError(format!(
-                "failed to serialize proof blob data: {e}"
-            ))
-        })?;
+        let blob_value = serde_json::to_string(&unpacked_request.submission_data)
+            .map_err(OID4VPFinal1_0ServiceError::from)
+            .error_while("serializing proof blob data")?;
 
         let blob = Blob::new(blob_value, BlobType::Proof);
         let proof_blob_id = blob.id;
@@ -507,5 +529,79 @@ impl OID4VPFinal1_0Service {
             }
             _ => Err(OpenID4VCError::InvalidRequest.into()),
         }
+    }
+
+    /// Resolves all IdentifierTrustInformation entries for an identifier
+    /// A VerifierInfoAttestation struct with the resolved registration certificate
+    /// is returned for each valid entry
+    async fn resolve_verifier_info(
+        &self,
+        identifier: &Identifier,
+    ) -> Result<Vec<VerifierInfoAttestation>, OID4VPFinal1_0ServiceError> {
+        let Some(trust_information) = identifier.trust_information.as_deref() else {
+            return Ok(vec![]);
+        };
+
+        let now = now_utc();
+        let valid_registration_certificates: Vec<&IdentifierTrustInformation> = trust_information
+            .iter()
+            .filter(|entry| {
+                if entry.allowed_verification_types.is_empty() {
+                    return false;
+                }
+
+                if let Some(valid_from) = entry.valid_from
+                    && valid_from > now
+                {
+                    return false;
+                }
+
+                if let Some(valid_to) = entry.valid_to
+                    && valid_to < now
+                {
+                    return false;
+                }
+
+                true
+            })
+            .collect();
+
+        if valid_registration_certificates.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let blob_storage = self
+            .blob_storage_provider
+            .get_blob_storage(BlobStorageType::Db)
+            .await
+            .ok_or_else(|| MissingProviderError::BlobStorage(BlobStorageType::Db.to_string()))
+            .error_while("getting blob storage")?;
+
+        let mut verifier_info = vec![];
+
+        for entry in valid_registration_certificates {
+            let certificate = blob_storage
+                .get(&entry.blob_id)
+                .await
+                .error_while("resolving trust_information blob")?
+                .ok_or(OID4VPFinal1_0ServiceError::TrustInformationError(
+                    "Missing registration certificate".to_string(),
+                ))?;
+
+            if certificate.r#type != BlobType::RegistrationCertificate {
+                return Err(OID4VPFinal1_0ServiceError::TrustInformationError(format!(
+                    "Invalid trust information data, expected registration certificate, got {:?}",
+                    certificate.r#type
+                )));
+            }
+
+            verifier_info.push(VerifierInfoAttestation {
+                format: VerifierInfoAttestationFormat::RegistrationCert,
+                data: String::from_utf8(certificate.value)?,
+                credential_ids: vec![],
+            })
+        }
+
+        Ok(verifier_info)
     }
 }

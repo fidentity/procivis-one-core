@@ -33,6 +33,12 @@ impl EDDSASigner {
         Ok(pk.to_vec())
     }
 
+    pub fn public_key_to_der(public_key_raw: &[u8]) -> Result<Vec<u8>, SignerError> {
+        let key = PublicKey::from_slice(public_key_raw)
+            .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
+        Ok(key.to_der())
+    }
+
     pub fn generate_key_pair() -> KeyPair {
         let key_pair = ed25519_compact::KeyPair::generate();
 

@@ -1,4 +1,4 @@
-use dcql::DcqlError;
+use dcql::{CredentialQueryId, DcqlError};
 use thiserror::Error;
 
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
@@ -15,6 +15,8 @@ pub enum VerificationProtocolError {
     InvalidRequest(String),
     #[error("Invalid request: `{0}`")]
     InvalidDcqlQueryOrPresentationDefinition(String),
+    #[error("Query not allowed by trust ecosystem: `{0}`")]
+    DisallowedQuery(CredentialQueryId),
     #[error(transparent)]
     Other(anyhow::Error),
     #[error(transparent)]
@@ -50,6 +52,7 @@ impl ErrorCodeMixin for VerificationProtocolError {
             | Self::Encoding(_)
             | Self::StorageAccessError(_) => ErrorCode::BR_0062,
             Self::InvalidDcqlQueryOrPresentationDefinition(_) => ErrorCode::BR_0083,
+            Self::DisallowedQuery(_) => ErrorCode::BR_0411,
             Self::InvalidRequest(_) | Self::Disabled(_) | Self::DcqlError(_) => ErrorCode::BR_0085,
             Self::Nested(nested) => nested.error_code(),
         }

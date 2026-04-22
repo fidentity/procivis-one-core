@@ -35,6 +35,7 @@ pub(super) async fn validate_wallet_provider_issuer(
                     key: Some(KeyRelations::default()),
                     ..Default::default()
                 }),
+                ..Default::default()
             },
         )
         .await

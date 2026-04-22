@@ -26,7 +26,10 @@ pub(crate) fn error_code_to_http_status(code: ErrorCode) -> StatusCode {
         | ErrorCode::BR_0296
         | ErrorCode::BR_0380
         | ErrorCode::BR_0383
-        | ErrorCode::BR_0387 => StatusCode::NOT_FOUND,
+        | ErrorCode::BR_0387
+        | ErrorCode::BR_0391
+        | ErrorCode::BR_0402
+        | ErrorCode::BR_0406 => StatusCode::NOT_FOUND,
         ErrorCode::BR_0002
         | ErrorCode::BR_0003
         | ErrorCode::BR_0004
@@ -233,9 +236,29 @@ pub(crate) fn error_code_to_http_status(code: ErrorCode) -> StatusCode {
         | ErrorCode::BR_0382
         | ErrorCode::BR_0385
         | ErrorCode::BR_0386
+        | ErrorCode::BR_0388
         | ErrorCode::BR_0389
         | ErrorCode::BR_0390
-        | ErrorCode::BR_0388 => StatusCode::BAD_REQUEST,
+        | ErrorCode::BR_0392
+        | ErrorCode::BR_0394
+        | ErrorCode::BR_0395
+        | ErrorCode::BR_0396
+        | ErrorCode::BR_0398
+        | ErrorCode::BR_0399
+        | ErrorCode::BR_0400
+        | ErrorCode::BR_0403
+        | ErrorCode::BR_0404
+        | ErrorCode::BR_0405
+        | ErrorCode::BR_0407
+        | ErrorCode::BR_0408
+        | ErrorCode::BR_0409
+        | ErrorCode::BR_0410
+        | ErrorCode::BR_0411
+        | ErrorCode::BR_0412
+        | ErrorCode::BR_0413
+        | ErrorCode::BR_0414
+        | ErrorCode::BR_0416
+        | ErrorCode::BR_0418 => StatusCode::BAD_REQUEST,
         ErrorCode::BR_0000
         | ErrorCode::BR_0038
         | ErrorCode::BR_0039
@@ -268,7 +291,11 @@ pub(crate) fn error_code_to_http_status(code: ErrorCode) -> StatusCode {
         | ErrorCode::BR_0354
         | ErrorCode::BR_0368
         | ErrorCode::BR_0377
-        | ErrorCode::BR_0384 => StatusCode::INTERNAL_SERVER_ERROR,
+        | ErrorCode::BR_0384
+        | ErrorCode::BR_0393
+        | ErrorCode::BR_0397
+        | ErrorCode::BR_0401
+        | ErrorCode::BR_0415 => StatusCode::INTERNAL_SERVER_ERROR,
         ErrorCode::BR_0178 => StatusCode::FORBIDDEN,
         ErrorCode::BR_0358 => StatusCode::UNAUTHORIZED,
     }

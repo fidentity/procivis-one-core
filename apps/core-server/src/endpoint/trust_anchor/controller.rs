@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use one_core::service::trust_anchor::error::TrustAnchorServiceError;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
 use proc_macros::endpoint;
 use shared_types::{Permission, TrustAnchorId};
 
@@ -33,7 +34,7 @@ use crate::router::AppState;
     configurations of the same type.
 "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn create_trust_anchor(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -64,7 +65,7 @@ pub(crate) async fn create_trust_anchor(
     summary = "Retrieve a trust anchor",
     description = "Returns details on a given trust anchor.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,
@@ -86,19 +87,20 @@ pub(crate) async fn get_trust_anchor(
     summary = "List trust anchors",
     description = "Returns a list of trust anchors in an organization.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_anchors(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<ListTrustAnchorsQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetTrustAnchorListResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .trust_anchor_service
-            .list_trust_anchors(query.try_into().map_err(|e: std::convert::Infallible| {
-                TrustAnchorServiceError::MappingError(e.to_string())
-            })?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_anchor_service
+                .list_trust_anchors(query.try_into()?)
+                .await
+                .error_while("listing trust anchors")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "listing trust anchors")
@@ -122,7 +124,7 @@ pub(crate) async fn get_trust_anchors(
         are also deleted.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn delete_trust_anchor(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustAnchorId>, ErrorResponseRestDTO>,

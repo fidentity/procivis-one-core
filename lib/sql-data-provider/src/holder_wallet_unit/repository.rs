@@ -6,9 +6,8 @@ use one_core::model::holder_wallet_unit::{
 };
 use one_core::repository::error::DataLayerError;
 use one_core::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
-use sea_orm::{ActiveModelTrait, EntityTrait, Set, Unchanged};
-use shared_types::HolderWalletUnitId;
-use time::OffsetDateTime;
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set, Unchanged};
+use shared_types::{HolderWalletUnitId, OrganisationId};
 
 use crate::entity::holder_wallet_unit;
 use crate::holder_wallet_unit::HolderWalletUnitProvider;
@@ -55,13 +54,15 @@ impl HolderWalletUnitRepository for HolderWalletUnitProvider {
             holder_wallet_unit.organisation = Some(org)
         }
 
-        if let Some(key_relations) = &relations.authentication_key {
+        if let (Some(key_relations), Some(auth_key_id)) =
+            (&relations.authentication_key, &auth_key_id)
+        {
             let key = self
                 .key_repository
-                .get_key(&auth_key_id, key_relations)
+                .get_key(auth_key_id, key_relations)
                 .await?
                 .ok_or(DataLayerError::MissingRequiredRelation {
-                    relation: "holder_wallet_unit-organisation",
+                    relation: "holder_wallet_unit-authentication_key",
                     id: org_id.to_string(),
                 })?;
             holder_wallet_unit.authentication_key = Some(key)
@@ -81,6 +82,18 @@ impl HolderWalletUnitRepository for HolderWalletUnitProvider {
         Ok(Some(holder_wallet_unit))
     }
 
+    async fn get_holder_wallet_unit_by_org_id(
+        &self,
+        organisation_id: &OrganisationId,
+    ) -> Result<Option<HolderWalletUnit>, DataLayerError> {
+        let model = holder_wallet_unit::Entity::find()
+            .filter(holder_wallet_unit::Column::OrganisationId.eq(organisation_id))
+            .one(&self.db)
+            .await
+            .map_err(to_data_layer_error)?;
+        Ok(model.map(Into::into))
+    }
+
     async fn update_holder_wallet_unit(
         &self,
         id: &HolderWalletUnitId,
@@ -89,7 +102,7 @@ impl HolderWalletUnitRepository for HolderWalletUnitProvider {
         let action = async {
             let update_model = holder_wallet_unit::ActiveModel {
                 id: Unchanged(*id),
-                last_modified: Set(OffsetDateTime::now_utc()),
+                last_modified: Set(one_core::clock::now_utc()),
                 status: request
                     .status
                     .map(|status| Set(status.into()))

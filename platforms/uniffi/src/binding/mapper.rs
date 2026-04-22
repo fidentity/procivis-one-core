@@ -1,88 +1,98 @@
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
-    ValueComparison,
-};
-use one_core::model::list_query::{ListPagination, ListSorting};
-use one_core::model::proof_schema::GetProofSchemaQuery;
+use one_core::model::credential::{CredentialListIncludeEntityTypeEnum, SortableCredentialColumn};
+use one_core::model::credential_schema::SortableCredentialSchemaColumn;
+use one_core::model::did::SortableDidColumn;
+use one_core::model::history::SortableHistoryColumn;
+use one_core::model::identifier::SortableIdentifierColumn;
+use one_core::model::proof::SortableProofColumn;
+use one_core::model::proof_schema::SortableProofSchemaColumn;
 use one_core::proto::bluetooth_low_energy::low_level::dto::DeviceInfo;
 use one_core::provider::verification_protocol::dto::{
     ApplicableCredentialOrFailureHintEnum, PresentationDefinitionFieldDTO,
     PresentationDefinitionRequestedCredentialResponseDTO,
 };
+use one_core::service::common_dto::ListQueryDTO;
 use one_core::service::credential::dto::{
-    CredentialDetailResponseDTO, CredentialListItemResponseDTO,
+    CredentialDetailResponseDTO, CredentialFilterParamsDTO, CredentialListItemResponseDTO,
     DetailCredentialClaimValueResponseDTO, DetailCredentialSchemaResponseDTO,
     MdocMsoValidityResponseDTO,
 };
 use one_core::service::credential_schema::dto::{
+    CredentialSchemaFilterParamsDTO, CredentialSchemaListIncludeEntityTypeEnum,
     CredentialSchemaListItemResponseDTO, ImportCredentialSchemaClaimSchemaDTO,
 };
-use one_core::service::did::dto::{CreateDidRequestDTO, CreateDidRequestKeysDTO};
+use one_core::service::did::dto::{
+    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidFilterParamsDTO,
+};
 use one_core::service::error::ServiceError;
-use one_core::service::history::dto::{HistoryMetadataResponse, HistoryResponseDTO};
+use one_core::service::history::dto::{
+    HistoryFilterParamsDTO, HistoryMetadataResponse, HistoryResponseDTO,
+};
 use one_core::service::identifier::dto::{
-    CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO,
+    CreateIdentifierDidRequestDTO, GetIdentifierListItemResponseDTO, IdentifierFilterParamsDTO,
 };
 use one_core::service::key::dto::KeyRequestDTO;
 use one_core::service::organisation::dto::{
     CreateOrganisationRequestDTO, UpsertOrganisationRequestDTO,
 };
 use one_core::service::proof::dto::{
-    CreateProofRequestDTO, GetProofQueryDTO, ProofClaimValueDTO, ProofDetailResponseDTO,
-    ProofFilterValue,
+    CreateProofRequestDTO, ProofClaimValueDTO, ProofDetailResponseDTO, ProofFilterParamsDTO,
 };
 use one_core::service::proof_schema::dto::{
-    ImportProofSchemaClaimSchemaDTO, ProofSchemaFilterValue,
+    ImportProofSchemaClaimSchemaDTO, ProofSchemaFilterParamsDTO,
 };
 use one_core::service::ssi_holder::dto::{HandleInvitationResultDTO, InitiateIssuanceRequestDTO};
-use one_core::service::trust_anchor::dto::{ListTrustAnchorsQueryDTO, TrustAnchorFilterValue};
+use one_core::service::trust_anchor::dto::{SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO};
 use one_core::service::trust_entity::dto::{
-    ListTrustEntitiesQueryDTO, TrustEntityFilterValue, TrustListLogo,
+    ResolvedIdentifierTrustEntityResponseDTO, SortableTrustEntityColumnEnum,
+    TrustEntityFilterParamsDTO, TrustListLogo, UpdateTrustEntityFromDidRequestDTO,
 };
+use one_core::service::verifier_instance::dto::EditVerifierInstanceRequestDTO;
+use one_core::service::wallet_unit::dto::{EditHolderWalletUnitRequestDTO, TrustCollectionInfoDTO};
 use one_dto_mapper::{convert_inner, convert_inner_of_inner, try_convert_inner};
 use serde_json::json;
-use shared_types::{KeyId, TrustEntityKey};
+use shared_types::KeyId;
 use time::OffsetDateTime;
 
 use super::ble::DeviceInfoBindingDTO;
-use crate::binding::credential::{
+use super::credential::{
     ClaimBindingDTO, ClaimValueBindingDTO, CredentialDetailBindingDTO,
-    CredentialListItemBindingDTO, MdocMsoValidityResponseBindingDTO,
+    CredentialListItemBindingDTO, CredentialListQueryBindingDTO, MdocMsoValidityResponseBindingDTO,
 };
-use crate::binding::credential_schema::{
+use super::credential_schema::{
     CredentialSchemaBindingDTO, ImportCredentialSchemaClaimSchemaBindingDTO,
 };
-use crate::binding::did::{DidRequestBindingDTO, DidRequestKeysBindingDTO};
-use crate::binding::history::{
-    HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryMetadataBinding,
+use super::did::{DidListQueryBindingDTO, DidRequestBindingDTO, DidRequestKeysBindingDTO};
+use super::history::{
+    HistoryErrorMetadataBindingDTO, HistoryListItemBindingDTO, HistoryListQueryBindingDTO,
+    HistoryMetadataBinding,
 };
-use crate::binding::identifier::CreateIdentifierDidRequestBindingDTO;
-use crate::binding::interaction::{
-    HandleInvitationResponseBindingEnum, InitiateIssuanceRequestBindingDTO,
-};
-use crate::binding::key::KeyRequestBindingDTO;
-use crate::binding::organisation::{
+use super::identifier::{CreateIdentifierDidRequestBindingDTO, IdentifierListQueryBindingDTO};
+use super::interaction::{HandleInvitationResponseBindingEnum, InitiateIssuanceRequestBindingDTO};
+use super::key::KeyRequestBindingDTO;
+use super::organisation::{
     CreateOrganisationRequestBindingDTO, UpsertOrganisationRequestBindingDTO,
 };
-use crate::binding::proof::{
+use super::proof::{
     ApplicableCredentialOrFailureHintBindingEnum, CreateProofRequestBindingDTO,
     PresentationDefinitionFieldBindingDTO, PresentationDefinitionRequestedCredentialBindingDTO,
     PresentationDefinitionV2ClaimBindingDTO, PresentationDefinitionV2ClaimValueBindingDTO,
     PresentationDefinitionV2CredentialDetailBindingDTO, ProofListQueryBindingDTO,
-    ProofListQueryExactColumnBindingEnum, ProofResponseBindingDTO,
+    ProofRequestClaimValueBindingDTO, ProofResponseBindingDTO,
 };
-use crate::binding::proof_schema::{
-    ImportProofSchemaClaimSchemaBindingDTO, ListProofSchemasFiltersBindingDTO,
-    ProofRequestClaimValueBindingDTO, ProofSchemaListQueryExactColumnBinding,
+use super::proof_schema::ImportProofSchemaClaimSchemaBindingDTO;
+use super::trust_anchor::ListTrustAnchorsFiltersBindings;
+use super::trust_entity::{
+    ListTrustEntitiesFiltersBindings, ResolvedIdentifierTrustEntityResponseBindingDTO,
+    UpdateRemoteTrustEntityFromDidRequestBindingDTO,
 };
-use crate::binding::trust_anchor::{
-    ExactTrustAnchorFilterColumnBindings, ListTrustAnchorsFiltersBindings,
-};
-use crate::binding::trust_entity::{
-    ExactTrustEntityFilterColumnBindings, ListTrustEntitiesFiltersBindings,
-};
+use super::verifier_instance::EditVerifierInstanceRequestBindingDTO;
+use super::wallet_unit::{EditHolderWalletUnitRequestBindingDTO, TrustCollectionInfoBindingDTO};
+use crate::binding::credential_schema::CredentialSchemaListQueryBindingDTO;
+use crate::binding::proof_schema::ListProofSchemasFiltersBindingDTO;
 use crate::error::ErrorResponseBindingDTO;
-use crate::utils::{TimestampFormat, into_id, into_id_opt, into_timestamp};
+use crate::utils::{
+    TimestampFormat, into_id, into_id_opt, into_id_opt_vec, into_timestamp, into_timestamp_opt,
+};
 
 impl<IN: Into<ClaimBindingDTO>> From<CredentialDetailResponseDTO<IN>>
     for CredentialDetailBindingDTO
@@ -359,205 +369,58 @@ impl From<CredentialSchemaListItemResponseDTO> for CredentialSchemaBindingDTO {
     }
 }
 
-impl TryFrom<ListTrustAnchorsFiltersBindings> for ListTrustAnchorsQueryDTO {
+impl TryFrom<ListTrustAnchorsFiltersBindings>
+    for ListQueryDTO<SortableTrustAnchorColumn, TrustAnchorFilterParamsDTO>
+{
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: ListTrustAnchorsFiltersBindings) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-        let get_string_match_type = |column| {
-            if exact.contains(&column) {
-                StringMatchType::Equals
-            } else {
-                StringMatchType::StartsWith
-            }
-        };
-
-        let name = value.name.map(|name| {
-            TrustAnchorFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactTrustAnchorFilterColumnBindings::Name),
-                value: name,
-            })
-        });
-
-        let is_publisher = value.is_publisher.map(TrustAnchorFilterValue::IsPublisher);
-
-        let r#type = value.r#type.map(|r#type| {
-            TrustAnchorFilterValue::Type(StringMatch {
-                r#match: get_string_match_type(ExactTrustAnchorFilterColumnBindings::Type),
-                value: r#type,
-            })
-        });
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustAnchorFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = ListFilterCondition::<TrustAnchorFilterValue>::from(name)
-            & is_publisher
-            & r#type
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before;
-
         Ok(Self {
-            pagination: Some(ListPagination {
-                page: value.page,
-                page_size: value.page_size,
-            }),
-            sorting: value.sort.map(|column| ListSorting {
-                column: column.into(),
-                direction: convert_inner(value.sort_direction),
-            }),
-            filtering: Some(filtering),
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: TrustAnchorFilterParamsDTO {
+                name: value.name,
+                is_publisher: value.is_publisher,
+                r#type: value.r#type,
+                exact: convert_inner_of_inner(value.exact),
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
             include: None,
         })
     }
 }
 
-impl TryFrom<ListTrustEntitiesFiltersBindings> for ListTrustEntitiesQueryDTO {
+impl TryFrom<ListTrustEntitiesFiltersBindings>
+    for ListQueryDTO<SortableTrustEntityColumnEnum, TrustEntityFilterParamsDTO>
+{
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: ListTrustEntitiesFiltersBindings) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-        let get_string_match_type = |column| {
-            if exact.contains(&column) {
-                StringMatchType::Equals
-            } else {
-                StringMatchType::StartsWith
-            }
-        };
-
-        let name = value.name.map(|name| {
-            TrustEntityFilterValue::Name(StringMatch {
-                r#match: get_string_match_type(ExactTrustEntityFilterColumnBindings::Name),
-                value: name,
-            })
-        });
-
-        let role = value
-            .role
-            .map(|role| Ok::<_, ServiceError>(TrustEntityFilterValue::Role(role.into())))
-            .transpose()?;
-
-        let trust_anchor = value
-            .trust_anchor
-            .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::TrustAnchor(into_id(&id)?)))
-            .transpose()?;
-
-        let organisation_id = value
-            .organisation_id
-            .map(|id| Ok::<_, ServiceError>(TrustEntityFilterValue::OrganisationId(into_id(&id)?)))
-            .transpose()?;
-
-        let types = value
-            .types
-            .map(convert_inner)
-            .map(TrustEntityFilterValue::Types);
-
-        let states = value
-            .states
-            .map(convert_inner)
-            .map(TrustEntityFilterValue::States);
-
-        let entity_key = value
-            .entity_key
-            .map(|k| TrustEntityFilterValue::EntityKey(TrustEntityKey::from(k)));
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(TrustEntityFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = ListFilterCondition::<TrustEntityFilterValue>::from(name)
-            & role
-            & trust_anchor
-            & organisation_id
-            & types
-            & entity_key
-            & states
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before;
-
         Ok(Self {
-            pagination: Some(ListPagination {
-                page: value.page,
-                page_size: value.page_size,
-            }),
-            sorting: value.sort.map(|column| ListSorting {
-                column: column.into(),
-                direction: convert_inner(value.sort_direction),
-            }),
-            filtering: Some(filtering),
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: TrustEntityFilterParamsDTO {
+                name: value.name,
+                exact: convert_inner_of_inner(value.exact),
+                role: convert_inner(value.role),
+                did_id: None,
+                trust_anchor: into_id_opt(value.trust_anchor)?,
+                organisation_id: into_id_opt(value.organisation_id)?,
+                types: convert_inner_of_inner(value.types),
+                states: convert_inner_of_inner(value.states),
+                entity_key: convert_inner(value.entity_key),
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
             include: None,
         })
     }
@@ -584,241 +447,35 @@ impl TryFrom<CreateProofRequestBindingDTO> for CreateProofRequestDTO {
     }
 }
 
-impl TryFrom<ListProofSchemasFiltersBindingDTO> for GetProofSchemaQuery {
-    type Error = ErrorResponseBindingDTO;
-
-    fn try_from(value: ListProofSchemasFiltersBindingDTO) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-
-        let organisation_id =
-            ProofSchemaFilterValue::OrganisationId(into_id(&value.organisation_id)?).condition();
-
-        let name = value.name.map(|name| {
-            let filter = if exact.contains(&ProofSchemaListQueryExactColumnBinding::Name) {
-                StringMatch::equals(name)
-            } else {
-                StringMatch::starts_with(name)
-            };
-
-            ProofSchemaFilterValue::Name(filter)
-        });
-
-        let proof_schema_ids = value
-            .ids
-            .map(|ids| ids.into_iter().map(|id| into_id(&id)).collect())
-            .transpose()?
-            .map(ProofSchemaFilterValue::ProofSchemaIds);
-
-        let formats = value.formats.map(ProofSchemaFilterValue::Formats);
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofSchemaFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofSchemaFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofSchemaFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofSchemaFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = organisation_id
-            & name
-            & proof_schema_ids
-            & formats
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before;
-
-        Ok(Self {
-            pagination: Some(ListPagination {
-                page: value.page,
-                page_size: value.page_size,
-            }),
-            sorting: value.sort.map(|sort| ListSorting {
-                column: sort.into(),
-                direction: convert_inner(value.sort_direction),
-            }),
-            filtering: Some(filtering),
-            ..Default::default()
-        })
-    }
-}
-
-impl TryFrom<ProofListQueryBindingDTO> for GetProofQueryDTO {
+impl TryFrom<ProofListQueryBindingDTO> for ListQueryDTO<SortableProofColumn, ProofFilterParamsDTO> {
     type Error = ErrorResponseBindingDTO;
 
     fn try_from(value: ProofListQueryBindingDTO) -> Result<Self, Self::Error> {
-        let exact = value.exact.unwrap_or_default();
-
-        let organisation_id =
-            ProofFilterValue::OrganisationId(into_id(&value.organisation_id)?).condition();
-
-        let name = value.name.map(|name| {
-            let filter = if exact.contains(&ProofListQueryExactColumnBindingEnum::Name) {
-                StringMatch::equals(name)
-            } else {
-                StringMatch::starts_with(name)
-            };
-
-            ProofFilterValue::Name(filter)
-        });
-
-        let proof_states = value
-            .proof_states
-            .map(|proof_states| ProofFilterValue::States(convert_inner(proof_states)));
-
-        let proof_roles = value
-            .proof_roles
-            .map(|proof_roles| ProofFilterValue::Roles(convert_inner(proof_roles)));
-
-        let proof_ids = value
-            .ids
-            .map(|ids| ids.into_iter().map(|id| into_id(&id)).collect())
-            .transpose()?
-            .map(ProofFilterValue::ProofIds);
-
-        let proof_schema_ids = value
-            .proof_schema_ids
-            .map(|ids| ids.into_iter().map(|id| into_id(&id)).collect())
-            .transpose()?
-            .map(ProofFilterValue::ProofSchemaIds);
-
-        let profile = value.profiles.map(ProofFilterValue::Profiles);
-
-        let created_date_after = value
-            .created_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let created_date_before = value
-            .created_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::CreatedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let last_modified_after = value
-            .last_modified_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let last_modified_before = value
-            .last_modified_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::LastModified(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let requested_date_after = value
-            .requested_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::RequestedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let requested_date_before = value
-            .requested_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::RequestedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let completed_date_after = value
-            .completed_date_after
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::CompletedDate(ValueComparison {
-                    comparison: ComparisonType::GreaterThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-        let completed_date_before = value
-            .completed_date_before
-            .map(|date| {
-                Ok::<_, ServiceError>(ProofFilterValue::CompletedDate(ValueComparison {
-                    comparison: ComparisonType::LessThanOrEqual,
-                    value: deserialize_timestamp(&date)?,
-                }))
-            })
-            .transpose()?;
-
-        let filtering = organisation_id
-            & name
-            & proof_states
-            & proof_roles
-            & proof_schema_ids
-            & proof_ids
-            & profile
-            & created_date_after
-            & created_date_before
-            & last_modified_after
-            & last_modified_before
-            & requested_date_after
-            & requested_date_before
-            & completed_date_after
-            & completed_date_before;
-
-        Ok({
-            Self {
-                pagination: Some(ListPagination {
-                    page: value.page,
-                    page_size: value.page_size,
-                }),
-                sorting: value.sort.map(|sort| ListSorting {
-                    column: sort.into(),
-                    direction: convert_inner(value.sort_direction),
-                }),
-                filtering: filtering.into(),
-                include: None,
-            }
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: ProofFilterParamsDTO {
+                name: value.name,
+                exact: convert_inner_of_inner(value.exact),
+                states: convert_inner_of_inner(value.proof_states),
+                roles: convert_inner_of_inner(value.proof_roles),
+                ids: into_id_opt_vec(&value.ids)?,
+                proof_schema_ids: into_id_opt_vec(&value.proof_schema_ids)?,
+                verifier_ids: None,
+                profiles: value.profiles,
+                organisation_id: into_id(value.organisation_id)?,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+                requested_date_after: into_timestamp_opt(value.requested_date_after)?,
+                requested_date_before: into_timestamp_opt(value.requested_date_before)?,
+                completed_date_after: into_timestamp_opt(value.completed_date_after)?,
+                completed_date_before: into_timestamp_opt(value.completed_date_before)?,
+            },
+            include: None,
         })
     }
 }
@@ -909,9 +566,42 @@ pub(crate) fn optional_time(value: Option<OffsetDateTime>) -> Option<String> {
     value.as_ref().map(TimestampFormat::format_timestamp)
 }
 
-pub(crate) fn deserialize_timestamp(value: &str) -> Result<OffsetDateTime, ServiceError> {
-    OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-        .map_err(|e| ServiceError::ValidationError(e.to_string()))
+impl TryFrom<HistoryListQueryBindingDTO>
+    for ListQueryDTO<SortableHistoryColumn, HistoryFilterParamsDTO>
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: HistoryListQueryBindingDTO) -> Result<Self, Self::Error> {
+        let (search_type, search_query) = match value.search {
+            Some(s) => (convert_inner(s.r#type), Some(s.text)),
+            None => (None, None),
+        };
+
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: HistoryFilterParamsDTO {
+                organisation_ids: Some(vec![into_id(&value.organisation_id)?]),
+                entity_ids: into_id_opt_vec(&value.entity_ids)?,
+                entity_types: convert_inner_of_inner(value.entity_types),
+                actions: convert_inner_of_inner(value.actions),
+                identifier_id: into_id_opt(value.identifier_id)?,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                credential_id: into_id_opt(value.credential_id)?,
+                credential_schema_id: into_id_opt(value.credential_schema_id)?,
+                proof_id: into_id_opt(value.proof_id)?,
+                proof_schema_id: into_id_opt(value.proof_schema_id)?,
+                users: value.users,
+                sources: None,
+                search_query,
+                search_type,
+            },
+            include: None,
+        })
+    }
 }
 
 pub(crate) fn optional_identifier_id_string(
@@ -1081,5 +771,257 @@ impl From<ApplicableCredentialOrFailureHintEnum> for ApplicableCredentialOrFailu
                 }
             }
         }
+    }
+}
+
+impl TryFrom<UpdateRemoteTrustEntityFromDidRequestBindingDTO>
+    for UpdateTrustEntityFromDidRequestDTO
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(
+        value: UpdateRemoteTrustEntityFromDidRequestBindingDTO,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            action: value.action.map(Into::into),
+            name: value.name,
+            logo: value.logo.map(TryInto::try_into).transpose()?,
+            website: value.website.map(Into::into),
+            terms_url: value.terms_url.map(Into::into),
+            privacy_url: value.privacy_url.map(Into::into),
+            role: value.role.map(Into::into),
+            content: None,
+        })
+    }
+}
+
+impl From<ResolvedIdentifierTrustEntityResponseDTO>
+    for ResolvedIdentifierTrustEntityResponseBindingDTO
+{
+    fn from(value: ResolvedIdentifierTrustEntityResponseDTO) -> Self {
+        let certificate_ids: Vec<_> = value
+            .certificate_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        Self {
+            trust_entity: value.trust_entity.into(),
+            certificate_ids: if certificate_ids.is_empty() {
+                None
+            } else {
+                Some(certificate_ids)
+            },
+        }
+    }
+}
+
+impl TryFrom<EditHolderWalletUnitRequestBindingDTO> for EditHolderWalletUnitRequestDTO {
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: EditHolderWalletUnitRequestBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            trust_collections: value
+                .trust_collections
+                .into_iter()
+                .map(into_id)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<EditVerifierInstanceRequestBindingDTO> for EditVerifierInstanceRequestDTO {
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: EditVerifierInstanceRequestBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            trust_collections: value
+                .trust_collections
+                .into_iter()
+                .map(into_id)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+impl From<TrustCollectionInfoDTO> for TrustCollectionInfoBindingDTO {
+    fn from(value: TrustCollectionInfoDTO) -> Self {
+        Self {
+            selected: value.selected,
+            id: value.collection.id.to_string(),
+            name: value.collection.name,
+            logo: value.collection.logo,
+            display_name: convert_inner(value.collection.display_name),
+            description: convert_inner(value.collection.description),
+        }
+    }
+}
+
+impl TryFrom<IdentifierListQueryBindingDTO>
+    for ListQueryDTO<SortableIdentifierColumn, IdentifierFilterParamsDTO>
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: IdentifierListQueryBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: IdentifierFilterParamsDTO {
+                ids: into_id_opt_vec(&value.ids)?,
+                name: value.name,
+                types: convert_inner_of_inner(value.types),
+                states: convert_inner_of_inner(value.states),
+                did_methods: value.did_methods,
+                is_remote: value.is_remote,
+                key_algorithms: value.key_algorithms,
+                key_roles: convert_inner_of_inner(value.key_roles),
+                key_storages: value.key_storages,
+                certificate_roles: convert_inner_of_inner(value.certificate_roles),
+                certificate_roles_match_mode: convert_inner(value.certificate_roles_match_mode)
+                    .unwrap_or_default(),
+                trust_issuance_schema_id: into_id_opt(value.trust_issuance_schema_id)?,
+                trust_verification_schema_id: into_id_opt(value.trust_verification_schema_id)?,
+                exact: convert_inner_of_inner(value.exact),
+                organisation_id: into_id(&value.organisation_id)?,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
+            include: None,
+        })
+    }
+}
+
+impl TryFrom<DidListQueryBindingDTO> for ListQueryDTO<SortableDidColumn, DidFilterParamsDTO> {
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: DidListQueryBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: DidFilterParamsDTO {
+                name: value.name,
+                did: value.did,
+                r#type: convert_inner(value.r#type),
+                exact: convert_inner_of_inner(value.exact),
+                deactivated: value.deactivated,
+                key_algorithms: value.key_algorithms,
+                key_roles: convert_inner_of_inner(value.key_roles),
+                key_storages: value.key_storages,
+                key_ids: into_id_opt_vec(&value.key_ids)?,
+                did_methods: value.did_methods,
+                organisation_id: into_id(&value.organisation_id)?,
+            },
+            include: None,
+        })
+    }
+}
+
+impl TryFrom<CredentialListQueryBindingDTO>
+    for ListQueryDTO<
+        SortableCredentialColumn,
+        CredentialFilterParamsDTO,
+        CredentialListIncludeEntityTypeEnum,
+    >
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: CredentialListQueryBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: CredentialFilterParamsDTO {
+                organisation_id: into_id(&value.organisation_id)?,
+                name: value.name,
+                search_text: value.search_text,
+                search_type: convert_inner_of_inner(value.search_type),
+                exact: convert_inner_of_inner(value.exact),
+                roles: convert_inner_of_inner(value.roles),
+                ids: into_id_opt_vec(&value.ids)?,
+                credential_schema_ids: into_id_opt_vec(&value.credential_schema_ids)?,
+                issuers: None,
+                states: convert_inner_of_inner(value.states),
+                profiles: value.profiles,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+                issuance_date_after: into_timestamp_opt(value.issuance_date_after)?,
+                issuance_date_before: into_timestamp_opt(value.issuance_date_before)?,
+                revocation_date_after: into_timestamp_opt(value.revocation_date_after)?,
+                revocation_date_before: into_timestamp_opt(value.revocation_date_before)?,
+            },
+            include: convert_inner_of_inner(value.include),
+        })
+    }
+}
+
+impl TryFrom<ListProofSchemasFiltersBindingDTO>
+    for ListQueryDTO<SortableProofSchemaColumn, ProofSchemaFilterParamsDTO>
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: ListProofSchemasFiltersBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: ProofSchemaFilterParamsDTO {
+                name: value.name,
+                exact: convert_inner_of_inner(value.exact),
+                organisation_id: into_id(value.organisation_id)?,
+                ids: into_id_opt_vec(&value.ids)?,
+                formats: value.formats,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
+            include: None,
+        })
+    }
+}
+
+impl TryFrom<CredentialSchemaListQueryBindingDTO>
+    for ListQueryDTO<
+        SortableCredentialSchemaColumn,
+        CredentialSchemaFilterParamsDTO,
+        CredentialSchemaListIncludeEntityTypeEnum,
+    >
+{
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: CredentialSchemaListQueryBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            filter: CredentialSchemaFilterParamsDTO {
+                name: value.name,
+                exact: convert_inner_of_inner(value.exact),
+                organisation_id: into_id(value.organisation_id)?,
+                schema_id: value.schema_id,
+                formats: value.formats,
+                requires_wallet_instance_attestation: None,
+                key_storage_security: None,
+                credential_schema_ids: into_id_opt_vec(&value.ids)?,
+                created_date_after: into_timestamp_opt(value.created_date_after)?,
+                created_date_before: into_timestamp_opt(value.created_date_before)?,
+                last_modified_after: into_timestamp_opt(value.last_modified_after)?,
+                last_modified_before: into_timestamp_opt(value.last_modified_before)?,
+            },
+            include: value
+                .include
+                .map(|incl| incl.into_iter().map(Into::into).collect()),
+        })
     }
 }

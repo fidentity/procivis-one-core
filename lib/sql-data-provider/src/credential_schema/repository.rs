@@ -5,8 +5,8 @@ use futures::stream::{self, StreamExt};
 use itertools::Either;
 use one_core::model::claim_schema::ClaimSchema;
 use one_core::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, GetCredentialSchemaQuery,
-    UpdateCredentialSchemaRequest,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
+    GetCredentialSchemaList, UpdateCredentialSchemaRequest,
 };
 use one_core::model::organisation::Organisation;
 use one_core::proto::transaction_manager::IsolationLevel;
@@ -19,7 +19,6 @@ use sea_orm::{
     QueryOrder, Unchanged,
 };
 use shared_types::{CredentialSchemaId, OrganisationId};
-use time::OffsetDateTime;
 
 use crate::common::calculate_pages_count;
 use crate::credential_schema::CredentialSchemaProvider;
@@ -78,7 +77,7 @@ impl CredentialSchemaRepository for CredentialSchemaProvider {
         &self,
         credential_schema: &CredentialSchema,
     ) -> Result<(), DataLayerError> {
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
 
         let credential_schema = credential_schema::ActiveModel {
             id: Unchanged(credential_schema.id),
@@ -155,7 +154,7 @@ impl CredentialSchemaRepository for CredentialSchemaProvider {
 
     async fn get_credential_schema_list(
         &self,
-        query_params: GetCredentialSchemaQuery,
+        query_params: CredentialSchemaListQuery,
         relations: &CredentialSchemaRelations,
     ) -> Result<GetCredentialSchemaList, DataLayerError> {
         let limit = query_params
@@ -287,7 +286,7 @@ impl CredentialSchemaRepository for CredentialSchemaProvider {
 
         let update_model = credential_schema::ActiveModel {
             id: Unchanged(*id),
-            last_modified: Set(OffsetDateTime::now_utc()),
+            last_modified: Set(one_core::clock::now_utc()),
             revocation_method,
             format,
             layout_type,

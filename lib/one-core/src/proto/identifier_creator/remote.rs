@@ -1,6 +1,5 @@
 use shared_types::{DidId, DidValue};
 use standardized_types::jwk::PublicJwk;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::creator::IdentifierCreatorProto;
@@ -29,7 +28,7 @@ impl IdentifierCreatorProto {
         did_value: &DidValue,
         role: IdentifierRole,
     ) -> Result<(Did, Identifier), Error> {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
 
         let did = match self
             .did_repository
@@ -101,6 +100,7 @@ impl IdentifierCreatorProto {
                     did: Some(did.to_owned()),
                     key: None,
                     certificates: None,
+                    trust_information: None,
                 };
                 self.identifier_repository
                     .create(identifier.clone())
@@ -165,7 +165,7 @@ impl IdentifierCreatorProto {
             )));
         }
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier_id = Uuid::new_v4().into();
         let name = format!("{role} {identifier_id}");
 
@@ -182,6 +182,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.clone())
@@ -199,6 +200,7 @@ impl IdentifierCreatorProto {
             chain,
             fingerprint,
             state: CertificateState::Active,
+            roles: vec![],
             key: None,
         };
         self.certificate_repository
@@ -220,7 +222,7 @@ impl IdentifierCreatorProto {
             .parse_jwk(public_key)
             .error_while("parsing JWK")?;
         let organisation_id = organisation.as_ref().map(|org| org.id);
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
 
         let list = self
             .key_repository
@@ -295,6 +297,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: Some(key.clone()),
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.clone())

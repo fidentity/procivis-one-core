@@ -1,7 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum_extra::extract::WithRejection;
-use one_core::service::trust_entity::error::TrustEntityServiceError;
+use one_core::error::ContextWithErrorCode;
+use one_core::service::error::ServiceError;
 use proc_macros::endpoint;
 use shared_types::{DidId, Permission, TrustEntityId};
 
@@ -30,7 +31,7 @@ use crate::router::AppState;
     summary = "Create a trust entity",
     description = "Adds a trust entity to a trust anchor.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn create_trust_entity(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -71,7 +72,7 @@ pub(crate) async fn create_trust_entity(
     summary = "Update a trust entity",
     description = "Updates a trust entity in a trust anchor.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn update_trust_entity(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustEntityId>, ErrorResponseRestDTO>,
@@ -110,7 +111,7 @@ pub(crate) async fn update_trust_entity(
     summary = "Retrieve a trust entity",
     description = "Returns details on a given trust entity.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_entity_details(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<TrustEntityId>, ErrorResponseRestDTO>,
@@ -133,19 +134,20 @@ pub(crate) async fn get_trust_entity_details(
     summary = "List trust entities",
     description = "Returns a list of trust entities in an organization.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_trust_entities(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<ListTrustEntitiesQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetTrustEntityListResponseRestDTO> {
     let result = async {
-        state
-            .core
-            .trust_entity_service
-            .list_trust_entities(query.try_into().map_err(|e: std::convert::Infallible| {
-                TrustEntityServiceError::MappingError(e.to_string())
-            })?)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_entity_service
+                .list_trust_entities(query.try_into()?)
+                .await
+                .error_while("listing trust entities")?,
+        )
     }
     .await;
     OkOrErrorResponse::from_result(result, state, "listing trust entities")
@@ -164,7 +166,7 @@ pub(crate) async fn get_trust_entities(
     summary = "Create a remote trust entity",
     description = "Create a trust entity inside a remote trust anchor",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn create_remote_trust_entity(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -206,7 +208,7 @@ pub(crate) async fn create_remote_trust_entity(
     summary = "Update a remote trust entity",
     description = "Updates a trust entity inside a remote trust anchor.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn update_remote_trust_entity(
     state: State<AppState>,
     WithRejection(Path(did_id), _): WithRejection<Path<DidId>, ErrorResponseRestDTO>,
@@ -245,7 +247,7 @@ pub(crate) async fn update_remote_trust_entity(
     summary = "Retrieve a remote trust entity",
     description = "Returns details of a remote trust entity.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_remote_trust_entity(
     state: State<AppState>,
     WithRejection(Path(did_id), _): WithRejection<Path<DidId>, ErrorResponseRestDTO>,

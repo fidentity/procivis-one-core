@@ -10,7 +10,7 @@ use serde_json::Value;
 use shared_types::OrganisationId;
 
 use crate::error::ContextWithErrorCode;
-use crate::model::credential::{CredentialFilterValue, CredentialRole, GetCredentialQuery};
+use crate::model::credential::{CredentialFilterValue, CredentialListQuery, CredentialRole};
 use crate::model::list_filter::ListFilterValue;
 use crate::proto::credential_validity_manager::CredentialValidityManager;
 use crate::provider::task::Task;
@@ -46,7 +46,7 @@ impl HolderCheckCredentialStatus {
 
 #[async_trait::async_trait]
 impl Task for HolderCheckCredentialStatus {
-    async fn run(&self) -> Result<Value, ServiceError> {
+    async fn run(&self, _params: Option<Value>) -> Result<Value, ServiceError> {
         let option = self
             .params
             .clone()
@@ -55,7 +55,7 @@ impl Task for HolderCheckCredentialStatus {
 
         let credentials = self
             .credential_repository
-            .get_credential_list(GetCredentialQuery {
+            .get_credential_list(CredentialListQuery {
                 filtering: Some(
                     CredentialFilterValue::Roles(vec![CredentialRole::Holder]).condition() & option,
                 ),

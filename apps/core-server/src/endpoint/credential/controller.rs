@@ -12,7 +12,6 @@ use super::dto::{
 };
 use crate::dto::common::{EntityResponseRestDTO, GetCredentialsResponseDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{
     CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse, VecResponse,
 };
@@ -104,12 +103,11 @@ pub(crate) async fn get_credential_list(
     WithRejection(Qs(query), _): WithRejection<Qs<GetCredentialQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetCredentialsResponseDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .credential_service
-                .get_credential_list(&organisation_id, query.try_into()?)
+                .get_credential_list(query.try_into()?)
                 .await
                 .error_while("getting credential list")?,
         )
@@ -138,7 +136,7 @@ pub(crate) async fn get_credential_list(
     The `protocol` value must reference a configured instance of the
     `issuanceProtocol` object of your system configuration.
 
-    Related guide: [Issuance workflow](/issue)
+    Related guide: [Issuing Credentials](https://docs.procivis.ch/issue)
 "},
 )]
 pub(crate) async fn post_credential(
@@ -172,7 +170,7 @@ pub(crate) async fn post_credential(
     summary = "Reactivate a credential",
     description = indoc::formatdoc! {"
         Reactivates a suspended credential.
-        Related guide: [Manage credential status](/issue/manage-status)
+        Related guide: [Managing Credential Status](https://docs.procivis.ch/issue/manage-status)
     "},
 )]
 pub(crate) async fn reactivate_credential(
@@ -201,8 +199,8 @@ pub(crate) async fn reactivate_credential(
     ),
     summary = "Revoke a credential",
     description = indoc::formatdoc! {"
-        Changes a credential state to `REVOKED`.
-        Related guide: [Manage credential status](/issue/manage-status)
+        Revokes an issued credential.
+        Related guide: [Managing Credential Status](https://docs.procivis.ch/issue/manage-status)
     "},
 )]
 pub(crate) async fn revoke_credential(
@@ -229,7 +227,7 @@ pub(crate) async fn revoke_credential(
     summary = "Suspend a credential",
     description = indoc::formatdoc! {"
         Suspends a credential, rendering it invalid until it has been reactivated.
-        Related guide: [Manage credential status](/issue/manage-status)
+        Related guide: [Managing Credential Status](https://docs.procivis.ch/issue/manage-status)
     "},
 )]
 pub(crate) async fn suspend_credential(
@@ -300,9 +298,10 @@ pub(crate) async fn share_credential(
         `forceRefresh` parameter to force the system to retrieve these entities
         from the external resource.
 
-        For mdocs, use the `forceRefresh` parameter to force the system to request a new MSO.
+        For mdocs, use the `forceRefresh` parameter to force the system to request
+        a new MSO.
 
-        Related guide: [Caching](/configure/caching)
+        Related guide: [Caching](https://docs.procivis.ch/configure/caching)
     "},
 )]
 pub(crate) async fn credential_revocation_check(

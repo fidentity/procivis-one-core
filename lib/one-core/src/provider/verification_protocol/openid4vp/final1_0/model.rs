@@ -1,6 +1,6 @@
 use dcql::DcqlQuery;
 use serde::{Deserialize, Serialize};
-use serde_with::{DurationSeconds, serde_as, skip_serializing_none};
+use serde_with::{DurationSeconds, VecSkipError, serde_as, skip_serializing_none};
 use standardized_types::openid4vp::ResponseMode;
 use time::Duration;
 use url::Url;
@@ -8,8 +8,8 @@ use url::Url;
 use crate::provider::verification_protocol::model::CommonParams;
 use crate::provider::verification_protocol::openid4vp::mapper::deserialize_with_serde_json;
 use crate::provider::verification_protocol::openid4vp::model::{
-    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
-    OpenID4VPClientMetadata, default_presentation_url_scheme,
+    ClientIdScheme, OpenID4VCRedirectUriParams, OpenID4VPClientMetadata,
+    default_presentation_url_scheme,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,12 +23,25 @@ pub(crate) struct Params {
     #[serde(default = "default_presentation_url_scheme")]
     pub url_scheme: String,
 
-    pub holder: OpenID4VCPresentationHolderParams,
+    pub holder: HolderParams,
     pub verifier: PresentationVerifierParams,
     pub redirect_uri: OpenID4VCRedirectUriParams,
 
     #[serde(flatten)]
     pub common: CommonParams,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HolderParams {
+    pub supported_client_id_schemes: Vec<ClientIdScheme>,
+
+    #[serde(default = "default_true")]
+    pub trust_ecosystems_enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[serde_as]
@@ -61,6 +74,7 @@ pub(crate) struct AuthorizationRequestQueryParams {
     pub redirect_uri: Option<String>,
 }
 
+#[serde_as]
 #[skip_serializing_none]
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub(crate) struct AuthorizationRequest {
@@ -87,4 +101,23 @@ pub(crate) struct AuthorizationRequest {
 
     #[serde(default)]
     pub redirect_uri: Option<String>,
+
+    #[serde_as(as = "VecSkipError<_>")] // wallets SHOULD ignore any unrecognized or unsupported Verifier Info types
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_info: Vec<VerifierInfoAttestation>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub(crate) struct VerifierInfoAttestation {
+    pub format: VerifierInfoAttestationFormat,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_ids: Vec<dcql::CredentialQueryId>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, Debug)]
+pub(crate) enum VerifierInfoAttestationFormat {
+    #[serde(rename = "registration_cert")]
+    RegistrationCert,
 }

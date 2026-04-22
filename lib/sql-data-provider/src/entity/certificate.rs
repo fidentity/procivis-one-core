@@ -19,6 +19,7 @@ pub struct Model {
     pub chain: String,
     pub fingerprint: String,
     pub state: CertificateState,
+    pub roles: Option<String>,
 
     pub identifier_id: IdentifierId,
     pub key_id: Option<KeyId>,

@@ -4,7 +4,7 @@ use one_core::model::claim::Claim;
 use one_core::model::common::LockType;
 use one_core::model::history::HistoryErrorMetadata;
 use one_core::model::proof::{
-    GetProofList, GetProofQuery, Proof, ProofClaim, ProofClaimRelations, ProofRelations,
+    GetProofList, Proof, ProofClaim, ProofClaimRelations, ProofListQuery, ProofRelations,
     ProofStateEnum, UpdateProofRequest,
 };
 use one_core::repository::error::DataLayerError;
@@ -14,7 +14,6 @@ use sea_orm::{
     QuerySelect, RelationTrait, Select, Set, SqlErr, Unchanged,
 };
 use shared_types::{ClaimId, InteractionId, ProofId};
-use time::OffsetDateTime;
 
 use super::ProofProvider;
 use super::mapper::{
@@ -95,7 +94,7 @@ impl ProofRepository for ProofProvider {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError> {
         let limit = query_params
             .pagination
@@ -184,7 +183,7 @@ impl ProofRepository for ProofProvider {
             Some(engagement) => Set(engagement),
         };
 
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
         let mut update_model = proof::ActiveModel {
             id: Unchanged(*proof_id),
             last_modified: Set(now),
@@ -228,7 +227,7 @@ impl ProofRepository for ProofProvider {
 }
 
 /// produces list query declared to be used together with `into_model::<ProofListItemModel>()`
-fn get_proof_list_query(query_params: &GetProofQuery) -> Select<crate::entity::proof::Entity> {
+fn get_proof_list_query(query_params: &ProofListQuery) -> Select<crate::entity::proof::Entity> {
     let mut query = crate::entity::proof::Entity::find()
         .select_only()
         .columns([

@@ -11,7 +11,6 @@ use super::dto::{
 };
 use crate::dto::common::{EntityResponseRestDTO, GetDidsResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::extractor::Qs;
@@ -32,7 +31,7 @@ use crate::router::AppState;
     summary = "Retrieve a DID",
     description = "Returns detailed information about a DID.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_did(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<DidId>, ErrorResponseRestDTO>,
@@ -72,18 +71,17 @@ pub(crate) async fn get_did(
     summary = "List DIDs",
     description = "Returns a list of DIDs within an organization.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_did_list(
     state: State<AppState>,
     WithRejection(Qs(query), _): WithRejection<Qs<GetDidQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetDidsResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .did_service
-                .get_did_list(&organisation_id, query.try_into()?)
+                .get_did_list(query.try_into()?)
                 .await
                 .error_while("getting did list")?,
         )
@@ -113,7 +111,7 @@ pub(crate) async fn get_did_list(
         like DID deactivation.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn post_did(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<
@@ -157,8 +155,7 @@ pub(crate) async fn post_did(
     ),
     summary = "Deactivate a DID",
     description = indoc::formatdoc! {"
-        Deactivate a DID. See the [DID deactivation](/dids#deactivate-a-did)
-        guide for a list of supported DID methods which allow deactivation.
+        Permanently deactivates a DID.
     "},
 )]
 pub(crate) async fn update_did(
@@ -188,7 +185,7 @@ pub(crate) async fn update_did(
     summary = "Retrieve the matching trust entity for a DID",
     description = "Returns details on the matching trust entity for a DID.",
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn get_did_trust_entity(
     state: State<AppState>,
     WithRejection(Path(id), _): WithRejection<Path<DidId>, ErrorResponseRestDTO>,

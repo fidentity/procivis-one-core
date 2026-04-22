@@ -20,11 +20,17 @@ walletProvider:
           minimum: "v1.50.0"
         eudiWalletInfo:
           providerName: "Procivis One Test"
+        featureFlags:
+          trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 verifierProvider:
   PROCIVIS_ONE:
     params:
       public:
         verifierName: "Procivis One Test Verifier"
+        featureFlags:
+          trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 signer:
   REGISTRATION_CERTIFICATE:
     params:

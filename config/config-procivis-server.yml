@@ -134,6 +134,7 @@ walletProvider:
           solutionVersion: "1"
           wscdType: HYBRID
         deviceAuthLeeway: 60
+        legacyTrustManagementEnabled: false
 signer:
   REGISTRATION_CERTIFICATE:
     display:

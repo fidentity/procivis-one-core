@@ -3,12 +3,11 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use shared_types::{ClaimId, CredentialId, InteractionId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::model::credential::{
-    Credential, CredentialRelations, CredentialRole, CredentialStateEnum, GetCredentialList,
-    GetCredentialQuery, UpdateCredentialRequest,
+    Credential, CredentialListQuery, CredentialRelations, CredentialRole, CredentialStateEnum,
+    GetCredentialList, UpdateCredentialRequest,
 };
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
@@ -101,7 +100,7 @@ impl CredentialHistoryDecorator {
 
         let entry = History {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
             action,
             name: credential_schema.name.to_owned(),
             source: HistorySource::Core,
@@ -109,6 +108,7 @@ impl CredentialHistoryDecorator {
             entity_id: Some(credential.id.into()),
             entity_type: HistoryEntityType::Credential,
             metadata: None,
+            metadata_blob_id: None,
             organisation_id: Some(organisation.id),
             user: self.session_provider.session().user(),
         };
@@ -231,7 +231,7 @@ impl CredentialRepository for CredentialHistoryDecorator {
 
     async fn get_credential_list(
         &self,
-        query_params: GetCredentialQuery,
+        query_params: CredentialListQuery,
     ) -> Result<GetCredentialList, DataLayerError> {
         self.inner.get_credential_list(query_params).await
     }

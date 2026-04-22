@@ -1,9 +1,12 @@
 use one_dto_mapper::convert_inner;
 use shared_types::KeyId;
-use time::OffsetDateTime;
 
-use super::dto::{GetKeyListResponseDTO, KeyRequestDTO};
-use crate::model::key::{GetKeyList, Key};
+use super::dto::{GetKeyListResponseDTO, KeyFilterParamsDTO, KeyRequestDTO};
+use crate::model::key::{ExactKeyFilterColumn, GetKeyList, Key, KeyFilterValue};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::organisation::Organisation;
 use crate::provider::key_storage::model::StorageGeneratedKey;
 use crate::service::key::dto::KeyResponseDTO;
@@ -15,7 +18,7 @@ pub(super) fn from_create_request(
     organisation: Organisation,
     generated_key: StorageGeneratedKey,
 ) -> Key {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     Key {
         id: key_id,
@@ -62,5 +65,69 @@ impl From<GetKeyList> for GetKeyListResponseDTO {
             total_pages: value.total_pages,
             total_items: value.total_items,
         }
+    }
+}
+
+impl From<KeyFilterParamsDTO> for ListFilterCondition<KeyFilterValue> {
+    fn from(value: KeyFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id = KeyFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            KeyFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(ExactKeyFilterColumn::Name),
+                value: name,
+            })
+        });
+
+        let key_types = value.key_types.map(KeyFilterValue::KeyTypes);
+        let key_storages = value.key_storages.map(KeyFilterValue::KeyStorages);
+        let ids = value.ids.map(KeyFilterValue::Ids);
+        let remote = value.is_remote.map(KeyFilterValue::Remote);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            KeyFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            KeyFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            KeyFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            KeyFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & key_types
+            & key_storages
+            & ids
+            & remote
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

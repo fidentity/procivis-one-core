@@ -1,13 +1,17 @@
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use time::{Duration, OffsetDateTime};
+use url::Url;
 
 use super::{CacheError, CachingLoader, ResolveResult, Resolver, ResolverError};
 use crate::config::core_config::{CacheEntityCacheType, CacheEntityConfig, CoreConfig};
 use crate::error::ContextWithErrorCode;
 use crate::proto::http_client::HttpClient;
+use crate::proto::jwt::Jwt;
+use crate::proto::jwt::model::DecomposedJwt;
 use crate::provider::remote_entity_storage::db_storage::DbStorage;
 use crate::provider::remote_entity_storage::in_memory::InMemoryStorage;
 use crate::provider::remote_entity_storage::{RemoteEntityStorage, RemoteEntityType};
@@ -16,13 +20,22 @@ use crate::repository::remote_entity_cache_repository::RemoteEntityCacheReposito
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait::async_trait]
 pub trait OpenIDMetadataFetcher: Send + Sync {
-    async fn get(&self, url: &str) -> Result<Vec<u8>, CacheError>;
+    async fn get(&self, url: &str, accept_mime: &str) -> Result<Vec<u8>, CacheError>;
 }
 
 impl<'a> dyn OpenIDMetadataFetcher + 'a {
-    pub(crate) async fn fetch<T: DeserializeOwned>(&self, url: &str) -> Result<T, CacheError> {
-        let content = self.get(url).await?;
+    pub(crate) async fn fetch_json<T: DeserializeOwned>(&self, url: &str) -> Result<T, CacheError> {
+        let content = self.get(url, "application/json").await?;
         Ok(serde_json::from_slice(&content)?)
+    }
+
+    pub(crate) async fn fetch_jwt<CustomPayload: DeserializeOwned + Debug>(
+        &self,
+        url: &str,
+    ) -> Result<DecomposedJwt<CustomPayload>, CacheError> {
+        let content = self.get(url, "application/jwt").await?;
+        let jwt = String::from_utf8(content)?;
+        Ok(Jwt::decompose_token(&jwt)?)
     }
 }
 
@@ -41,7 +54,7 @@ impl OpenIDMetadataCache {
     ) -> Self {
         Self {
             inner: CachingLoader::new(
-                RemoteEntityType::OpenIDMetadata,
+                RemoteEntityType::OpenIdMetadataHolder,
                 storage,
                 cache_size,
                 cache_refresh_timeout,
@@ -54,15 +67,24 @@ impl OpenIDMetadataCache {
 
 #[async_trait::async_trait]
 impl OpenIDMetadataFetcher for OpenIDMetadataCache {
-    async fn get(&self, key: &str) -> Result<Vec<u8>, CacheError> {
+    async fn get(&self, url: &str, accept_mime: &str) -> Result<Vec<u8>, CacheError> {
         let (metadata, _) = self
             .inner
-            .get(key, self.resolver.clone(), false)
+            .get(&url_to_key(url, accept_mime), self.resolver.clone(), false)
             .await
             .error_while("getting OpenID metadata")?;
 
         Ok(metadata)
     }
+}
+
+fn url_to_key(url: &str, accept_mime: &str) -> String {
+    format!("{accept_mime};{url}")
+}
+
+fn key_to_url(key: &str) -> Option<(Url, String)> {
+    let (mime, url) = key.split_once(';')?;
+    Some((url.parse().ok()?, mime.to_string()))
 }
 
 struct OpenIDMetadataResolver {
@@ -84,10 +106,13 @@ impl Resolver for OpenIDMetadataResolver {
         key: &str,
         _last_modified: Option<&OffsetDateTime>,
     ) -> Result<ResolveResult, Self::Error> {
+        let (url, accept_mime) =
+            key_to_url(key).ok_or(ResolverError::MappingError("invalid key".to_string()))?;
+
         let response = self
             .client
-            .get(key)
-            .header("Accept", "application/json")
+            .get(url.as_str())
+            .header("Accept", accept_mime.as_str())
             .send()
             .await
             .error_while("downloading OpenID metadata")?
@@ -97,7 +122,17 @@ impl Resolver for OpenIDMetadataResolver {
         let media_type = response.header_get("content-type").map(|t| t.to_owned());
         let content = response.body;
 
-        serde_json::from_slice::<serde_json::Value>(&content)?;
+        if let Some(mime) = &media_type
+            && mime != &accept_mime
+        {
+            return Err(ResolverError::InvalidResponse(format!(
+                "Unexpected Content-Type: {mime}"
+            )));
+        }
+
+        if accept_mime == "application/json" {
+            serde_json::from_slice::<serde_json::Value>(&content)?;
+        }
 
         Ok(ResolveResult::NewValue {
             content,

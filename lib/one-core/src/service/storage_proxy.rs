@@ -8,11 +8,11 @@ use crate::model::certificate::CertificateRelations;
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential::{
-    Credential, CredentialFilterValue, CredentialRelations, CredentialRole, CredentialStateEnum,
-    GetCredentialQuery,
+    Credential, CredentialFilterValue, CredentialListQuery, CredentialRelations, CredentialRole,
+    CredentialStateEnum,
 };
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaQuery,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
 };
 use crate::model::identifier::IdentifierRelations;
 use crate::model::interaction::{Interaction, InteractionRelations, UpdateInteractionRequest};
@@ -144,7 +144,7 @@ impl StorageProxy for StorageProxyImpl {
         let candidates = self
             .credential_schemas
             .get_credential_schema_list(
-                GetCredentialSchemaQuery {
+                CredentialSchemaListQuery {
                     pagination: Some(ListPagination {
                         page: 0,
                         page_size: 1,
@@ -175,7 +175,7 @@ impl StorageProxy for StorageProxyImpl {
     ) -> anyhow::Result<Vec<Credential>> {
         let credentials = self
             .credentials
-            .get_credential_list(GetCredentialQuery {
+            .get_credential_list(CredentialListQuery {
                 filtering: Some(
                     CredentialFilterValue::SchemaId(schema_id).condition()
                         & CredentialFilterValue::OrganisationId(organisation_id)

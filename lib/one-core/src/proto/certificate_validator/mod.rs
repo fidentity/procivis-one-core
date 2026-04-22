@@ -64,6 +64,9 @@ pub(crate) enum Error {
     #[expect(clippy::enum_variant_names)]
     #[error("X509 error: `{0}`")]
     X509ParserError(#[from] x509_parser::error::X509Error),
+    #[expect(clippy::enum_variant_names)]
+    #[error("Base64 error: `{0}`")]
+    Base64Error(#[from] ct_codecs::Error),
     #[error("Hash error: `{0}`")]
     HasherError(#[from] one_crypto::HasherError),
 
@@ -79,7 +82,8 @@ impl ErrorCodeMixin for Error {
             | Self::UnsupportedAlgorithm(_)
             | Self::PEMError(_)
             | Self::X509NomError(_)
-            | Self::X509ParserError(_) => ErrorCode::BR_0224,
+            | Self::X509ParserError(_)
+            | Self::Base64Error(_) => ErrorCode::BR_0224,
             Self::CRLCheckFailed(_) => ErrorCode::BR_0233,
             Self::CertificateSignatureInvalid => ErrorCode::BR_0211,
             Self::CertificateRevoked => ErrorCode::BR_0212,

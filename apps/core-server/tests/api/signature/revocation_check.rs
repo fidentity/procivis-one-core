@@ -1,4 +1,4 @@
-use one_core::model::revocation_list::{RevocationListEntityId, RevocationListEntryStatus};
+use one_core::model::revocation_list::{RevocationListEntityId, RevocationListEntryState};
 use serde_json::json;
 use similar_asserts::assert_eq;
 
@@ -32,7 +32,7 @@ async fn test_sign_wrprc_success() {
         .update_entry(
             revocation_list.id,
             1,
-            Some(RevocationListEntryStatus::Revoked),
+            Some(RevocationListEntryState::Revoked),
         )
         .await;
 

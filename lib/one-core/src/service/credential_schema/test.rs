@@ -5,18 +5,16 @@ use assert2::let_assert;
 use mockall::predicate::*;
 use shared_types::{CredentialSchemaId, RevocationMethodId};
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::CredentialSchemaService;
 use super::dto::{
     CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
     CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
-    CredentialSchemaCodeTypeEnum, CredentialSchemaFilterValue,
+    CredentialSchemaCodeTypeEnum, CredentialSchemaFilterParamsDTO,
     CredentialSchemaLayoutPropertiesRequestDTO, CredentialSchemaLogoPropertiesRequestDTO,
-    CredentialSchemaTransactionCodeRequestDTO, GetCredentialSchemaQueryDTO,
-    ImportCredentialSchemaClaimSchemaDTO, ImportCredentialSchemaRequestDTO,
-    ImportCredentialSchemaRequestSchemaDTO,
+    CredentialSchemaTransactionCodeRequestDTO, ImportCredentialSchemaClaimSchemaDTO,
+    ImportCredentialSchemaRequestDTO, ImportCredentialSchemaRequestSchemaDTO,
 };
 use super::error::CredentialSchemaServiceError;
 use super::mapper::{renest_claim_schemas, unnest_claim_schemas};
@@ -30,8 +28,6 @@ use crate::model::credential_schema::{
     CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, KeyStorageSecurity,
     LayoutType, TransactionCodeType,
 };
-use crate::model::list_filter::ListFilterValue;
-use crate::model::list_query::ListPagination;
 use crate::model::organisation::OrganisationRelations;
 use crate::proto::credential_schema::importer::{
     CredentialSchemaImporterProto, MockCredentialSchemaImporter,
@@ -48,6 +44,7 @@ use crate::provider::revocation::MockRevocationMethod;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{
     dummy_organisation, generic_config, generic_formatter_capabilities, get_dummy_date,
 };
@@ -87,7 +84,7 @@ fn setup_service(
 }
 
 fn generic_credential_schema() -> CredentialSchema {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     CredentialSchema {
         id: Uuid::new_v4().into(),
         deleted_at: None,
@@ -158,7 +155,7 @@ async fn test_get_credential_schema_deleted() {
     let mut repository = MockCredentialSchemaRepository::default();
     let organisation_repository = MockOrganisationRepository::default();
     let schema = CredentialSchema {
-        deleted_at: Some(OffsetDateTime::now_utc()),
+        deleted_at: Some(crate::clock::now_utc()),
         ..generic_credential_schema()
     };
     {
@@ -245,19 +242,27 @@ async fn test_get_credential_schema_list_success() {
 
     let organisation_id = Uuid::new_v4().into();
     let result = service
-        .get_credential_schema_list(
-            &organisation_id,
-            GetCredentialSchemaQueryDTO {
-                pagination: Some(ListPagination {
-                    page: 0,
-                    page_size: 5,
-                }),
-                filtering: Some(
-                    CredentialSchemaFilterValue::OrganisationId(organisation_id).condition(),
-                ),
-                ..Default::default()
+        .get_credential_schema_list(ListQueryDTO {
+            page: 0,
+            page_size: 5,
+            sort: None,
+            sort_direction: None,
+            filter: CredentialSchemaFilterParamsDTO {
+                name: None,
+                exact: None,
+                organisation_id,
+                schema_id: None,
+                formats: None,
+                requires_wallet_instance_attestation: None,
+                key_storage_security: None,
+                credential_schema_ids: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     assert!(result.is_ok());
@@ -1731,7 +1736,7 @@ async fn test_unnest_claim_schemas_from_request_multiple_layers_of_nested_claims
 
 #[test]
 fn test_renest_claim_schemas_single_layer_of_nested_claims() {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let uuid_location = Uuid::new_v4().into();
     let uuid_location_x = Uuid::new_v4().into();
@@ -1807,7 +1812,7 @@ fn test_renest_claim_schemas_single_layer_of_nested_claims() {
 
 #[test]
 fn test_renest_claim_schemas_multiple_layers_of_nested_claims() {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let uuid_address = Uuid::new_v4().into();
     let uuid_address_location = Uuid::new_v4().into();
@@ -1969,7 +1974,7 @@ fn test_renest_claim_schemas_multiple_layers_of_nested_claims() {
 
 #[test]
 fn test_renest_claim_schemas_failed_missing_parent_claim_schema() {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let uuid_location_x = Uuid::new_v4().into();
 
@@ -2473,7 +2478,7 @@ async fn test_import_credential_schema_success() {
     let mut formatter = MockCredentialFormatter::default();
     let mut formatter_provider = MockCredentialFormatterProvider::default();
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let own_organisation_id = Uuid::new_v4();
     let organisation = dummy_organisation(Some(own_organisation_id.into()));
     organisation_repository
@@ -2806,15 +2811,27 @@ async fn test_list_credential_schema_fail_session_org_mismatch() {
     };
 
     let result = service
-        .get_credential_schema_list(
-            &Uuid::new_v4().into(),
-            GetCredentialSchemaQueryDTO {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_credential_schema_list(ListQueryDTO {
+            page: 0,
+            page_size: 0,
+            sort: None,
+            sort_direction: None,
+            filter: CredentialSchemaFilterParamsDTO {
+                name: None,
+                exact: None,
+                organisation_id: Uuid::new_v4().into(),
+                schema_id: None,
+                formats: None,
+                requires_wallet_instance_attestation: None,
+                key_storage_security: None,
+                credential_schema_ids: None,
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
             },
-        )
+            include: None,
+        })
         .await;
     assert_eq!(result.unwrap_err().error_code(), ErrorCode::BR_0178);
 }

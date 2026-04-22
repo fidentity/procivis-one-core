@@ -10,6 +10,7 @@ use super::holder_check_credential_status::HolderCheckCredentialStatus;
 use super::interaction_expiration_check::InteractionExpirationCheckProvider;
 use super::retain_proof_check::RetainProofCheck;
 use super::suspend_check::SuspendCheckProvider;
+use super::trust_list_subscription_update::TrustListSubscriptionUpdateTask;
 use super::webhook_notify::WebhookNotify;
 use crate::config::ConfigValidationError;
 use crate::config::core_config::{CoreConfig, Fields, TaskType};
@@ -17,15 +18,25 @@ use crate::proto::certificate_validator::CertificateValidator;
 use crate::proto::credential_validity_manager::CredentialValidityManager;
 use crate::proto::notification_sender::NotificationSender;
 use crate::proto::session_provider::SessionProvider;
+use crate::proto::trust_collection::TrustCollectionManager;
+use crate::proto::trust_list_subscription_sync::TrustListSubscriptionSync;
+use crate::proto::verifier_provider_client::VerifierProviderClient;
+use crate::proto::wallet_provider_client::WalletProviderClient;
 use crate::provider::blob_storage_provider::BlobStorageProvider;
+use crate::provider::task::trust_collection_sync::TrustCollectionSyncTask;
+use crate::provider::trust_list_subscriber::provider::TrustListSubscriberProvider;
 use crate::repository::certificate_repository::CertificateRepository;
 use crate::repository::claim_repository::ClaimRepository;
 use crate::repository::credential_repository::CredentialRepository;
 use crate::repository::history_repository::HistoryRepository;
+use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::repository::notification_repository::NotificationRepository;
 use crate::repository::proof_repository::ProofRepository;
+use crate::repository::trust_collection_repository::TrustCollectionRepository;
+use crate::repository::trust_list_subscription_repository::TrustListSubscriptionRepository;
+use crate::repository::verifier_instance_repository::VerifierInstanceRepository;
 
 #[cfg_attr(test, mockall::automock)]
 pub trait TaskProvider: Send + Sync {
@@ -53,11 +64,20 @@ pub(crate) fn task_provider_from_config(
     identifier_repository: Arc<dyn IdentifierRepository>,
     interaction_repository: Arc<dyn InteractionRepository>,
     notification_repository: Arc<dyn NotificationRepository>,
+    trust_list_subscription_repository: Arc<dyn TrustListSubscriptionRepository>,
+    holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
+    trust_collection_repository: Arc<dyn TrustCollectionRepository>,
     credential_validity_manager: Arc<dyn CredentialValidityManager>,
     certificate_validator: Arc<dyn CertificateValidator>,
     blob_storage_provider: Arc<dyn BlobStorageProvider>,
     session_provider: Arc<dyn SessionProvider>,
     notification_sender: Arc<dyn NotificationSender>,
+    trust_list_subscription_provider: Arc<dyn TrustListSubscriberProvider>,
+    collection_sync: Arc<dyn TrustCollectionManager>,
+    subscription_sync: Arc<dyn TrustListSubscriptionSync>,
+    wallet_unit_client: Arc<dyn WalletProviderClient>,
+    verifier_repository: Arc<dyn VerifierInstanceRepository>,
+    verifier_provider_client: Arc<dyn VerifierProviderClient>,
 ) -> Result<Arc<dyn TaskProvider>, ConfigValidationError> {
     let mut tasks: HashMap<TaskId, Arc<dyn Task>> = HashMap::new();
 
@@ -112,6 +132,23 @@ pub(crate) fn task_provider_from_config(
                     notification_sender.clone(),
                 ))
             }
+            TaskType::TrustListSubscriptionUpdate => {
+                Arc::new(TrustListSubscriptionUpdateTask::new(
+                    trust_list_subscription_provider.clone(),
+                    trust_list_subscription_repository.clone(),
+                    history_repository.clone(),
+                    session_provider.clone(),
+                ))
+            }
+            TaskType::TrustCollectionSync => Arc::new(TrustCollectionSyncTask::new(
+                holder_wallet_unit_repository.clone(),
+                wallet_unit_client.clone(),
+                verifier_repository.clone(),
+                verifier_provider_client.clone(),
+                collection_sync.clone(),
+                trust_collection_repository.clone(),
+                subscription_sync.clone(),
+            )),
         };
         tasks.insert(name.to_owned(), task);
     }

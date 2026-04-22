@@ -1,10 +1,13 @@
 use one_dto_mapper::{From, Into};
 
-use super::OneCoreBinding;
+use super::OneCore;
 use crate::error::BindingError;
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
+    /// Deletes the system cache. See the
+    /// [Caching](https://docs.procivis.ch/configure/caching#cached-entities)
+    /// guide for details on cached entities.
     #[uniffi::method]
     pub async fn delete_cache(
         &self,
@@ -21,6 +24,7 @@ impl OneCoreBinding {
 #[derive(Clone, Debug, Eq, PartialEq, Into, From, uniffi::Enum)]
 #[from("one_core::model::remote_entity_cache::CacheType")]
 #[into("one_core::model::remote_entity_cache::CacheType")]
+#[uniffi(name = "CacheType")]
 pub enum CacheTypeBindingDTO {
     DidDocument,
     JsonLdContext,
@@ -30,5 +34,6 @@ pub enum CacheTypeBindingDTO {
     TrustList,
     X509Crl,
     AndroidAttestationCrl,
-    OpenIDMetadata,
+    OpenIdMetadataHolder,
+    OpenIdMetadataIssuer,
 }

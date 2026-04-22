@@ -21,6 +21,7 @@ use one_core::repository::did_repository::DidRepository;
 use one_core::repository::history_repository::HistoryRepository;
 use one_core::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use one_core::repository::identifier_repository::IdentifierRepository;
+use one_core::repository::identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use one_core::repository::interaction_repository::InteractionRepository;
 use one_core::repository::key_repository::KeyRepository;
 use one_core::repository::notification_repository::NotificationRepository;
@@ -30,10 +31,13 @@ use one_core::repository::proof_schema_repository::ProofSchemaRepository;
 use one_core::repository::remote_entity_cache_repository::RemoteEntityCacheRepository;
 use one_core::repository::revocation_list_repository::RevocationListRepository;
 use one_core::repository::trust_anchor_repository::TrustAnchorRepository;
+use one_core::repository::trust_collection_repository::TrustCollectionRepository;
 use one_core::repository::trust_entity_repository::TrustEntityRepository;
 use one_core::repository::trust_entry_repository::TrustEntryRepository;
 use one_core::repository::trust_list_publication_repository::TrustListPublicationRepository;
+use one_core::repository::trust_list_subscription_repository::TrustListSubscriptionRepository;
 use one_core::repository::validity_credential_repository::ValidityCredentialRepository;
+use one_core::repository::verifier_instance_repository::VerifierInstanceRepository;
 use one_core::repository::wallet_unit_attestation_repository::WalletUnitAttestationRepository;
 use one_core::repository::wallet_unit_attested_key_repository::WalletUnitAttestedKeyRepository;
 use one_core::repository::wallet_unit_repository::WalletUnitRepository;
@@ -42,9 +46,11 @@ use proof::ProofProvider;
 use proof_schema::ProofSchemaProvider;
 use sea_orm::{ConnectOptions, DatabaseConnection, DbErr};
 use trust_anchor::TrustAnchorProvider;
+use trust_collection::TrustCollectionProvider;
 use trust_entity::TrustEntityProvider;
 use trust_entry::TrustEntryProvider;
 use trust_list_publication::TrustListPublicationProvider;
+use trust_list_subscription::TrustListSubscriptionProvider;
 use validity_credential::ValidityCredentialProvider;
 use wallet_unit::WalletUnitProvider;
 
@@ -53,11 +59,13 @@ use crate::credential::CredentialProvider;
 use crate::credential_schema::CredentialSchemaProvider;
 use crate::history::HistoryProvider;
 use crate::holder_wallet_unit::HolderWalletUnitProvider;
+use crate::identifier_trust_information::IdentifierTrustInformationProvider;
 use crate::key::KeyProvider;
 use crate::notification::NotificationProvider;
 use crate::remote_entity_cache::RemoteEntityCacheProvider;
 use crate::revocation_list::RevocationListProvider;
 use crate::transaction_context::TransactionManagerImpl;
+use crate::verifier_instance::VerifierInstanceProvider;
 use crate::wallet_unit_attestation::WalletUnitAttestationProvider;
 use crate::wallet_unit_attested_key::WalletUnitAttestedKeyProvider;
 
@@ -86,10 +94,13 @@ pub mod proof_schema;
 pub mod remote_entity_cache;
 pub mod revocation_list;
 pub mod trust_anchor;
+pub mod trust_collection;
 pub mod trust_entity;
 pub mod trust_entry;
 pub mod trust_list_publication;
+pub mod trust_list_subscription;
 pub mod validity_credential;
+pub mod verifier_instance;
 pub mod wallet_unit;
 
 // Re-exporting the DatabaseConnection to avoid unnecessary dependency on sea_orm in cases where we only need the DB connection
@@ -109,6 +120,7 @@ pub struct DataLayer {
     credential_schema_repository: Arc<dyn CredentialSchemaRepository>,
     history_repository: Arc<dyn HistoryRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
+    identifier_trust_information_repository: Arc<dyn IdentifierTrustInformationRepository>,
     certificate_repository: Arc<dyn CertificateRepository>,
     key_repository: Arc<dyn KeyRepository>,
     json_ld_context_repository: Arc<dyn RemoteEntityCacheRepository>,
@@ -119,13 +131,16 @@ pub struct DataLayer {
     validitiy_credential_repository: Arc<dyn ValidityCredentialRepository>,
     backup_repository: Arc<dyn BackupRepository>,
     trust_anchor_repository: Arc<dyn TrustAnchorRepository>,
+    trust_collection_repository: Arc<dyn TrustCollectionRepository>,
     trust_entity_repository: Arc<dyn TrustEntityRepository>,
     trust_entry_repository: Arc<dyn TrustEntryRepository>,
     trust_list_publication_repository: Arc<dyn TrustListPublicationRepository>,
+    trust_list_subscription_repository: Arc<dyn TrustListSubscriptionRepository>,
     blob_repository: Arc<dyn BlobRepository>,
     notification_repository: Arc<dyn NotificationRepository>,
     wallet_unit_repository: Arc<dyn WalletUnitRepository>,
     holder_wallet_unit_repository: Arc<dyn HolderWalletUnitRepository>,
+    verifier_instance_repository: Arc<dyn VerifierInstanceRepository>,
     wallet_unit_attestation_repository: Arc<dyn WalletUnitAttestationRepository>,
     wallet_unit_attested_key_repository: Arc<dyn WalletUnitAttestedKeyRepository>,
 }
@@ -136,6 +151,11 @@ impl DataLayer {
         let history_repository = Arc::new(HistoryProvider {
             db: transaction_manager.clone(),
         });
+
+        let identifier_trust_information_repository =
+            Arc::new(IdentifierTrustInformationProvider {
+                db: transaction_manager.clone(),
+            });
 
         let claim_schema_repository = Arc::new(ClaimSchemaProvider {
             db: transaction_manager.clone(),
@@ -187,6 +207,7 @@ impl DataLayer {
             did_repository: did_repository.clone(),
             key_repository: key_repository.clone(),
             certificate_repository: certificate_repository.clone(),
+            trust_information_repository: identifier_trust_information_repository.clone(),
         });
 
         let proof_schema_repository = Arc::new(ProofSchemaProvider {
@@ -204,6 +225,11 @@ impl DataLayer {
 
         let trust_anchor_repository = Arc::new(TrustAnchorProvider {
             db: transaction_manager.clone(),
+        });
+
+        let trust_collection_repository = Arc::new(TrustCollectionProvider {
+            db: transaction_manager.clone(),
+            organisation_repository: organisation_repository.clone(),
         });
 
         let trust_entity_repository = Arc::new(TrustEntityProvider {
@@ -224,6 +250,11 @@ impl DataLayer {
             db: transaction_manager.clone(),
             trust_list_publication_repository: trust_list_publication_repository.clone(),
             identifier_repository: identifier_repository.clone(),
+        });
+
+        let trust_list_subscription_repository = Arc::new(TrustListSubscriptionProvider {
+            db: transaction_manager.clone(),
+            trust_collection_repository: trust_collection_repository.clone(),
         });
 
         let credential_repository = Arc::new(CredentialProvider {
@@ -286,6 +317,11 @@ impl DataLayer {
             wallet_unit_attestation_repository: wallet_unit_attestation_repository.clone(),
         });
 
+        let verifier_instance_repository = Arc::new(VerifierInstanceProvider {
+            db: transaction_manager.clone(),
+            organisation_repository: organisation_repository.clone(),
+        });
+
         Self {
             transaction_manager,
             organisation_repository,
@@ -305,15 +341,19 @@ impl DataLayer {
             validitiy_credential_repository,
             backup_repository,
             trust_anchor_repository,
+            trust_collection_repository,
             trust_entity_repository,
             trust_entry_repository,
             trust_list_publication_repository,
+            trust_list_subscription_repository,
             identifier_repository,
+            identifier_trust_information_repository,
             certificate_repository,
             blob_repository,
             notification_repository,
             wallet_unit_repository,
             holder_wallet_unit_repository,
+            verifier_instance_repository,
             wallet_unit_attestation_repository,
             wallet_unit_attested_key_repository,
         }
@@ -349,6 +389,11 @@ impl DataRepository for DataLayer {
     fn get_identifier_repository(&self) -> Arc<dyn IdentifierRepository> {
         self.identifier_repository.clone()
     }
+    fn get_identifier_trust_information_repository(
+        &self,
+    ) -> Arc<dyn IdentifierTrustInformationRepository> {
+        self.identifier_trust_information_repository.clone()
+    }
     fn get_remote_entity_cache_repository(&self) -> Arc<dyn RemoteEntityCacheRepository> {
         self.json_ld_context_repository.clone()
     }
@@ -376,6 +421,9 @@ impl DataRepository for DataLayer {
     fn get_trust_anchor_repository(&self) -> Arc<dyn TrustAnchorRepository> {
         self.trust_anchor_repository.clone()
     }
+    fn get_trust_collection_repository(&self) -> Arc<dyn TrustCollectionRepository> {
+        self.trust_collection_repository.clone()
+    }
     fn get_trust_entity_repository(&self) -> Arc<dyn TrustEntityRepository> {
         self.trust_entity_repository.clone()
     }
@@ -384,6 +432,9 @@ impl DataRepository for DataLayer {
     }
     fn get_trust_list_publication_repository(&self) -> Arc<dyn TrustListPublicationRepository> {
         self.trust_list_publication_repository.clone()
+    }
+    fn get_trust_list_subscription_repository(&self) -> Arc<dyn TrustListSubscriptionRepository> {
+        self.trust_list_subscription_repository.clone()
     }
     fn get_blob_repository(&self) -> Arc<dyn BlobRepository> {
         self.blob_repository.clone()
@@ -411,6 +462,9 @@ impl DataRepository for DataLayer {
     fn get_holder_wallet_unit_repository(&self) -> Arc<dyn HolderWalletUnitRepository> {
         self.holder_wallet_unit_repository.clone()
     }
+    fn get_verifier_instance_repository(&self) -> Arc<dyn VerifierInstanceRepository> {
+        self.verifier_instance_repository.clone()
+    }
 }
 
 /// Connects to the database and runs the pending migrations (until we externalize them)
@@ -429,6 +483,7 @@ pub async fn db_conn(
 
 mod blob;
 mod holder_wallet_unit;
+mod identifier_trust_information;
 #[cfg(any(test, feature = "test_utils"))]
 pub mod test_utilities;
 mod transaction_context;

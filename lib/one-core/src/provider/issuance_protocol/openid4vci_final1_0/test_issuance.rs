@@ -6,7 +6,7 @@ use secrecy::SecretSlice;
 use serde_json::json;
 use shared_types::{CredentialFormat, CredentialId, RevocationMethodId};
 use similar_asserts::assert_eq;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use uuid::Uuid;
 
 use super::OpenID4VCIFinal1_0;
@@ -24,7 +24,9 @@ use crate::proto::certificate_validator::MockCertificateValidator;
 use crate::proto::credential_schema::importer::MockCredentialSchemaImporter;
 use crate::proto::http_client::MockHttpClient;
 use crate::proto::identifier_creator::MockIdentifierCreator;
+use crate::proto::session_provider::NoSessionProvider;
 use crate::proto::wallet_unit::MockHolderWalletUnitProto;
+use crate::proto::wrp_validator::MockWRPValidator;
 use crate::provider::blob_storage_provider::{MockBlobStorage, MockBlobStorageProvider};
 use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
@@ -42,6 +44,9 @@ use crate::provider::revocation::MockRevocationMethod;
 use crate::provider::revocation::model::CredentialRevocationInfo;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
+use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
+use crate::repository::history_repository::MockHistoryRepository;
+use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
 use crate::service::test_utilities::{dummy_identifier, dummy_organisation, generic_config};
@@ -54,8 +59,8 @@ async fn test_issuer_submit_succeeds() {
 
     let key = Key {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         public_key: b"public_key".to_vec(),
         name: "key name".to_string(),
         key_reference: Some(b"private_key".to_vec()),
@@ -172,6 +177,7 @@ async fn test_issuer_submit_succeeds() {
         Arc::new(MockIdentifierCreator::new()),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(MockValidityCredentialRepository::new()),
+        Arc::new(MockCredentialSchemaRepository::new()),
         Arc::new(formatter_provider),
         Arc::new(revocation_method_provider),
         Arc::new(MockDidMethodProvider::new()),
@@ -195,11 +201,16 @@ async fn test_issuer_submit_succeeds() {
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         },
         "OPENID4VCI_FINAL1".to_string(),
         Arc::new(MockHolderWalletUnitProto::new()),
+        Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     let result = provider
@@ -323,6 +334,7 @@ async fn test_issue_credential_for_mdoc_creates_validity_credential() {
         Arc::new(MockIdentifierCreator::new()),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(validity_credential_repository),
+        Arc::new(MockCredentialSchemaRepository::new()),
         Arc::new(formatter_provider),
         Arc::new(MockRevocationMethodProvider::default()),
         Arc::new(MockDidMethodProvider::new()),
@@ -346,11 +358,16 @@ async fn test_issue_credential_for_mdoc_creates_validity_credential() {
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         },
         "OPENID4VCI_FINAL1".to_string(),
         Arc::new(MockHolderWalletUnitProto::new()),
+        Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     service
@@ -415,7 +432,7 @@ async fn test_issue_credential_for_existing_mdoc_creates_new_validity_credential
         .return_once(move |_, _| {
             Ok(Some(ValidityCredential {
                 id: Uuid::new_v4(),
-                created_date: OffsetDateTime::now_utc() - Duration::days(5),
+                created_date: crate::clock::now_utc() - Duration::days(5),
                 credential: vec![1, 2, 3],
                 linked_credential_id: credential_id,
                 r#type: ValidityCredentialType::Mdoc,
@@ -463,6 +480,7 @@ async fn test_issue_credential_for_existing_mdoc_creates_new_validity_credential
         Arc::new(MockIdentifierCreator::new()),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(validity_credential_repository),
+        Arc::new(MockCredentialSchemaRepository::new()),
         Arc::new(formatter_provider),
         Arc::new(MockRevocationMethodProvider::new()),
         Arc::new(MockDidMethodProvider::new()),
@@ -486,11 +504,16 @@ async fn test_issue_credential_for_existing_mdoc_creates_new_validity_credential
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         },
         "OPENID4VCI_FINAL1".to_string(),
         Arc::new(MockHolderWalletUnitProto::new()),
+        Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     service
@@ -528,7 +551,7 @@ async fn test_issue_credential_for_existing_mdoc_with_expected_update_in_the_fut
         .return_once(move |_, _| {
             Ok(Some(ValidityCredential {
                 id: Uuid::new_v4(),
-                created_date: OffsetDateTime::now_utc() - Duration::days(1),
+                created_date: crate::clock::now_utc() - Duration::days(1),
                 credential: vec![1, 2, 3],
                 linked_credential_id: credential_id,
                 r#type: ValidityCredentialType::Mdoc,
@@ -565,6 +588,7 @@ async fn test_issue_credential_for_existing_mdoc_with_expected_update_in_the_fut
         Arc::new(MockIdentifierCreator::new()),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(validity_credential_repository),
+        Arc::new(MockCredentialSchemaRepository::new()),
         Arc::new(MockCredentialFormatterProvider::new()),
         Arc::new(MockRevocationMethodProvider::new()),
         Arc::new(MockDidMethodProvider::new()),
@@ -588,11 +612,16 @@ async fn test_issue_credential_for_existing_mdoc_with_expected_update_in_the_fut
             nonce: None,
             oauth_attestation_leeway: 60,
             key_attestation_leeway: 60,
+            request_signed_metadata: false,
             common: CommonParams { webhook_task: None },
         },
         "OPENID4VCI_FINAL1".to_string(),
         Arc::new(MockHolderWalletUnitProto::new()),
+        Arc::new(MockHolderWalletUnitRepository::new()),
         Arc::new(MockCertificateValidator::new()),
+        Arc::new(MockWRPValidator::new()),
+        Arc::new(MockHistoryRepository::new()),
+        Arc::new(NoSessionProvider),
     );
 
     assert!(matches!(
@@ -652,9 +681,9 @@ fn dummy_credential() -> Credential {
     let credential_id = Uuid::new_v4().into();
     Credential {
         id: credential_id,
-        created_date: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
         issuance_date: None,
-        last_modified: OffsetDateTime::now_utc(),
+        last_modified: crate::clock::now_utc(),
         deleted_at: None,
         protocol: "protocol".to_string(),
         redirect_uri: None,
@@ -664,8 +693,8 @@ fn dummy_credential() -> Credential {
         claims: Some(vec![Claim {
             id: Uuid::new_v4().into(),
             credential_id,
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             value: Some("claim value".to_string()),
             path: "key".to_string(),
             selectively_disclosable: false,
@@ -673,8 +702,8 @@ fn dummy_credential() -> Credential {
                 id: claim_schema_id,
                 key: "key".to_string(),
                 data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 array: false,
                 metadata: false,
                 required: true,
@@ -687,8 +716,8 @@ fn dummy_credential() -> Credential {
             id: Uuid::new_v4().into(),
             imported_source_url: "CORE_URL".to_string(),
             deleted_at: None,
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             key_storage_security: Some(KeyStorageSecurity::Basic),
             name: "schema".to_string(),
             format: "JWT".into(),
@@ -697,8 +726,8 @@ fn dummy_credential() -> Credential {
                 id: claim_schema_id,
                 key: "key".to_string(),
                 data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 array: false,
                 metadata: false,
                 required: true,
@@ -713,9 +742,9 @@ fn dummy_credential() -> Credential {
         }),
         interaction: Some(Interaction {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
             data: Some(b"interaction data".to_vec()),
-            last_modified: OffsetDateTime::now_utc(),
+            last_modified: crate::clock::now_utc(),
             organisation: None,
             nonce_id: None,
             interaction_type: InteractionType::Issuance,
@@ -733,8 +762,8 @@ fn dummy_credential() -> Credential {
 fn dummy_did() -> Did {
     Did {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         name: "John".to_string(),
         did: "did:example:123".parse().unwrap(),
         did_type: DidType::Local,
@@ -749,8 +778,8 @@ fn dummy_did() -> Did {
 fn dummy_key() -> Key {
     Key {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         public_key: b"public_key".to_vec(),
         name: "key name".to_string(),
         key_reference: Some(b"private_key".to_vec()),

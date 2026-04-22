@@ -8,13 +8,14 @@ pub(crate) mod signature;
 pub(crate) mod sts;
 pub(crate) mod wallet_provider;
 
+use std::ops::Add;
 use std::str::FromStr;
 
 use core_server::{AuthMode, ServerConfig};
 use hex_literal::hex;
 use one_core::config::core_config::{self, AppConfig, InputFormat};
 use one_core::model::blob::Blob;
-use one_core::model::certificate::Certificate;
+use one_core::model::certificate::{Certificate, CertificateRole, CertificateState};
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::claim_schema::{ClaimSchema, ClaimSchemaRelations};
 use one_core::model::credential::{
@@ -41,6 +42,7 @@ use one_core::model::proof_schema::{
 use one_core::repository::DataRepository;
 use one_crypto::encryption::encrypt_string;
 use one_crypto::utilities::generate_alphanumeric;
+use rcgen::CertificateParams;
 use sea_orm::sqlx::{Executor, raw_sql};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 use secrecy::{SecretSlice, SecretString};
@@ -51,11 +53,14 @@ use shared_types::{
 use similar_asserts::assert_eq;
 use sql_data_provider::test_utilities::*;
 use sql_data_provider::{DataLayer, DbConn};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use url::Url;
 use uuid::Uuid;
 
+use crate::fixtures::certificate::{create_ca_cert, create_cert, ecdsa, eddsa};
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::certificates::TestingCertificateParams;
+use crate::utils::db_clients::keys::eddsa_testing_params;
 use crate::utils::db_clients::proof_schemas::CreateProofInputSchema;
 
 pub fn unwrap_or_random(op: Option<String>) -> String {
@@ -314,7 +319,7 @@ pub async fn create_key(
     params: Option<TestingKeyParams>,
 ) -> Key {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let params = params.unwrap_or_default();
 
     let key = Key {
@@ -410,7 +415,7 @@ pub async fn create_did(
     params: Option<TestingDidParams>,
 ) -> Did {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let params = params.unwrap_or_default();
 
     let did_id = params.id.unwrap_or(DidId::from(Uuid::new_v4()));
@@ -460,7 +465,7 @@ pub async fn create_identifier(
     params: Option<TestingIdentifierParams>,
 ) -> Identifier {
     let data_layer = DataLayer::build(db_conn.to_owned(), vec![]);
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let params = params.unwrap_or_default();
 
     let id = params.id.unwrap_or(IdentifierId::from(Uuid::new_v4()));
@@ -477,6 +482,7 @@ pub async fn create_identifier(
         r#type: params.r#type.unwrap_or(IdentifierType::Did),
         is_remote: params.is_remote.unwrap_or_default(),
         deleted_at: params.deleted_at,
+        trust_information: None,
     };
 
     data_layer
@@ -485,6 +491,76 @@ pub async fn create_identifier(
         .await
         .unwrap();
 
+    identifier
+}
+
+#[derive(Debug, Default)]
+pub struct TestingCertIdentifierParams {
+    pub created_date: Option<OffsetDateTime>,
+    pub last_modified: Option<OffsetDateTime>,
+    pub expiry_date: Option<OffsetDateTime>,
+    pub name: Option<String>,
+    pub chain: Option<String>,
+    pub fingerprint: Option<String>,
+    pub state: Option<CertificateState>,
+    pub roles: Vec<CertificateRole>,
+}
+
+pub async fn create_cert_identifier(
+    context: &TestContext,
+    organisation: &Organisation,
+    params: Option<TestingCertIdentifierParams>,
+) -> Identifier {
+    let key = context
+        .db
+        .keys
+        .create(organisation, eddsa_testing_params())
+        .await;
+    let mut ca_params = CertificateParams::default();
+    let (ca_cert, ca_issuer) = create_ca_cert(&mut ca_params, ecdsa::Key);
+    let cert = create_cert(
+        &mut CertificateParams::default(),
+        eddsa::Key,
+        &ca_issuer,
+        &ca_params,
+    );
+    let identifier_id = Uuid::new_v4().into();
+
+    let params = params.unwrap_or_default();
+    let now = one_core::clock::now_utc();
+    let certificate = Certificate {
+        id: Uuid::new_v4().into(),
+        identifier_id,
+        organisation_id: Some(organisation.id),
+        created_date: params.created_date.unwrap_or(now),
+        last_modified: params.last_modified.unwrap_or(now),
+        expiry_date: params.expiry_date.unwrap_or(now.add(Duration::minutes(10))),
+        name: params.name.unwrap_or("test cert 2".to_string()),
+        chain: params
+            .chain
+            .unwrap_or(format!("{}{}", cert.pem(), ca_cert.pem())),
+        fingerprint: params.fingerprint.unwrap_or("ffffaaaa22".to_string()),
+        state: params.state.unwrap_or(CertificateState::Active),
+        roles: params.roles,
+        key: Some(key.clone()),
+    };
+    let identifier = context
+        .db
+        .identifiers
+        .create(
+            organisation,
+            TestingIdentifierParams {
+                r#type: Some(IdentifierType::Certificate),
+                certificates: Some(vec![certificate.clone()]),
+                ..Default::default()
+            },
+        )
+        .await;
+    context
+        .db
+        .certificates
+        .create(identifier.id, TestingCertificateParams::from(certificate))
+        .await;
     identifier
 }
 
@@ -523,7 +599,7 @@ pub async fn create_credential_schema(
     let claim_schemas = vec![claim_schema.to_owned()];
 
     let params = params.unwrap_or_default();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let id = params
         .id
         .unwrap_or(CredentialSchemaId::from(Uuid::new_v4()));
@@ -678,8 +754,8 @@ pub async fn create_interaction_with_id(
 
     let interaction = Interaction {
         id,
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: one_core::clock::now_utc(),
+        last_modified: one_core::clock::now_utc(),
         data: Some(data.into()),
         organisation: Some(organisation.to_owned()),
         nonce_id: None,
@@ -821,12 +897,12 @@ pub async fn create_proof(
         | ProofStateEnum::Requested
         | ProofStateEnum::Accepted
         | ProofStateEnum::Rejected
-        | ProofStateEnum::Error => Some(OffsetDateTime::now_utc()),
+        | ProofStateEnum::Error => Some(one_core::clock::now_utc()),
         _ => None,
     };
 
     let completed_date = match state {
-        ProofStateEnum::Accepted | ProofStateEnum::Rejected => Some(OffsetDateTime::now_utc()),
+        ProofStateEnum::Accepted | ProofStateEnum::Rejected => Some(one_core::clock::now_utc()),
         _ => None,
     };
 

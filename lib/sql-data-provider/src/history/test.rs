@@ -436,6 +436,7 @@ async fn test_create_history() {
             metadata: None,
             organisation_id: Some(organisation.id),
             user: Some("testUser".to_string()),
+            metadata_blob_id: None,
         })
         .await;
 
@@ -888,7 +889,7 @@ async fn test_history_org_stats_empty_hourly() {
         ..
     } = setup_empty().await;
 
-    let from = OffsetDateTime::now_utc();
+    let from = one_core::clock::now_utc();
     let to = from + Duration::days(1);
     let result = provider
         .organisation_stats(Some(from), to, organisation.id, true)
@@ -907,7 +908,7 @@ async fn test_history_org_stats_empty_daily() {
         ..
     } = setup_empty().await;
 
-    let from = OffsetDateTime::now_utc();
+    let from = one_core::clock::now_utc();
     let to = from + Duration::days(30);
     let result = provider
         .organisation_stats(Some(from), to, organisation.id, true)
@@ -926,7 +927,7 @@ async fn test_history_org_stats_empty_monthly() {
         ..
     } = setup_empty().await;
 
-    let from = OffsetDateTime::now_utc();
+    let from = one_core::clock::now_utc();
     let to = from + Duration::days(365);
     let result = provider
         .organisation_stats(Some(from), to, organisation.id, true)
@@ -945,7 +946,7 @@ async fn test_history_org_stats_empty_yearly() {
         ..
     } = setup_empty().await;
 
-    let from = OffsetDateTime::now_utc();
+    let from = one_core::clock::now_utc();
     let to = from + Duration::days(4 * 365);
     let result = provider
         .organisation_stats(Some(from), to, organisation.id, true)
@@ -1000,7 +1001,7 @@ async fn test_history_org_stats_ignore_irrelevant() {
         .unwrap();
 
     let org_id = organisation.id;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     // Irrelevant: wrong action
     add_history(
@@ -1083,7 +1084,7 @@ async fn test_history_org_stats_dummy_data() {
         ..
     } = setup_empty().await;
     let org_id = organisation.id;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     add_history(
         &db,
@@ -1208,7 +1209,7 @@ async fn test_history_org_stats_dummy_data() {
 async fn test_system_history_empty() {
     let TestSetup { provider, .. } = setup_empty().await;
 
-    let from = OffsetDateTime::now_utc();
+    let from = one_core::clock::now_utc();
     let to = from + Duration::days(2 * 365);
     let result = provider.system_stats(Some(from), to, 5).await.unwrap();
 
@@ -1240,7 +1241,7 @@ async fn test_system_history_stats_dummy_data() {
         ..
     } = setup_empty().await;
     let org_id = organisation.id;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     add_history(
         &db,
@@ -1398,7 +1399,7 @@ async fn test_system_history_stats_dummy_data_multiple_orgs() {
     let org2_id = insert_organisation_to_database(&db, None, None)
         .await
         .unwrap();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     multi_org_test_data(org_id, org2_id, credential_id, proof_id, now, &db).await;
 
     let from = now - Duration::days(1);
@@ -1450,7 +1451,7 @@ async fn test_system_history_stats_dummy_data_multiple_orgs() {
 #[tokio::test]
 async fn test_issuer_org_history_stats_dummy_data() {
     let day = Duration::days(1);
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let TestSetup {
         provider,
         organisation,
@@ -1599,7 +1600,7 @@ async fn test_system_interaction_history_stats() {
     let org2_id = insert_organisation_to_database(&db, None, None)
         .await
         .unwrap();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     multi_org_test_data(org_id, org2_id, credential_id, proof_id, now, &db).await;
 
     let from = now - Duration::days(1);
@@ -1647,7 +1648,7 @@ async fn test_system_interaction_pagination() {
         credential_id,
         ..
     } = setup_empty().await;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     for i in 0..10 {
         let org = insert_organisation_to_database(&db, None, None)
             .await
@@ -1894,6 +1895,7 @@ async fn add_history(
         source: Set(history::HistorySource::Core),
         target: Set(None),
         user: Set(None),
+        metadata_blob_id: Set(None),
     }
     .insert(database)
     .await

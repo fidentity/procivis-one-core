@@ -1,8 +1,10 @@
+use one_core::model::trust_anchor::ExactTrustAnchorFilterColumn;
+use one_core::service::error::ServiceError;
 use one_core::service::trust_anchor::dto::{
     CreateTrustAnchorRequestDTO, GetTrustAnchorDetailResponseDTO, SortableTrustAnchorColumn,
-    TrustAnchorsListItemResponseDTO,
+    TrustAnchorFilterParamsDTO, TrustAnchorsListItemResponseDTO,
 };
-use one_dto_mapper::{From, Into};
+use one_dto_mapper::{From, Into, TryInto, convert_inner, convert_inner_of_inner};
 use serde::{Deserialize, Serialize};
 use shared_types::TrustAnchorId;
 use time::OffsetDateTime;
@@ -73,28 +75,34 @@ pub(crate) struct ListTrustAnchorsResponseItemRestDTO {
     pub entities: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[into(ExactTrustAnchorFilterColumn)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ExactTrustAnchorFilterColumnRestEnum {
     Name,
     Type,
 }
 
-#[derive(Clone, Debug, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Deserialize, IntoParams, TryInto)]
+#[try_into(T = TrustAnchorFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside ListTrustAnchorsQuery
 pub(crate) struct TrustAnchorsFilterQueryParamsRest {
     /// Return only trust anchors with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by trust anchors either published or subscribed to.
+    #[try_into(infallible, with_fn = convert_inner)]
     #[param(inline, nullable = false)]
     pub is_publisher: Option<Boolean>,
     /// Return only trust anchors with a type starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub r#type: Option<String>,
     /// Set which filters apply in an exact way.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactTrustAnchorFilterColumnRestEnum>>,
 
@@ -102,21 +110,25 @@ pub(crate) struct TrustAnchorsFilterQueryParamsRest {
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only trust anchors created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only trust anchors last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only trust anchors last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 

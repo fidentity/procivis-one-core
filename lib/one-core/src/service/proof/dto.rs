@@ -8,7 +8,7 @@ use time::OffsetDateTime;
 use crate::model::common::GetListResponse;
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
 use crate::model::list_query::ListQuery;
-use crate::model::proof::{ProofRole, ProofStateEnum, SortableProofColumn};
+use crate::model::proof::{ExactProofFilterColumn, ProofRole, ProofStateEnum, SortableProofColumn};
 use crate::provider::verification_protocol::openid4vp::model::ClientIdScheme;
 use crate::service::certificate::dto::CertificateResponseDTO;
 use crate::service::credential::dto::{
@@ -125,6 +125,27 @@ pub enum ProofFilterValue {
 impl ListFilterValue for ProofFilterValue {}
 
 pub type GetProofQueryDTO = ListQuery<SortableProofColumn, ProofFilterValue>;
+
+#[derive(Clone, Debug)]
+pub struct ProofFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactProofFilterColumn>>,
+    pub states: Option<Vec<ProofStateEnum>>,
+    pub roles: Option<Vec<ProofRole>>,
+    pub ids: Option<Vec<ProofId>>,
+    pub proof_schema_ids: Option<Vec<ProofSchemaId>>,
+    pub verifier_ids: Option<Vec<IdentifierId>>,
+    pub profiles: Option<Vec<String>>,
+    pub organisation_id: OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+    pub requested_date_after: Option<OffsetDateTime>,
+    pub requested_date_before: Option<OffsetDateTime>,
+    pub completed_date_after: Option<OffsetDateTime>,
+    pub completed_date_before: Option<OffsetDateTime>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ProposeProofResponseDTO {

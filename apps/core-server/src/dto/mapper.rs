@@ -2,8 +2,9 @@ use one_core::error::ErrorCodeMixin;
 use one_core::model::list_filter::ListFilterCondition;
 use one_core::model::list_query::{ListPagination, ListQuery, ListSorting};
 use one_core::proto::session_provider::SessionProvider;
+use one_core::service::common_dto::ListQueryDTO;
 use one_core::service::error::{BusinessLogicError, ServiceError};
-use one_dto_mapper::convert_inner;
+use one_dto_mapper::{convert_inner, convert_inner_of_inner};
 use shared_types::OrganisationId;
 use strum::EnumMessage;
 use utoipa::openapi::path::ParameterIn;
@@ -70,6 +71,30 @@ where
 
         params.append(&mut Filter::into_params(|| Some(ParameterIn::Query)));
         params
+    }
+}
+
+impl<FilterRest, SortableColumnRest, IncludeRest, Filter, SortableColumn, Include>
+    TryFrom<ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>>
+    for ListQueryDTO<SortableColumn, Filter, Include>
+where
+    FilterRest: TryInto<Filter>,
+    SortableColumnRest: Into<SortableColumn>,
+    IncludeRest: Into<Include>,
+{
+    type Error = FilterRest::Error;
+
+    fn try_from(
+        value: ListQueryParamsRest<FilterRest, SortableColumnRest, IncludeRest>,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            page: value.page,
+            page_size: value.page_size.inner(),
+            filter: value.filter.try_into()?,
+            sort: convert_inner(value.sort),
+            sort_direction: convert_inner(value.sort_direction),
+            include: convert_inner_of_inner(value.include),
+        })
     }
 }
 

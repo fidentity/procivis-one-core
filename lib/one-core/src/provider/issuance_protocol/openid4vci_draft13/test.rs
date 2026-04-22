@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use shared_types::CredentialFormat;
 use similar_asserts::assert_eq;
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use url::Url;
 use uuid::Uuid;
 use wiremock::http::Method;
@@ -136,7 +136,7 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VCI13 {
 }
 
 fn generic_credential_did() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let issuer_did = Did {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
             .unwrap()
@@ -167,12 +167,13 @@ fn generic_credential_did() -> Credential {
         did: Some(issuer_did),
         key: None,
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
 
 fn generic_credential_certificate() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let id = Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
         .unwrap()
         .into();
@@ -201,14 +202,16 @@ fn generic_credential_certificate() -> Credential {
             chain: "<dummy test cert chain>".to_string(),
             fingerprint: "123456".to_string(),
             state: CertificateState::Active,
+            roles: vec![],
             key: None,
         }]),
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
 
 fn generic_credential_key() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let issuer_key = Key {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
             .unwrap()
@@ -240,12 +243,13 @@ fn generic_credential_key() -> Credential {
         did: None,
         key: Some(issuer_key),
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
 
 fn generic_credential(issuer_identifier: Identifier) -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let claim_schema = ClaimSchema {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
@@ -564,6 +568,7 @@ async fn test_handle_invitation_credential_by_ref_with_did_success() {
                     organisation: did.organisation,
                     key: None,
                     certificates: None,
+                    trust_information: None,
                 },
                 relation,
             ))
@@ -633,9 +638,9 @@ async fn test_holder_accept_credential_success() {
             {
                    "access_token": "321",
                    "token_type": "bearer",
-                   "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                    "refresh_token": "321",
-                   "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -678,8 +683,8 @@ async fn test_holder_accept_credential_success() {
                     Ok(DetailCredential {
                         id: None,
                         issuance_date: None,
-                        valid_from: Some(OffsetDateTime::now_utc() - Duration::days(1)),
-                        valid_until: Some(OffsetDateTime::now_utc() + Duration::days(1)),
+                        valid_from: Some(crate::clock::now_utc() - Duration::days(1)),
+                        valid_until: Some(crate::clock::now_utc() + Duration::days(1)),
                         update_at: None,
                         invalid_before: None,
                         issuer: IdentifierDetails::Did(dummy_did().did),
@@ -781,7 +786,6 @@ async fn test_holder_accept_credential_success() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -853,9 +857,9 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             {
                    "access_token": "321",
                    "token_type": "bearer",
-                   "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                    "refresh_token": "321",
-                   "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -897,8 +901,8 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
                         Ok(DetailCredential {
                             id: None,
                             issuance_date: None,
-                            valid_from: Some(OffsetDateTime::now_utc() - Duration::days(1)),
-                            valid_until: Some(OffsetDateTime::now_utc() + Duration::days(1)),
+                            valid_from: Some(crate::clock::now_utc() - Duration::days(1)),
+                            valid_until: Some(crate::clock::now_utc() + Duration::days(1)),
                             update_at: None,
                             invalid_before: None,
                             issuer: IdentifierDetails::Key(jwk.clone()),
@@ -1018,7 +1022,6 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await
         .unwrap();
@@ -1086,9 +1089,9 @@ async fn test_holder_accept_expired_credential_fails() {
             {
                    "access_token": "321",
                    "token_type": "bearer",
-                   "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                    "refresh_token": "321",
-                   "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -1222,7 +1225,6 @@ async fn test_holder_accept_expired_credential_fails() {
             }),
             &storage_access,
             None,
-            None,
         )
         .await;
 
@@ -1320,7 +1322,6 @@ async fn test_holder_accept_tx_code_invalid() {
             }),
             &storage_access,
             Some("code".to_string()),
-            None,
         )
         .await;
 
@@ -1388,9 +1389,9 @@ async fn test_holder_reject_credential() {
             {
                    "access_token": "321",
                    "token_type": "bearer",
-                   "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                    "refresh_token": "321",
-                   "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                   "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -1570,13 +1571,16 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
         let token_endpoint = format!("{credential_issuer}/token");
         metadata_cache
             .expect_get()
-            .with(eq(format!(
-                "{credential_issuer}/.well-known/oauth-authorization-server"
-            )))
+            .with(
+                eq(format!(
+                    "{credential_issuer}/.well-known/oauth-authorization-server"
+                )),
+                eq("application/json"),
+            )
             .once()
             .returning({
                 let credential_issuer = credential_issuer.clone();
-                move |_| {
+                move |_, _| {
                     Ok(json!({
                             "authorization_endpoint": format!("{credential_issuer}/authorize"),
                             "grant_types_supported": [
@@ -1601,11 +1605,14 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
     } else {
         metadata_cache
             .expect_get()
-            .with(eq(format!(
-                "{credential_issuer}/.well-known/oauth-authorization-server"
-            )))
+            .with(
+                eq(format!(
+                    "{credential_issuer}/.well-known/oauth-authorization-server"
+                )),
+                eq("application/json"),
+            )
             .once()
-            .returning(|_| {
+            .returning(|_, _| {
                 Err(ResolverError::InvalidResponse("".to_string())
                     .error_while("checking cache")
                     .into())
@@ -1614,11 +1621,14 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
 
     metadata_cache
         .expect_get()
-        .with(eq(format!(
-            "{credential_issuer}/.well-known/openid-credential-issuer"
-        )))
+        .with(
+            eq(format!(
+                "{credential_issuer}/.well-known/openid-credential-issuer"
+            )),
+            eq("application/json"),
+        )
         .once()
-        .returning(move |_| {
+        .returning(move |_, _| {
             Ok(json!({
                 "credential_endpoint": format!("{credential_issuer}/credential"),
                 "credential_issuer": credential_issuer,
@@ -1731,11 +1741,11 @@ async fn inner_continue_issuance_test(
     if openid_configuration_enabled {
         metadata_cache
             .expect_get()
-            .with(eq(auth_server_metadata_url))
+            .with(eq(auth_server_metadata_url), eq("application/json"))
             .once()
             .returning({
                 let credential_issuer = credential_issuer.clone();
-                move |_| {
+                move |_, _| {
                     Ok(json!({
                         "authorization_endpoint": format!("{credential_issuer}/authorize"),
                         "grant_types_supported": [
@@ -1759,9 +1769,9 @@ async fn inner_continue_issuance_test(
     } else {
         metadata_cache
             .expect_get()
-            .with(eq(auth_server_metadata_url))
+            .with(eq(auth_server_metadata_url), eq("application/json"))
             .once()
-            .returning(|_| {
+            .returning(|_, _| {
                 Err(ResolverError::InvalidResponse("".to_string())
                     .error_while("checking cache")
                     .into())
@@ -1770,13 +1780,16 @@ async fn inner_continue_issuance_test(
 
     metadata_cache
         .expect_get()
-        .with(eq(format!(
-            "{credential_issuer}/.well-known/openid-credential-issuer"
-        )))
+        .with(
+            eq(format!(
+                "{credential_issuer}/.well-known/openid-credential-issuer"
+            )),
+            eq("application/json"),
+        )
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_, _| {
                 Ok(json!({
                     "credential_endpoint": format!("{credential_issuer}/credential"),
                     "credential_issuer": credential_issuer,
@@ -2589,8 +2602,11 @@ async fn test_can_handle_issuance_success_with_custom_url_scheme() {
     let mut metadata_cache = MockOpenIDMetadataFetcher::new();
     metadata_cache
         .expect_get()
-        .with(eq("http://base_url/.well-known/openid-credential-issuer"))
-        .returning(|_| Ok(dummy_issuer_metadata()));
+        .with(
+            eq("http://base_url/.well-known/openid-credential-issuer"),
+            eq("application/json"),
+        )
+        .returning(|_, _| Ok(dummy_issuer_metadata()));
 
     let protocol = setup_protocol(TestInputs {
         params: Some(test_params(url_scheme)),

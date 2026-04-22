@@ -22,11 +22,15 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::ServerConfig;
 use crate::authentication::{Authentication, authentication};
 use crate::dto::response::ErrorResponse;
+use crate::endpoint::trust_collection::controller::{
+    delete_trust_list_subscription, get_trust_list_subscription_entries,
+    post_trust_list_subscription,
+};
 use crate::endpoint::{
     cache, certificate, config, credential, credential_schema, did, did_resolver, history,
     holder_wallet_unit, identifier, interaction, jsonld, key, misc, organisation, proof,
-    proof_schema, signature, ssi, statistics, task, trust_anchor, trust_entity,
-    trust_list_publication, vc_api, wallet_provider,
+    proof_schema, signature, ssi, statistics, task, trust_anchor, trust_collection, trust_entity,
+    trust_list_publication, vc_api, verifier_instance, wallet_provider,
 };
 use crate::middleware::{UserInfo, get_http_request_context};
 use crate::openapi::gen_openapi_documentation;
@@ -361,6 +365,10 @@ fn get_management_endpoints(
                 post(identifier::controller::resolve_trust_entity),
             )
             .route(
+                "/api/identifier/v1/resolve-trust-entries",
+                post(identifier::controller::resolve_trust_entries),
+            )
+            .route(
                 "/api/identifier/v1/{id}",
                 get(identifier::controller::get_identifier)
                     .delete(identifier::controller::delete_identifier),
@@ -460,7 +468,12 @@ fn get_management_endpoints(
             )
             .route(
                 "/api/holder-wallet-unit/v1/{id}",
-                get(holder_wallet_unit::controller::wallet_unit_holder_details),
+                get(holder_wallet_unit::controller::wallet_unit_holder_details)
+                    .patch(holder_wallet_unit::controller::edit_holder_wallet_unit),
+            )
+            .route(
+                "/api/holder-wallet-unit/v1/{id}/trust-collections",
+                get(holder_wallet_unit::controller::get_holder_wallet_unit_trust_collections),
             )
             .route(
                 "/api/holder-wallet-unit/v1/{id}/status",
@@ -513,6 +526,36 @@ fn get_management_endpoints(
                 "/api/trust-list/v1/{list_id}/entry/{entry_id}",
                 patch(trust_list_publication::controller::patch_trust_entry)
                     .delete(trust_list_publication::controller::delete_trust_entry),
+            )
+            .route(
+                "/api/trust-collection/v1",
+                get(trust_collection::controller::get_trust_collection_list)
+                    .post(trust_collection::controller::post_trust_collection),
+            )
+            .route(
+                "/api/trust-collection/v1/{id}",
+                get(trust_collection::controller::get_trust_collection)
+                    .delete(trust_collection::controller::delete_trust_collection),
+            )
+            .route(
+                "/api/trust-collection/v1/{trust_collection_id}/trust-list",
+                get(get_trust_list_subscription_entries).post(post_trust_list_subscription),
+            )
+            .route(
+                "/api/trust-collection/v1/{trust_collection_id}/trust-list/{trust_list_id}",
+                delete(delete_trust_list_subscription),
+            )
+            .route(
+                "/api/verifier-instance/v1",
+                post(verifier_instance::controller::register_verifier_instance),
+            )
+            .route(
+                "/api/verifier-instance/v1/{id}",
+                patch(verifier_instance::controller::edit_verifier_instance),
+            )
+            .route(
+                "/api/verifier-instance/v1/{id}/trust-collections",
+                get(verifier_instance::controller::get_verifier_instance_trust_collections),
             );
 
         if config.enable_signature_endpoints {
@@ -584,11 +627,11 @@ fn get_external_endpoints(
                 post(ssi::issuance::draft13::controller::oid4vci_draft13_credential_notification),
             )
             .route(
-                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
                 get(ssi::issuance::final1_0::controller::oid4vci_final1_0_get_issuer_metadata),
             )
             .route(
-                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}",
+                "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}",
                 get(ssi::issuance::final1_0::controller::oid4vci_final1_0_oauth_authorization_server),
             )
             .route(
@@ -770,6 +813,10 @@ fn get_external_endpoints(
             .route(
                 "/ssi/trust-list/v1/{id}",
                 get(ssi::controller::ssi_get_trust_list_publication),
+            )
+            .route(
+                "/ssi/trust-collection/v1/{id}",
+                get(ssi::controller::ssi_get_trust_collection),
             )
     } else {
         if let Some(paths) = openapi_paths {

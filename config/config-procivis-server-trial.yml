@@ -26,14 +26,18 @@ walletProvider:
           minimum: "v1.50.0"
         eudiWalletInfo:
           providerName: "Procivis One Trial"
+        featureFlags:
+          trustEcosystemsEnabled: false
+        legacyTrustManagementEnabled: true
 verifierProvider:
   PROCIVIS_ONE:
     params:
       public:
         verifierName: "Procivis One Verifier"
+        featureFlags:
+          trustEcosystemsEnabled: false
+        legacyTrustManagementEnabled: true
 signer:
-  ACCESS_CERTIFICATE:
-    enabled: false
   REGISTRATION_CERTIFICATE:
     params:
       private:

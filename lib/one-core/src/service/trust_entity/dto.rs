@@ -12,7 +12,9 @@ use crate::model::certificate::CertificateState;
 use crate::model::common::GetListResponse;
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
 use crate::model::list_query::ListQuery;
-use crate::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
+use crate::model::trust_entity::{
+    ExactTrustEntityFilterColumn, TrustEntityRole, TrustEntityState, TrustEntityType,
+};
 use crate::service::certificate::dto::CertificateX509ExtensionDTO;
 use crate::service::common_dto::{BoundedB64Image, KB};
 use crate::service::did::dto::DidListItemResponseDTO;
@@ -203,6 +205,23 @@ pub enum TrustEntityFilterValue {
 }
 
 impl ListFilterValue for TrustEntityFilterValue {}
+
+#[derive(Clone, Debug)]
+pub struct TrustEntityFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactTrustEntityFilterColumn>>,
+    pub role: Option<TrustEntityRole>,
+    pub did_id: Option<DidId>,
+    pub trust_anchor: Option<TrustAnchorId>,
+    pub organisation_id: Option<OrganisationId>,
+    pub types: Option<Vec<TrustEntityType>>,
+    pub states: Option<Vec<TrustEntityState>>,
+    pub entity_key: Option<TrustEntityKey>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
 
 #[skip_serializing_none]
 #[derive(Clone, Debug, Serialize)]

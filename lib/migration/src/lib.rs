@@ -220,7 +220,21 @@ mod m20260303_142434_no_more_optional_proof_schemas;
 mod m20260310_114455_migrate_none_revocation_credential_schemas;
 mod m20260310_162410_fix_trust_list_publication_sequence_number_type;
 mod m20260313_120000_sync_trust_list_publication_and_entry_with_model;
+mod m20260316_120000_rename_status_to_state;
+mod m20260316_143109_trust_collection_subscription;
+mod m20260318_113035_holder_wallet_unit_key_optional;
+mod m20260319_161207_trust_collection_remote_url;
+mod m20260320_085842_holder_wallet_unit_unique;
+mod m20260323_044118_add_verifier_instance_table;
+mod m20260330_094048_add_identifier_trust_info;
+mod m20260331_090207_fix_trust_unique_indexes;
+mod m20260331_132248_certificate_roles;
+mod m20260410_120000_history_metadata_to_text;
+mod m20260410_130000_add_metadata_blob_to_history;
+mod m20260410_133852_openid_metadata_cache_types;
+mod m20260413_125543_delete_cert_metadata;
 mod migrate_enum;
+mod soft_delete_unique_idx;
 
 pub struct Migrator;
 
@@ -440,6 +454,19 @@ impl MigratorTrait for Migrator {
             Box::new(m20260310_114455_migrate_none_revocation_credential_schemas::Migration),
             Box::new(m20260310_162410_fix_trust_list_publication_sequence_number_type::Migration),
             Box::new(m20260313_120000_sync_trust_list_publication_and_entry_with_model::Migration),
+            Box::new(m20260316_120000_rename_status_to_state::Migration),
+            Box::new(m20260316_143109_trust_collection_subscription::Migration),
+            Box::new(m20260318_113035_holder_wallet_unit_key_optional::Migration),
+            Box::new(m20260319_161207_trust_collection_remote_url::Migration),
+            Box::new(m20260320_085842_holder_wallet_unit_unique::Migration),
+            Box::new(m20260323_044118_add_verifier_instance_table::Migration),
+            Box::new(m20260330_094048_add_identifier_trust_info::Migration),
+            Box::new(m20260331_090207_fix_trust_unique_indexes::Migration),
+            Box::new(m20260331_132248_certificate_roles::Migration),
+            Box::new(m20260410_120000_history_metadata_to_text::Migration),
+            Box::new(m20260410_130000_add_metadata_blob_to_history::Migration),
+            Box::new(m20260410_133852_openid_metadata_cache_types::Migration),
+            Box::new(m20260413_125543_delete_cert_metadata::Migration),
         ]
     }
 }

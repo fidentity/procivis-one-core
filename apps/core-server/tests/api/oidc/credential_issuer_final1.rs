@@ -1,10 +1,175 @@
+use dcql::CredentialFormat;
+use mime::Mime;
+use one_core::mapper::x509::pem_chain_into_x5c;
+use one_core::model::blob::BlobType;
+use one_core::model::certificate::CertificateRole;
+use one_core::model::credential_schema::CredentialSchema;
+use one_core::model::identifier::Identifier;
+use one_core::model::identifier_trust_information::SchemaFormat;
+use one_core::proto::jwt::Jwt;
 use serde_json::Value;
 use similar_asserts::assert_eq;
+use uuid::Uuid;
 
+use crate::fixtures::{TestingCertIdentifierParams, create_cert_identifier};
 use crate::utils::context::TestContext;
+use crate::utils::db_clients::blobs::TestingBlobParams;
+use crate::utils::db_clients::identifier_trust_information::TestingIdentifierTrustInformationParams;
 
 #[tokio::test]
-async fn test_get_credential_issuer_metadata_jwt() {
+async fn test_get_credential_issuer_metadata_json() {
+    // GIVEN
+    let (context, organisation, identifier, ..) =
+        TestContext::new_with_certificate_identifier(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create_with_nested_hell("test_schema", &organisation, None, Default::default())
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .ssi
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            mime::APPLICATION_JSON.into(),
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let resp = resp.json_value().await;
+    assert_issuer_metadata(&context, &identifier, &credential_schema, resp);
+}
+
+#[tokio::test]
+async fn test_get_credential_issuer_metadata_jwt_certificate_identifier_with_trust_information() {
+    // GIVEN
+    let (context, organisation, identifier, certificate, ..) =
+        TestContext::new_with_certificate_identifier(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create_with_nested_hell("test_schema", &organisation, None, Default::default())
+        .await;
+
+    // Attach registration certificate blobs via trust_information
+    let blob = context
+        .db
+        .blobs
+        .create(TestingBlobParams {
+            r#type: Some(BlobType::RegistrationCertificate),
+            value: Some("someTestData".as_bytes().to_vec()),
+            ..Default::default()
+        })
+        .await;
+
+    context
+        .db
+        .identifier_trust_information
+        .create(
+            identifier.id,
+            blob.id,
+            TestingIdentifierTrustInformationParams {
+                allowed_issuance_types: Some(vec![SchemaFormat {
+                    format: CredentialFormat::JwtVc,
+                    schema_id: credential_schema.schema_id.clone(),
+                }]),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .ssi
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            "application/jwt".parse::<Mime>().unwrap().into(),
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await;
+    assert!(!body.is_empty());
+    let jwt = Jwt::<serde_json::Value>::decompose_token(&body).unwrap();
+
+    assert!(jwt.header.x5c.is_some());
+    assert_eq!(
+        jwt.header.x5c.as_ref().unwrap(),
+        &pem_chain_into_x5c(&certificate.chain).unwrap()
+    );
+
+    let jwt_payload = jwt.payload.custom;
+    let issuer_info = &jwt_payload["issuer_info"][0];
+
+    assert_eq!(issuer_info["format"], "registration_cert");
+    assert_eq!(&issuer_info["data"], "someTestData");
+    assert!(issuer_info["credential_ids"].is_array());
+    assert_eq!(
+        issuer_info["credential_ids"][0]
+            .as_str()
+            .expect("credential_ids should be string"),
+        credential_schema.schema_id.as_str()
+    );
+    assert_issuer_metadata(&context, &identifier, &credential_schema, jwt_payload);
+
+    let cache_entry = context
+        .db
+        .remote_entities
+        .get_by_key(&format!(
+            "OPENID4VCI_FINAL1:{}:{}",
+            identifier.id, credential_schema.id
+        ))
+        .await;
+    assert!(cache_entry.is_some());
+    assert_eq!(cache_entry.unwrap().value, body.as_bytes());
+}
+
+#[tokio::test]
+async fn test_get_credential_issuer_metadata_jwt_with_did_identifier() {
+    // GIVEN
+    let (context, organisation, _did, identifier, ..) = TestContext::new_with_did(None).await;
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create_with_nested_hell("test_schema", &organisation, None, Default::default())
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .ssi
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            "application/jwt".parse::<Mime>().unwrap().into(),
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await;
+    assert!(!body.is_empty());
+    let jwt = Jwt::<serde_json::Value>::decompose_token(&body).unwrap();
+    assert_issuer_metadata(
+        &context,
+        &identifier,
+        &credential_schema,
+        jwt.payload.custom,
+    );
+}
+
+#[tokio::test]
+async fn test_get_credential_issuer_metadata_fails_with_invalid_accept_header() {
     // GIVEN
     let (context, organisation) = TestContext::new_with_organisation(None).await;
     let credential_schema = context
@@ -17,16 +182,63 @@ async fn test_get_credential_issuer_metadata_jwt() {
     let resp = context
         .api
         .ssi
-        .openid_credential_issuer_final1("OPENID4VCI_FINAL1", credential_schema.id)
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            Uuid::new_v4(),
+            credential_schema.id,
+            mime::APPLICATION_PDF.into(),
+        )
         .await;
 
     // THEN
-    assert_eq!(resp.status(), 200);
-    let resp = resp.json_value().await;
+    assert_eq!(resp.status(), 406);
+}
 
+#[tokio::test]
+async fn test_get_credential_issuer_metadata_fails_with_certificate_invalid_role() {
+    // GIVEN
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+    let identifier = create_cert_identifier(
+        &context,
+        &organisation,
+        Some(TestingCertIdentifierParams {
+            roles: vec![CertificateRole::AssertionMethod],
+            ..Default::default()
+        }),
+    )
+    .await;
+
+    let credential_schema = context
+        .db
+        .credential_schemas
+        .create_with_nested_hell("test_schema", &organisation, None, Default::default())
+        .await;
+
+    // WHEN
+    let resp = context
+        .api
+        .ssi
+        .openid_credential_issuer_final1(
+            "OPENID4VCI_FINAL1",
+            identifier.id,
+            credential_schema.id,
+            "application/jwt".parse::<Mime>().unwrap().into(),
+        )
+        .await;
+
+    // THEN
+    assert_eq!(resp.status(), 400);
+}
+
+fn assert_issuer_metadata(
+    context: &TestContext,
+    identifier: &Identifier,
+    credential_schema: &CredentialSchema,
+    resp: Value,
+) {
     let issuer = format!(
-        "{}/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}",
-        context.config.app.core_base_url, credential_schema.id
+        "{}/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}/{}",
+        context.config.app.core_base_url, identifier.id, credential_schema.id
     );
 
     assert_eq!(issuer, resp["credential_issuer"]);

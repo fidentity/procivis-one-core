@@ -3,7 +3,7 @@
 use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 use indoc::indoc;
 use serde::{Deserialize, Serialize};
-use shared_types::{DidValue, OrganisationId};
+use shared_types::{DidValue, IdentifierId, OrganisationId};
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -14,6 +14,7 @@ use crate::config::core_config::{
     KeyAlgorithmType, KeyStorageType, RevocationType, VerificationProtocolType,
 };
 use crate::model::blob::{Blob, BlobType};
+use crate::model::certificate::{Certificate, CertificateRole, CertificateState};
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
@@ -121,6 +122,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
                 type: 'OPENID4VCI_FINAL1'
                 params:
                     public:
+                        requestSignedMetadata: false
                         oauthAttestationLeeway: 60
                         keyAttestationLeeway: 60
                         preAuthorizedCodeExpiresIn: 300
@@ -287,6 +289,7 @@ pub fn generic_config() -> AppConfig<CustomConfig> {
         signer: {}
         verifierProvider: {}
         trustListPublisher: {}
+        trustListSubscriber: {}
     "};
 
     AppConfig::parse(vec![InputFormat::yaml_str(config)]).unwrap()
@@ -306,9 +309,9 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
 
     Credential {
         id: credential_id,
-        created_date: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
         issuance_date: None,
-        last_modified: OffsetDateTime::now_utc(),
+        last_modified: crate::clock::now_utc(),
         deleted_at: None,
         protocol: exchange.to_owned(),
         redirect_uri: None,
@@ -319,8 +322,8 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
         claims: Some(vec![Claim {
             id: Uuid::new_v4().into(),
             credential_id,
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             value: Some("claim value".to_string()),
             path: "key".to_string(),
             selectively_disclosable: false,
@@ -328,8 +331,8 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
                 id: claim_schema_id,
                 key: "key".to_string(),
                 data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 array: false,
                 metadata: false,
                 required: true,
@@ -344,8 +347,8 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
         schema: Some(CredentialSchema {
             id: Uuid::new_v4().into(),
             deleted_at: None,
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             name: "schema".to_string(),
             key_storage_security: Some(KeyStorageSecurity::Basic),
             format: "format".into(),
@@ -355,8 +358,8 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
                 id: claim_schema_id,
                 key: "key".to_string(),
                 data_type: "STRING".to_string(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 array: false,
                 metadata: false,
                 required: true,
@@ -371,8 +374,8 @@ pub fn dummy_credential_with_exchange(exchange: &str) -> Credential {
         }),
         interaction: Some(Interaction {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             data: Some(b"interaction data".to_vec()),
             organisation: None,
             nonce_id: None,
@@ -400,8 +403,8 @@ pub fn dummy_blob() -> Blob {
 pub fn dummy_did() -> Did {
     Did {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         name: "John".to_string(),
         did: "did:example:123".parse().unwrap(),
         did_type: DidType::Local,
@@ -416,8 +419,8 @@ pub fn dummy_did() -> Did {
 pub fn dummy_identifier() -> Identifier {
     Identifier {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         name: "identifier".to_string(),
         r#type: IdentifierType::Did,
         is_remote: false,
@@ -427,6 +430,27 @@ pub fn dummy_identifier() -> Identifier {
         did: None,
         key: None,
         certificates: None,
+        trust_information: None,
+    }
+}
+
+pub fn dummy_certificate(identifier_id: IdentifierId) -> Certificate {
+    Certificate {
+        id: Uuid::new_v4().into(),
+        identifier_id,
+        organisation_id: None,
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
+        expiry_date: datetime!(2042-04-02 21:37 +1),
+        name: "certificate".to_string(),
+        chain: "dummy chaing".to_string(),
+        fingerprint: "fingerprint".to_string(),
+        state: CertificateState::Active,
+        roles: vec![
+            CertificateRole::Authentication,
+            CertificateRole::AssertionMethod,
+        ],
+        key: None,
     }
 }
 
@@ -437,8 +461,8 @@ pub fn dummy_proof() -> Proof {
 pub fn dummy_proof_with_protocol(protocol: &str) -> Proof {
     Proof {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         protocol: protocol.to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
@@ -448,8 +472,8 @@ pub fn dummy_proof_with_protocol(protocol: &str) -> Proof {
         completed_date: None,
         schema: Some(ProofSchema {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             imported_source_url: Some("CORE_URL".to_string()),
             deleted_at: None,
             name: "dummy".to_string(),
@@ -472,8 +496,8 @@ pub fn dummy_proof_with_protocol(protocol: &str) -> Proof {
 pub fn dummy_key() -> Key {
     Key {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         public_key: vec![],
         name: "dummy".into(),
         key_reference: None,
@@ -488,8 +512,8 @@ pub fn dummy_organisation(id: Option<OrganisationId>) -> Organisation {
     Organisation {
         name: format!("{id}"),
         id,
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         deactivated_at: None,
         wallet_provider: None,
         wallet_provider_issuer: None,
@@ -499,8 +523,8 @@ pub fn dummy_organisation(id: Option<OrganisationId>) -> Organisation {
 pub fn dummy_proof_schema() -> ProofSchema {
     ProofSchema {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         deleted_at: None,
         imported_source_url: Some("CORE_URL".to_string()),
         name: "Proof schema".to_string(),
@@ -514,8 +538,8 @@ pub fn dummy_credential_schema() -> CredentialSchema {
     CredentialSchema {
         id: Uuid::new_v4().into(),
         deleted_at: None,
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         name: "name".to_string(),
         key_storage_security: None,
         imported_source_url: "CORE_URL".to_string(),
@@ -537,8 +561,8 @@ pub fn dummy_claim_schema() -> ClaimSchema {
         id: Uuid::new_v4().into(),
         key: "key".to_string(),
         data_type: "data type".to_string(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         array: false,
         metadata: false,
         required: true,

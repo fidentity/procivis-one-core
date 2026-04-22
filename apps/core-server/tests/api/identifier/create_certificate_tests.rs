@@ -4,12 +4,12 @@ use rcgen::{
 };
 use serde_json::json;
 use similar_asserts::assert_eq;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use validator::ValidateLength;
 
 use crate::fixtures::certificate::{create_ca_cert, create_cert, create_crl, ecdsa, eddsa};
 use crate::utils::context::TestContext;
-use crate::utils::db_clients::keys::ecdsa_testing_params;
+use crate::utils::db_clients::keys::{ecdsa_testing_params, eddsa_testing_params};
 use crate::utils::field_match::FieldHelpers;
 
 #[tokio::test]
@@ -397,10 +397,48 @@ async fn test_create_certificate_identifier_no_crl() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
+}
+
+#[tokio::test]
+async fn test_create_certificate_identifier_empty_role() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let mut ca_params = CertificateParams::default();
+    let (ca_cert, ca_issuer) = create_ca_cert(&mut ca_params, &eddsa::Key);
+
+    let cert = create_cert(
+        &mut CertificateParams::default(),
+        ecdsa::Key,
+        &ca_issuer,
+        &ca_params,
+    );
+
+    let chain = format!("{}{}", cert.pem(), ca_cert.pem());
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain, &[])
+        .await;
+
+    assert_eq!(result.status(), 400);
+    assert_eq!(result.error_code().await, "BR_0409");
 }
 
 #[tokio::test]
@@ -430,12 +468,18 @@ async fn test_create_certificate_identifier_crl_not_available() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     // http client error
     assert_eq!(result.status(), 400);
-    assert_eq!(result.error_code().await, "BR_0347");
+    assert_eq!(result.error_code().await, "BR_0395");
 }
 
 #[tokio::test]
@@ -450,10 +494,10 @@ async fn test_create_certificate_identifier_with_crl() {
 
     let mut ca_params = CertificateParams::default();
     let crl_params = CertificateRevocationListParams {
-        this_update: OffsetDateTime::now_utc()
+        this_update: one_core::clock::now_utc()
             .checked_sub(Duration::hours(1))
             .unwrap(),
-        next_update: OffsetDateTime::now_utc()
+        next_update: one_core::clock::now_utc()
             .checked_add(Duration::hours(24))
             .unwrap(),
         crl_number: vec![0].into(),
@@ -478,7 +522,13 @@ async fn test_create_certificate_identifier_with_crl() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
@@ -543,12 +593,12 @@ async fn test_create_certificate_identifier_with_crl_revoked() {
     params.serial_number = Some(serial_number.clone());
     let cert = create_cert(&mut params, ecdsa::Key, &ca_issuer, &ca_params);
 
-    let one_hour_before = OffsetDateTime::now_utc()
+    let one_hour_before = one_core::clock::now_utc()
         .checked_sub(Duration::hours(1))
         .unwrap();
     let crl_params = CertificateRevocationListParams {
         this_update: one_hour_before,
-        next_update: OffsetDateTime::now_utc()
+        next_update: one_core::clock::now_utc()
             .checked_add(Duration::hours(24))
             .unwrap(),
         crl_number: vec![0].into(),
@@ -571,7 +621,13 @@ async fn test_create_certificate_identifier_with_crl_revoked() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -603,7 +659,13 @@ async fn test_create_certificate_identifier_cert_already_exists() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 201);
@@ -611,11 +673,54 @@ async fn test_create_certificate_identifier_cert_already_exists() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier2", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier2",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
     assert_eq!(result.error_code().await, "BR_0247");
+}
+
+#[tokio::test]
+async fn test_create_certificate_identifier_conflicting_certs() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let mut ca_params = CertificateParams::default();
+    let (ca_cert, ca_issuer) = create_ca_cert(&mut ca_params, &eddsa::Key);
+
+    let cert = create_cert(
+        &mut CertificateParams::default(),
+        ecdsa::Key,
+        &ca_issuer,
+        &ca_params,
+    );
+
+    let chain = format!("{}{}", cert.pem(), ca_cert.pem());
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_identifier_multiple_certs(
+            "test-identifier",
+            organisation.id,
+            &[(key.id, &chain), (key.id, &chain)],
+            &["ASSERTION_METHOD"],
+        )
+        .await;
+
+    assert_eq!(result.status(), 400);
+    assert_eq!(result.error_code().await, "BR_0408");
 }
 
 #[tokio::test]
@@ -643,7 +748,13 @@ async fn test_create_certificate_identifier_unknown_critical_extension() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -675,7 +786,13 @@ async fn test_create_certificate_identifier_ca_incorrect_key_usage() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
@@ -707,9 +824,215 @@ async fn test_create_certificate_identifier_missing_digital_signature() {
     let result = context
         .api
         .identifiers
-        .create_certificate_identifier("test-identifier", key.id, organisation.id, &chain)
+        .create_certificate_identifier(
+            "test-identifier",
+            key.id,
+            organisation.id,
+            &chain,
+            &["ASSERTION_METHOD"],
+        )
         .await;
 
     assert_eq!(result.status(), 400);
     assert_eq!(result.error_code().await, "BR_0249"); // Key usage violation
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_create_certificate_authority_self_signed_and_certificate_mdl_profile() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let ca_key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let cert_key = context
+        .db
+        .keys
+        .create(&organisation, eddsa_testing_params())
+        .await;
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_authority_identifier_self_signed(
+            "CA-identifier",
+            ca_key.id,
+            organisation.id,
+            "CA",
+            "X509_CERTIFICATE",
+            Some("http://issuer.alternative.name"),
+        )
+        .await;
+
+    assert_eq!(result.status(), 201);
+    let resp = result.json_value().await;
+    let ca_identifier_id = resp["id"].as_str().unwrap().parse().unwrap();
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_identifier_ca_signed(
+            "cert-identifier",
+            cert_key.id,
+            organisation.id,
+            ca_identifier_id,
+            "Cert",
+            "X509_CERTIFICATE",
+            "MDL",
+            &["ASSERTION_METHOD"],
+        )
+        .await;
+
+    assert_eq!(result.status(), 201);
+    let resp = result.json_value().await;
+    let cert_identifier_id = resp["id"].as_str().unwrap().parse().unwrap();
+
+    let result = context.api.identifiers.get(&cert_identifier_id).await;
+    assert_eq!(result.status(), 200);
+    let resp = result.json_value().await;
+
+    assert_eq!(resp["name"].as_str().unwrap(), "cert-identifier");
+    assert_eq!(resp["type"].as_str().unwrap(), "CERTIFICATE");
+    assert_eq!(resp["state"].as_str().unwrap(), "ACTIVE");
+    assert!(!resp["isRemote"].as_bool().unwrap());
+    assert_eq!(
+        resp["organisationId"].as_str().unwrap(),
+        organisation.id.to_string()
+    );
+    assert_eq!(resp["certificates"].as_array().length().unwrap(), 1);
+
+    let certificate = &resp["certificates"][0];
+    assert_eq!(certificate["name"].as_str().unwrap(), "Cert");
+    assert_eq!(certificate["state"].as_str().unwrap(), "ACTIVE");
+    assert_eq!(
+        certificate["x509Attributes"]["issuer"].as_str().unwrap(),
+        "CN=CA"
+    );
+    assert_eq!(
+        certificate["x509Attributes"]["subject"].as_str().unwrap(),
+        "CN=Cert"
+    );
+
+    let extensions = certificate["x509Attributes"]["extensions"]
+        .as_array()
+        .unwrap();
+    assert!(extensions.contains(&json!({
+        "critical": false,
+        "oid": "2.5.29.18", // issuer alternative name
+        "value": "URI(http://issuer.alternative.name)",
+    })));
+    assert!(extensions.contains(&json!({
+        "critical": true,
+        "oid": "2.5.29.15", // key usage
+        "value": "digitalSignature"
+    })));
+    assert!(extensions.contains(&json!({
+        "critical": true,
+        "oid": "2.5.29.37", // extended key usage
+        "value": "1.0.18013.5.1.2"
+    })));
+
+    let certificate_id = certificate["id"].as_str().unwrap().parse().unwrap();
+    let result = context.api.certificates.get(&certificate_id).await;
+    assert_eq!(result.status(), 200);
+    let resp = result.json_value().await;
+    resp["id"].assert_eq(&certificate_id);
+    resp["organisationId"].assert_eq(&organisation.id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_create_certificate_authority_self_signed_and_certificate_generic_profile() {
+    let (context, organisation) = TestContext::new_with_organisation(None).await;
+
+    let ca_key = context
+        .db
+        .keys
+        .create(&organisation, ecdsa_testing_params())
+        .await;
+
+    let cert_key = context
+        .db
+        .keys
+        .create(&organisation, eddsa_testing_params())
+        .await;
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_authority_identifier_self_signed(
+            "CA-identifier",
+            ca_key.id,
+            organisation.id,
+            "CA",
+            "X509_CERTIFICATE",
+            None,
+        )
+        .await;
+
+    assert_eq!(result.status(), 201);
+    let resp = result.json_value().await;
+    let ca_identifier_id = resp["id"].as_str().unwrap().parse().unwrap();
+
+    let result = context
+        .api
+        .identifiers
+        .create_certificate_identifier_ca_signed(
+            "cert-identifier",
+            cert_key.id,
+            organisation.id,
+            ca_identifier_id,
+            "Cert",
+            "X509_CERTIFICATE",
+            "GENERIC",
+            &["ASSERTION_METHOD"],
+        )
+        .await;
+
+    assert_eq!(result.status(), 201);
+    let resp = result.json_value().await;
+    let cert_identifier_id = resp["id"].as_str().unwrap().parse().unwrap();
+
+    let result = context.api.identifiers.get(&cert_identifier_id).await;
+    assert_eq!(result.status(), 200);
+    let resp = result.json_value().await;
+
+    assert_eq!(resp["name"].as_str().unwrap(), "cert-identifier");
+    assert_eq!(resp["type"].as_str().unwrap(), "CERTIFICATE");
+    assert_eq!(resp["state"].as_str().unwrap(), "ACTIVE");
+    assert!(!resp["isRemote"].as_bool().unwrap());
+    assert_eq!(
+        resp["organisationId"].as_str().unwrap(),
+        organisation.id.to_string()
+    );
+    assert_eq!(resp["certificates"].as_array().length().unwrap(), 1);
+
+    let certificate = &resp["certificates"][0];
+    assert_eq!(certificate["name"].as_str().unwrap(), "Cert");
+    assert_eq!(certificate["state"].as_str().unwrap(), "ACTIVE");
+    assert_eq!(
+        certificate["x509Attributes"]["issuer"].as_str().unwrap(),
+        "CN=CA"
+    );
+    assert_eq!(
+        certificate["x509Attributes"]["subject"].as_str().unwrap(),
+        "CN=Cert"
+    );
+
+    let extensions = certificate["x509Attributes"]["extensions"]
+        .as_array()
+        .unwrap();
+    assert!(extensions.contains(&json!({
+        "critical": true,
+        "oid": "2.5.29.15", // key usage
+        "value": "digitalSignature"
+    })));
+
+    let certificate_id = certificate["id"].as_str().unwrap().parse().unwrap();
+    let result = context.api.certificates.get(&certificate_id).await;
+    assert_eq!(result.status(), 200);
+    let resp = result.json_value().await;
+    resp["id"].assert_eq(&certificate_id);
+    resp["organisationId"].assert_eq(&organisation.id);
 }

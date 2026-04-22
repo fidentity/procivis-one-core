@@ -3,14 +3,14 @@ use std::str::FromStr;
 
 use core_server::ServerConfig;
 use one_core::config::core_config::AppConfig;
-use one_core::model::certificate::{Certificate, CertificateState};
+use one_core::model::certificate::{Certificate, CertificateRole, CertificateState};
 use one_core::model::did::{Did, DidType, KeyRole, RelatedKey};
 use one_core::model::identifier::{Identifier, IdentifierType};
 use one_core::model::key::Key;
 use one_core::model::organisation::Organisation;
 use rcgen::CertificateParams;
 use shared_types::DidValue;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use tokio::task::JoinHandle;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -180,7 +180,7 @@ impl TestContext {
         );
 
         let identifier_id = Uuid::new_v4().into();
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
         let certificate = Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
@@ -192,6 +192,10 @@ impl TestContext {
             chain: format!("{}{}", cert.pem(), ca_cert.pem()),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
+            roles: vec![
+                CertificateRole::Authentication,
+                CertificateRole::AssertionMethod,
+            ],
             key: Some(key.clone()),
         };
 
@@ -229,7 +233,7 @@ impl TestContext {
         let (ca_cert, _) = create_ca_cert(&mut ca_params, ecdsa::Key);
 
         let identifier_id = Uuid::new_v4().into();
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
         let certificate = Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
@@ -241,6 +245,10 @@ impl TestContext {
             chain: ca_cert.pem(),
             fingerprint: "ffffaaaa".to_string(),
             state: CertificateState::Active,
+            roles: vec![
+                CertificateRole::Authentication,
+                CertificateRole::AssertionMethod,
+            ],
             key: Some(key.clone()),
         };
 

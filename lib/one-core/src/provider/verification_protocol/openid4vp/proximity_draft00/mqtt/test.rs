@@ -147,8 +147,8 @@ async fn test_handle_invitation_success() {
             Ok((
                 Identifier {
                     id: Uuid::new_v4().into(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
+                    created_date: crate::clock::now_utc(),
+                    last_modified: crate::clock::now_utc(),
                     name: "verifier".to_string(),
                     organisation: None,
                     did: None,
@@ -158,11 +158,12 @@ async fn test_handle_invitation_success() {
                     is_remote: true,
                     state: IdentifierState::Active,
                     deleted_at: None,
+                    trust_information: None,
                 },
                 RemoteIdentifierRelation::Did(Did {
                     id: Uuid::new_v4().into(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
+                    created_date: crate::clock::now_utc(),
+                    last_modified: crate::clock::now_utc(),
                     name: "did".to_string(),
                     did: did.did_value().unwrap().to_owned(),
                     did_type: DidType::Remote,
@@ -236,12 +237,7 @@ async fn test_handle_invitation_success() {
             credentials: vec![],
             credential_sets: None,
         }),
-        response_type: None,
-        response_mode: None,
-        client_metadata: None,
-        response_uri: None,
-        state: None,
-        redirect_uri: None,
+        ..Default::default()
     };
     let signed = request_as_signed_jwt(request, &verifier_did, Box::new(auth_fn))
         .await
@@ -346,7 +342,7 @@ async fn test_presentation_reject_success() {
             );
 
             let timestamp: i64 = verifier_encryption.decrypt(&data).unwrap();
-            let now = OffsetDateTime::now_utc();
+            let now = crate::clock::now_utc();
             let timestamp_date = OffsetDateTime::from_unix_timestamp(timestamp).unwrap();
             let diff = now - timestamp_date;
             assert!(diff < Duration::minutes(5));

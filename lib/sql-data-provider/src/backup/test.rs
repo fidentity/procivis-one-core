@@ -180,6 +180,7 @@ async fn insert_certificate_to_database(
         fingerprint: Set(format!("fingerprint:{identifier_id}").parse().unwrap()),
         identifier_id: Set(identifier_id),
         organisation_id: Set(organisation_id),
+        roles: Set(Some("AUTHENTICATION".to_string())),
     }
     .insert(database)
     .await

@@ -1,28 +1,25 @@
 use std::collections::HashMap;
 
-use one_core::model::certificate::CertificateState;
+use one_core::model::certificate::{CertificateRole, CertificateState};
 use one_core::model::identifier::{
-    IdentifierFilterValue, IdentifierListQuery, IdentifierState, IdentifierType,
-    SortableIdentifierColumn,
+    ExactIdentifierFilterColumn, IdentifierState, IdentifierType, SortableIdentifierColumn,
 };
-use one_core::model::list_filter::{
-    ComparisonType, ListFilterValue, StringMatch, StringMatchType, ValueComparison,
-};
-use one_core::model::list_query::{ListPagination, ListSorting};
 use one_core::service::certificate::dto::{
     CertificateResponseDTO, CertificateX509AttributesDTO, CertificateX509ExtensionDTO,
     CreateCertificateRequestDTO,
 };
 use one_core::service::did::dto::{DidResponseDTO, DidResponseKeysDTO};
 use one_core::service::identifier::dto::{
-    CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
-    CreateIdentifierRequestDTO, CreateSelfSignedCertificateAuthorityContentRequestDTO,
+    CertificateRolesMatchMode, CreateCertificateAuthorityRequestDTO, CreateIdentifierKeyRequestDTO,
+    CreateIdentifierRequestDTO, CreateIdentifierTrustInformationRequestDTO,
+    CreateSelfSignedCertificateAuthorityContentRequestDTO,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest,
     CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType,
     CreateSelfSignedCertificateAuthorityRequestDTO, GetIdentifierListItemResponseDTO,
-    GetIdentifierListResponseDTO, GetIdentifierResponseDTO,
+    GetIdentifierListResponseDTO, GetIdentifierResponseDTO, IdentifierTrustInformationResponseDTO,
+    IdentifierTrustInformationType,
 };
-use one_core::service::key::dto::{KeyListItemResponseDTO, KeyResponseDTO};
+use one_core::service::key::dto::KeyResponseDTO;
 use one_dto_mapper::{
     From, Into, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
     try_convert_inner_of_inner,
@@ -30,14 +27,15 @@ use one_dto_mapper::{
 
 use super::common::SortDirection;
 use super::did::{DidTypeBindingEnum, KeyRoleBindingEnum};
-use crate::OneCoreBinding;
-use crate::binding::key::KeyGenerateCSRRequestSubjectBindingDTO;
-use crate::binding::mapper::deserialize_timestamp;
+use super::key::{KeyGenerateCSRRequestSubjectBindingDTO, KeyListItemBindingDTO};
+use crate::OneCore;
+use crate::binding::mapper::optional_time;
 use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, from_id_opt, into_id, into_id_opt, into_timestamp_opt};
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
+    /// Creates a new identifier.
     #[uniffi::method]
     pub async fn create_identifier(
         &self,
@@ -51,6 +49,7 @@ impl OneCoreBinding {
             .to_string())
     }
 
+    /// Returns a filterable list of identifiers.
     #[uniffi::method]
     pub async fn list_identifiers(
         &self,
@@ -58,119 +57,9 @@ impl OneCoreBinding {
     ) -> Result<GetIdentifierListBindingDTO, BindingError> {
         let core = self.use_core().await?;
 
-        let organisation_id = into_id(&query.organisation_id)?;
-        let condition = {
-            let exact = query.exact.unwrap_or_default();
-            let get_string_match_type = |column| {
-                if exact.contains(&column) {
-                    StringMatchType::Equals
-                } else {
-                    StringMatchType::StartsWith
-                }
-            };
-
-            let organisation = IdentifierFilterValue::OrganisationId(organisation_id).condition();
-
-            let name = query.name.map(|name| {
-                IdentifierFilterValue::Name(StringMatch {
-                    r#match: get_string_match_type(ExactIdentifierFilterColumnBindingEnum::Name),
-                    value: name,
-                })
-            });
-
-            let types = query
-                .types
-                .map(|types| IdentifierFilterValue::Types(convert_inner(types)));
-
-            let state = query
-                .states
-                .map(|states| IdentifierFilterValue::States(convert_inner(states)));
-
-            let did_methods = query.did_methods.map(IdentifierFilterValue::DidMethods);
-
-            let is_remote = query.is_remote.map(IdentifierFilterValue::IsRemote);
-
-            let key_algorithms = query
-                .key_algorithms
-                .map(IdentifierFilterValue::KeyAlgorithms);
-
-            let key_roles = query.key_roles.map(|roles| {
-                IdentifierFilterValue::KeyRoles(roles.into_iter().map(Into::into).collect())
-            });
-
-            let key_storages = query.key_storages.map(IdentifierFilterValue::KeyStorages);
-
-            let created_date_after = query
-                .created_date_after
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
-                        comparison: ComparisonType::GreaterThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-            let created_date_before = query
-                .created_date_before
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::CreatedDate(ValueComparison {
-                        comparison: ComparisonType::LessThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-
-            let last_modified_after = query
-                .last_modified_after
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
-                        comparison: ComparisonType::GreaterThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-            let last_modified_before = query
-                .last_modified_before
-                .map(|date| {
-                    Ok::<_, BindingError>(IdentifierFilterValue::LastModified(ValueComparison {
-                        comparison: ComparisonType::LessThanOrEqual,
-                        value: deserialize_timestamp(&date)?,
-                    }))
-                })
-                .transpose()?;
-
-            organisation
-                & name
-                & types
-                & state
-                & did_methods
-                & is_remote
-                & key_algorithms
-                & key_roles
-                & key_storages
-                & created_date_after
-                & created_date_before
-                & last_modified_after
-                & last_modified_before
-        };
-
-        let sorting = query.sort.map(|sort| ListSorting {
-            column: sort.into(),
-            direction: query.sort_direction.map(Into::into),
-        });
-
-        let query = IdentifierListQuery {
-            pagination: Some(ListPagination {
-                page: query.page,
-                page_size: query.page_size,
-            }),
-            sorting,
-            filtering: Some(condition),
-            include: None,
-        };
-
         Ok(core
             .identifier_service
-            .get_identifier_list(&organisation_id, query)
+            .get_identifier_list(query.try_into()?)
             .await?
             .into())
     }
@@ -195,6 +84,7 @@ impl OneCoreBinding {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetIdentifierListResponseDTO)]
+#[uniffi(name = "IdentifierList")]
 pub struct GetIdentifierListBindingDTO {
     #[from(with_fn = convert_inner)]
     pub values: Vec<GetIdentifierListItemBindingDTO>,
@@ -204,6 +94,7 @@ pub struct GetIdentifierListBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetIdentifierResponseDTO)]
+#[uniffi(name = "IdentifierDetail")]
 pub struct GetIdentifierBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -223,10 +114,33 @@ pub struct GetIdentifierBindingDTO {
     pub key: Option<KeyResponseBindingDTO>,
     #[from(with_fn = convert_inner_of_inner )]
     pub certificates: Option<Vec<CertificateResponseBindingDTO>>,
+    #[from(with_fn = convert_inner)]
+    pub trust_information: Vec<IdentifierTrustInformationResponseBindingDTO>,
+}
+
+#[derive(Clone, Debug, From, uniffi::Record)]
+#[from(IdentifierTrustInformationResponseDTO)]
+#[uniffi(name = "IdentifierTrustInformationResponseDTO")]
+pub(crate) struct IdentifierTrustInformationResponseBindingDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeBindingEnum,
+    #[from(with_fn = optional_time)]
+    pub valid_from: Option<String>,
+    #[from(with_fn = optional_time)]
+    pub valid_to: Option<String>,
+}
+
+#[derive(Clone, Debug, Into, From, uniffi::Enum)]
+#[into(IdentifierTrustInformationType)]
+#[from(IdentifierTrustInformationType)]
+#[uniffi(name = "IdentifierTrustInformationType")]
+pub enum IdentifierTrustInformationTypeBindingEnum {
+    RegistrationCertificate,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(DidResponseDTO)]
+#[uniffi(name = "DidDetail")]
 pub struct DidResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -246,36 +160,23 @@ pub struct DidResponseBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(DidResponseKeysDTO)]
+#[uniffi(name = "DidKeys")]
 pub struct DidResponseKeysBindingDTO {
     #[from(with_fn = convert_inner)]
-    pub authentication: Vec<KeyListItemResponseBindingDTO>,
+    pub authentication: Vec<KeyListItemBindingDTO>,
     #[from(with_fn = convert_inner)]
-    pub assertion_method: Vec<KeyListItemResponseBindingDTO>,
+    pub assertion_method: Vec<KeyListItemBindingDTO>,
     #[from(with_fn = convert_inner)]
-    pub key_agreement: Vec<KeyListItemResponseBindingDTO>,
+    pub key_agreement: Vec<KeyListItemBindingDTO>,
     #[from(with_fn = convert_inner)]
-    pub capability_invocation: Vec<KeyListItemResponseBindingDTO>,
+    pub capability_invocation: Vec<KeyListItemBindingDTO>,
     #[from(with_fn = convert_inner)]
-    pub capability_delegation: Vec<KeyListItemResponseBindingDTO>,
-}
-
-#[derive(Clone, Debug, From, uniffi::Record)]
-#[from(KeyListItemResponseDTO)]
-pub struct KeyListItemResponseBindingDTO {
-    #[from(with_fn_ref = "ToString::to_string")]
-    pub id: String,
-    #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
-    pub created_date: String,
-    #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
-    pub last_modified: String,
-    pub name: String,
-    pub public_key: Vec<u8>,
-    pub key_type: String,
-    pub storage_type: String,
+    pub capability_delegation: Vec<KeyListItemBindingDTO>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(KeyResponseDTO)]
+#[uniffi(name = "KeyDetail")]
 pub struct KeyResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -293,6 +194,7 @@ pub struct KeyResponseBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(CertificateResponseDTO)]
+#[uniffi(name = "CertificateDetail")]
 pub struct CertificateResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -306,13 +208,25 @@ pub struct CertificateResponseBindingDTO {
     pub name: String,
     pub chain: String,
     #[from(with_fn = convert_inner)]
-    pub key: Option<KeyListItemResponseBindingDTO>,
+    pub key: Option<KeyListItemBindingDTO>,
     pub x509_attributes: CertificateX509AttributesBindingDTO,
+    #[from(with_fn = convert_inner)]
+    pub roles: Vec<CertificateRoleBindingEnum>,
+}
+
+#[derive(Clone, Debug, Into, From, uniffi::Enum)]
+#[into(CertificateRole)]
+#[from(CertificateRole)]
+#[uniffi(name = "CertificateRole")]
+pub enum CertificateRoleBindingEnum {
+    Authentication,
+    AssertionMethod,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
 #[into(CertificateState)]
 #[from(CertificateState)]
+#[uniffi(name = "CertificateState")]
 pub enum CertificateStateBindingEnum {
     NotYetActive,
     Active,
@@ -322,6 +236,7 @@ pub enum CertificateStateBindingEnum {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(CertificateX509AttributesDTO)]
+#[uniffi(name = "CertificateX509Attributes")]
 pub struct CertificateX509AttributesBindingDTO {
     pub serial_number: String,
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
@@ -337,6 +252,7 @@ pub struct CertificateX509AttributesBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(CertificateX509ExtensionDTO)]
+#[uniffi(name = "CertificateX509Extension")]
 pub struct CertificateX509ExtensionBindingDTO {
     pub oid: String,
     pub value: String,
@@ -345,6 +261,7 @@ pub struct CertificateX509ExtensionBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetIdentifierListItemResponseDTO)]
+#[uniffi(name = "IdentifierListItem")]
 pub struct GetIdentifierListItemBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -361,6 +278,7 @@ pub struct GetIdentifierListItemBindingDTO {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "IdentifierListQuery")]
 pub struct IdentifierListQueryBindingDTO {
     pub page: u32,
     pub page_size: u32,
@@ -369,6 +287,7 @@ pub struct IdentifierListQueryBindingDTO {
     pub sort_direction: Option<SortDirection>,
 
     pub organisation_id: String,
+    pub ids: Option<Vec<String>>,
     pub name: Option<String>,
     pub types: Option<Vec<IdentifierTypeBindingEnum>>,
     pub states: Option<Vec<IdentifierStateBindingEnum>>,
@@ -378,6 +297,10 @@ pub struct IdentifierListQueryBindingDTO {
     pub key_algorithms: Option<Vec<String>>,
     pub key_roles: Option<Vec<KeyRoleBindingEnum>>,
     pub key_storages: Option<Vec<String>>,
+    pub certificate_roles: Option<Vec<CertificateRoleBindingEnum>>,
+    pub certificate_roles_match_mode: Option<CertificateRolesMatchModeBindingEnum>,
+    pub trust_issuance_schema_id: Option<String>,
+    pub trust_verification_schema_id: Option<String>,
 
     pub created_date_after: Option<String>,
     pub created_date_before: Option<String>,
@@ -387,6 +310,7 @@ pub struct IdentifierListQueryBindingDTO {
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
 #[into(SortableIdentifierColumn)]
+#[uniffi(name = "SortableIdentifierColumn")]
 pub enum SortableIdentifierColumnBindingEnum {
     Name,
     CreatedDate,
@@ -394,14 +318,26 @@ pub enum SortableIdentifierColumnBindingEnum {
     State,
 }
 
-#[derive(Clone, Debug, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, PartialEq, uniffi::Enum, Into)]
+#[uniffi(name = "IdentifierListQueryExactColumn")]
+#[into(ExactIdentifierFilterColumn)]
 pub enum ExactIdentifierFilterColumnBindingEnum {
     Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum, Into)]
+#[uniffi(name = "CertificateRolesMatchMode")]
+#[into(CertificateRolesMatchMode)]
+/// The mode used to match certificate roles. Default any.
+pub enum CertificateRolesMatchModeBindingEnum {
+    All,
+    Any,
 }
 
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
 #[into(IdentifierType)]
 #[from(IdentifierType)]
+#[uniffi(name = "IdentifierType")]
 pub enum IdentifierTypeBindingEnum {
     Key,
     Did,
@@ -412,6 +348,7 @@ pub enum IdentifierTypeBindingEnum {
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
 #[into(IdentifierState)]
 #[from(IdentifierState)]
+#[uniffi(name = "IdentifierState")]
 pub enum IdentifierStateBindingEnum {
     Active,
     Deactivated,
@@ -419,6 +356,7 @@ pub enum IdentifierStateBindingEnum {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateIdentifierRequestDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "CreateIdentifierRequest")]
 pub struct CreateIdentifierRequestBindingDTO {
     #[try_into(with_fn_ref = into_id)]
     pub organisation_id: String,
@@ -435,9 +373,20 @@ pub struct CreateIdentifierRequestBindingDTO {
     pub certificates: Option<Vec<CreateCertificateRequestBindingDTO>>,
     #[try_into(with_fn = try_convert_inner_of_inner)]
     pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestBindingDTO>>,
+    #[try_into(with_fn = convert_inner, infallible)]
+    pub trust_information: Vec<CreateIdentifierTrustInformationRequestBindingDTO>,
+}
+
+#[derive(Clone, Debug, Into, uniffi::Record)]
+#[into(CreateIdentifierTrustInformationRequestDTO)]
+#[uniffi(name = "CreateIdentifierTrustInformationRequest")]
+pub struct CreateIdentifierTrustInformationRequestBindingDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationTypeBindingEnum,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "CreateIdentifierDidRequest")]
 pub struct CreateIdentifierDidRequestBindingDTO {
     pub name: Option<String>,
     pub method: String,
@@ -447,24 +396,38 @@ pub struct CreateIdentifierDidRequestBindingDTO {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateIdentifierKeyRequestDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "CreateIdentifierKeyRequest")]
 pub struct CreateIdentifierKeyRequestBindingDTO {
     #[try_into(with_fn = into_id)]
     pub key_id: String,
 }
 
-#[derive(Clone, Debug, TryInto, uniffi::Record)]
-#[try_into(T = CreateCertificateRequestDTO, Error = ErrorResponseBindingDTO)]
+#[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "CreateCertificateRequest")]
 pub struct CreateCertificateRequestBindingDTO {
-    #[try_into(infallible)]
     pub name: Option<String>,
-    #[try_into(infallible)]
     pub chain: String,
-    #[try_into(with_fn_ref = "into_id")]
     pub key_id: String,
+    pub roles: Vec<CertificateRoleBindingEnum>,
+}
+
+impl TryFrom<CreateCertificateRequestBindingDTO> for CreateCertificateRequestDTO {
+    type Error = ErrorResponseBindingDTO;
+
+    fn try_from(value: CreateCertificateRequestBindingDTO) -> Result<Self, Self::Error> {
+        Ok(Self {
+            name: value.name,
+            chain: Some(value.chain),
+            key_id: into_id(value.key_id)?,
+            content: None,
+            roles: convert_inner(value.roles),
+        })
+    }
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateCertificateAuthorityRequestDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "CreateCertificateAuthorityRequest")]
 pub struct CreateCertificateAuthorityRequestBindingDTO {
     #[try_into(with_fn = convert_inner, infallible)]
     pub name: Option<String>,
@@ -478,6 +441,7 @@ pub struct CreateCertificateAuthorityRequestBindingDTO {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = CreateSelfSignedCertificateAuthorityRequestDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "CreateSelfSignedCertificateAuthorityRequest")]
 pub struct CreateSelfSignedCertificateAuthorityRequestBindingDTO {
     #[try_into(infallible)]
     pub content: CreateSelfSignedCertificateAuthorityRequestContentBindingDTO,
@@ -491,6 +455,7 @@ pub struct CreateSelfSignedCertificateAuthorityRequestBindingDTO {
 
 #[derive(Clone, Debug, uniffi::Record, Into)]
 #[into(CreateSelfSignedCertificateAuthorityContentRequestDTO)]
+#[uniffi(name = "CreateSelfSignedCertificateAuthorityRequestContent")]
 pub struct CreateSelfSignedCertificateAuthorityRequestContentBindingDTO {
     pub subject: KeyGenerateCSRRequestSubjectBindingDTO,
     #[into(with_fn = convert_inner)]
@@ -499,6 +464,7 @@ pub struct CreateSelfSignedCertificateAuthorityRequestContentBindingDTO {
 
 #[derive(Clone, Debug, uniffi::Record, Into)]
 #[into(CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest)]
+#[uniffi(name = "CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest")]
 pub struct CreateSelfSignedCaRequestIssuerAlternativeNameBindingDTO {
     pub r#type: CreateSelfSignedCaRequestIssuerAlternativeNameTypeBindingEnum,
     pub name: String,
@@ -506,6 +472,7 @@ pub struct CreateSelfSignedCaRequestIssuerAlternativeNameBindingDTO {
 
 #[derive(Clone, Debug, uniffi::Enum, Into)]
 #[into(CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType)]
+#[uniffi(name = "CreateSelfSignedCaRequestIssuerAlternativeNameType")]
 pub enum CreateSelfSignedCaRequestIssuerAlternativeNameTypeBindingEnum {
     Email,
     Uri,

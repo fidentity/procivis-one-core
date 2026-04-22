@@ -13,7 +13,7 @@ pub struct Model {
     pub id: TrustEntryId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub status: TrustEntryStatus,
+    pub state: TrustEntryState,
     #[sea_orm(column_type = "Blob")]
     pub metadata: Vec<u8>,
     pub trust_list_publication_id: TrustListPublicationId,
@@ -55,10 +55,10 @@ impl Related<super::identifier::Entity> for Entity {
 impl ActiveModelBehavior for ActiveModel {}
 
 #[derive(Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into, Deserialize)]
-#[into(one_core::model::trust_entry::TrustEntryStatusEnum)]
-#[from(one_core::model::trust_entry::TrustEntryStatusEnum)]
+#[into(one_core::model::trust_entry::TrustEntryStateEnum)]
+#[from(one_core::model::trust_entry::TrustEntryStateEnum)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
-pub enum TrustEntryStatus {
+pub enum TrustEntryState {
     #[sea_orm(string_value = "ACTIVE")]
     Active,
     #[sea_orm(string_value = "SUSPENDED")]

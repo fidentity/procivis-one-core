@@ -3,19 +3,20 @@ use std::str::FromStr;
 use indexmap::IndexMap;
 use one_crypto::utilities;
 use secrecy::SecretString;
-use shared_types::InteractionId;
-use time::{Duration, OffsetDateTime};
+use shared_types::{IdentifierId, InteractionId};
+use time::Duration;
 use uuid::Uuid;
 
 use super::mapper::credentials_supported_mdoc;
 use super::model::{
-    OpenID4VCIGrants, OpenID4VCIIssuerInteractionDataDTO,
+    EtsiIssuerInfoResponseDTO, OpenID4VCIGrants, OpenID4VCIIssuerInteractionDataDTO,
     OpenID4VCIIssuerMetadataCredentialSupportedDisplayDTO,
     OpenID4VCIIssuerMetadataDisplayResponseDTO, OpenID4VCIIssuerMetadataResponseDTO,
     OpenID4VCIPreAuthorizedCodeGrant, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
-    Timestamp,
+    PreparedMetadata, Timestamp,
 };
 use super::validator::throw_if_credential_state_not_eq;
+use crate::config::core_config::FormatType;
 use crate::model::credential::{Credential, CredentialStateEnum};
 use crate::model::credential_schema::CredentialSchema;
 use crate::model::interaction::Interaction;
@@ -34,29 +35,24 @@ use crate::provider::issuance_protocol::openid4vci_final1_0::validator::{
 };
 
 pub(crate) fn create_issuer_metadata_response(
-    protocol_base_url: &str,
     protocol_id: &str,
-    oidc_format: &str,
-    schema: &CredentialSchema,
-    cryptographic_binding_methods_supported: Vec<String>,
-    proof_types_supported: Option<IndexMap<String, OpenID4VCIProofTypeSupported>>,
-    credential_signing_alg_values_supported: Vec<String>,
-) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCIError> {
-    let credential_configurations_supported: IndexMap<
-        String,
-        OpenID4VCICredentialConfigurationData,
-    > = credential_configurations_supported(
-        oidc_format,
+    PreparedMetadata {
+        protocol_base_url,
         schema,
-        cryptographic_binding_methods_supported,
-        proof_types_supported,
-        credential_signing_alg_values_supported,
-    )?;
-
+        credential_configurations_supported,
+    }: PreparedMetadata,
+    issuer_info: Option<Vec<EtsiIssuerInfoResponseDTO>>,
+    identifier_id: Option<&IdentifierId>,
+) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OpenID4VCIError> {
     let credential_schema_id = schema.id;
+    let credential_issuer = if let Some(identifier_id) = identifier_id {
+        format!("{protocol_base_url}/{protocol_id}/{identifier_id}/{credential_schema_id}")
+    } else {
+        format!("{protocol_base_url}/{protocol_id}/{credential_schema_id}")
+    };
 
     Ok(OpenID4VCIIssuerMetadataResponseDTO {
-        credential_issuer: format!("{protocol_base_url}/{protocol_id}/{credential_schema_id}"),
+        credential_issuer,
         authorization_servers: None,
         credential_endpoint: format!("{protocol_base_url}/{credential_schema_id}/credential"),
         nonce_endpoint: Some(format!("{protocol_base_url}/{protocol_id}/nonce")),
@@ -76,14 +72,15 @@ pub(crate) fn create_issuer_metadata_response(
             locale: Some("en".to_string()),
             logo: None,
         }]),
+        issuer_info: issuer_info.unwrap_or_default(),
     })
 }
 
-fn credential_configurations_supported(
-    oidc_format: &str,
+pub(crate) fn credential_configurations_supported(
+    format: &FormatType,
     credential_schema: &CredentialSchema,
     cryptographic_binding_methods_supported: Vec<String>,
-    proof_types_supported: Option<IndexMap<String, OpenID4VCIProofTypeSupported>>,
+    proof_types_supported: IndexMap<String, OpenID4VCIProofTypeSupported>,
     credential_signing_alg_values_supported: Vec<String>,
 ) -> Result<IndexMap<String, OpenID4VCICredentialConfigurationData>, OpenID4VCIError> {
     let schema_id = credential_schema.schema_id.to_owned();
@@ -131,52 +128,46 @@ fn credential_configurations_supported(
         display: Some(vec![display_dto]),
         claims: Some(credential_metadata_claims),
     };
+    let proof_types_supported = Some(proof_types_supported);
 
     Ok(IndexMap::from([(
         schema_id.clone(),
-        match oidc_format {
-            "ldp_vc" => jsonld_configuration(
-                oidc_format,
+        match format {
+            FormatType::JsonLdClassic | FormatType::JsonLdBbsPlus => jsonld_configuration(
+                "ldp_vc",
                 credential_metadata,
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
             ),
-            "jwt_vc_json" => jwt_configuration(
-                oidc_format,
+            FormatType::Jwt => jwt_configuration(
+                "jwt_vc_json",
                 credential_metadata,
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
                 credential_signing_alg_values_supported,
             ),
-            "vc+sd-jwt" => sdjwt_configuration(
-                oidc_format,
+            FormatType::SdJwt => sdjwt_configuration(
+                "vc+sd-jwt",
                 credential_metadata,
                 Some(schema_id),
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
                 credential_signing_alg_values_supported,
             ),
-            "dc+sd-jwt" => sdjwt_configuration(
-                oidc_format,
+            FormatType::SdJwtVc => sdjwt_configuration(
+                "dc+sd-jwt",
                 credential_metadata,
                 Some(schema_id),
                 cryptographic_binding_methods_supported,
                 proof_types_supported,
                 credential_signing_alg_values_supported,
             ),
-            "mso_mdoc" => credentials_supported_mdoc(
+            FormatType::Mdoc => credentials_supported_mdoc(
                 credential_schema.clone(),
                 credential_metadata,
                 proof_types_supported,
             )
             .map_err(|e| OpenID4VCIError::RuntimeError(e.to_string()))?,
-            _ => jwt_configuration(
-                oidc_format,
-                credential_metadata,
-                cryptographic_binding_methods_supported,
-                proof_types_supported,
-                credential_signing_alg_values_supported,
-            ),
         },
     )]))
 }
@@ -314,6 +305,7 @@ pub(crate) fn create_credential_offer(
     protocol_id: &str,
     pre_authorized_code: &str,
     credential_schema: &CredentialSchema,
+    identifier_id: Option<IdentifierId>,
 ) -> Result<OpenID4VCIFinal1CredentialOfferDTO, OpenIDIssuanceError> {
     let tx_code = credential_schema
         .transaction_code
@@ -324,8 +316,17 @@ pub(crate) fn create_credential_offer(
             description: code.description.to_owned(),
         });
 
+    let credential_issuer = if let Some(identifier_id) = identifier_id {
+        format!(
+            "{protocol_base_url}/{protocol_id}/{identifier_id}/{}",
+            credential_schema.id
+        )
+    } else {
+        format!("{protocol_base_url}/{protocol_id}/{}", credential_schema.id)
+    };
+
     Ok(OpenID4VCIFinal1CredentialOfferDTO {
-        credential_issuer: format!("{protocol_base_url}/{protocol_id}/{}", credential_schema.id),
+        credential_issuer,
         credential_configuration_ids: vec![credential_schema.schema_id.to_owned()],
         grants: OpenID4VCIGrants::PreAuthorizedCode(OpenID4VCIPreAuthorizedCodeGrant {
             pre_authorized_code: pre_authorized_code.to_owned(),
@@ -355,7 +356,7 @@ pub(crate) fn oidc_issuer_create_token(
         ))
     };
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     Ok(match request {
         OpenID4VCITokenRequestDTO::PreAuthorizedCode { .. } => {
             throw_if_interaction_created_date(pre_authorization_expires_in, interaction)?;

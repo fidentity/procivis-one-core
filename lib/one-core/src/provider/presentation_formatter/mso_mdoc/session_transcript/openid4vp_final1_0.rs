@@ -120,6 +120,9 @@ mod tests {
     use standardized_types::jwk::{JwkUse, PublicJwk, PublicJwkEc};
 
     use super::OID4VPFinal1_0Handover;
+    use crate::provider::presentation_formatter::mso_mdoc::session_transcript::{
+        Handover, SessionTranscript,
+    };
 
     #[tokio::test]
     async fn test_oid4vp_handover_compute_against_test_vector() {
@@ -167,5 +170,24 @@ mod tests {
             handover.openid4vp_handover_info_hash.0,
             expected_handover_info_hash
         );
+    }
+
+    #[tokio::test]
+    async fn test_oid4vp_session_transcript_against_test_vector() {
+        // https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#appendix-B.2.6.1-13
+        let transcript = hex!(
+            "83f6f682714f70656e494434565048616e646f7665725820048bc053c00442af9b8eed494cefdd9d95240d254b046b11b68013722aad38ac"
+        );
+        let transcript: SessionTranscript = ciborium::from_reader(transcript.as_slice()).unwrap();
+        assert!(transcript.device_engagement_bytes.is_none());
+        assert!(transcript.e_reader_key_bytes.is_none());
+
+        match transcript.handover {
+            Some(Handover::OID4VPFinal1_0(handover)) => assert_eq!(
+                handover.openid4vp_handover_info_hash.0,
+                hex!("048bc053c00442af9b8eed494cefdd9d95240d254b046b11b68013722aad38ac")
+            ),
+            other => panic!("Expected Some(OID4VPFinal1_0Handover), got {:?}", other),
+        };
     }
 }

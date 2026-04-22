@@ -4,13 +4,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use shared_types::CredentialId;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::Task;
 use crate::error::ContextWithErrorCode;
 use crate::model::claim::ClaimRelations;
-use crate::model::credential::{CredentialFilterValue, CredentialRelations, GetCredentialQuery};
+use crate::model::credential::{CredentialFilterValue, CredentialListQuery, CredentialRelations};
 use crate::model::history::{HistoryAction, HistoryEntityType, HistoryFilterValue};
 use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::{ListPagination, ListQuery};
@@ -51,7 +50,7 @@ impl RetainProofCheck {
 
 #[async_trait::async_trait]
 impl Task for RetainProofCheck {
-    async fn run(&self) -> Result<Value, ServiceError> {
+    async fn run(&self, _params: Option<Value>) -> Result<Value, ServiceError> {
         let processed_events: Vec<_> = self
             .history_repository
             .get_history_list(ListQuery {
@@ -71,7 +70,7 @@ impl Task for RetainProofCheck {
             .map(|event_id| Uuid::from(event_id).into())
             .collect();
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let mut page = 0;
 
         loop {
@@ -161,14 +160,14 @@ impl Task for RetainProofCheck {
 
                 let credential_blob_ids = self
                     .credential_repository
-                    .get_credential_list(GetCredentialQuery {
+                    .get_credential_list(CredentialListQuery {
                         filtering: Some(
                             CredentialFilterValue::CredentialIds(Vec::from_iter(
                                 credential_ids.clone(),
                             ))
                             .condition(),
                         ),
-                        ..GetCredentialQuery::default()
+                        ..CredentialListQuery::default()
                     })
                     .await
                     .error_while("getting credentials")?

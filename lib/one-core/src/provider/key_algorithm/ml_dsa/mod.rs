@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coset::iana::EnumI64;
+use coset::{CoseKey, iana};
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder, Encoder};
 use one_crypto::Signer;
 use one_crypto::signer::ml_dsa::MlDsaSigner;
@@ -80,9 +82,9 @@ impl KeyAlgorithm for MlDsa {
         vec!["ML-DSA-65".to_string()]
     }
 
-    fn cose_alg_id(&self) -> Option<i32> {
+    fn cose_alg_id(&self) -> Option<i64> {
         // https://www.ietf.org/archive/id/draft-ietf-cose-dilithium-11.html#name-ml-dsa-65
-        Some(-49)
+        Some(iana::Algorithm::ML_DSA_65.to_i64())
     }
 
     fn parse_jwk(&self, key: &PublicJwk) -> Result<KeyHandle, KeyAlgorithmError> {
@@ -134,9 +136,9 @@ impl KeyAlgorithm for MlDsa {
         ))
     }
 
-    fn parse_raw(&self, _public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
+    fn parse_der(&self, _public_key_der: &[u8]) -> Result<KeyHandle, KeyAlgorithmError> {
         Err(KeyAlgorithmError::NotSupported(
-            "parse raw not supported for ML-DSA".to_string(),
+            "parse DER not supported for ML-DSA".to_string(),
         ))
     }
 }
@@ -177,7 +179,7 @@ impl SignaturePublicKeyHandle for MlDsaPublicKeyHandle {
     }
 
     fn as_multibase(&self) -> Result<String, KeyHandleError> {
-        unimplemented!("unsupported")
+        Err(KeyHandleError::OperationNotSupported)
     }
 
     fn as_raw(&self) -> Vec<u8> {
@@ -186,6 +188,14 @@ impl SignaturePublicKeyHandle for MlDsaPublicKeyHandle {
 
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(MlDsaSigner.verify(message, signature, &self.public_key)?)
+    }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        Err(KeyHandleError::OperationNotSupported)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Err(KeyHandleError::OperationNotSupported)
     }
 }
 

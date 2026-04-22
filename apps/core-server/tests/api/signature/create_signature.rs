@@ -3,9 +3,8 @@ use indoc::indoc;
 use one_core::provider::signer::registration_certificate::model::WRPRegistrationCertificate;
 use rcgen::{CertificateParams, KeyUsagePurpose};
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use x509_parser::extensions::ParsedExtension;
-use x509_parser::oid_registry::OID_X509_EXT_CRL_DISTRIBUTION_POINTS;
+use x509_parser::oid_registry::{OID_X509_EXT_CRL_DISTRIBUTION_POINTS, OID_X509_EXT_KEY_USAGE};
 use x509_parser::pem::Pem;
 use x509_parser::time::ASN1Time;
 
@@ -70,7 +69,7 @@ async fn test_sign_wrprc_custom_validty_success() {
     let (context, _org, identifier, _cert, key) =
         TestContext::new_with_certificate_identifier(None).await;
     // the JWT timestamps will not contain fractional seconds
-    let now = OffsetDateTime::now_utc().replace_millisecond(0).unwrap();
+    let now = one_core::clock::now_utc().replace_millisecond(0).unwrap();
     let nbf = now + time::Duration::days(1);
     let exp = now + time::Duration::days(2);
     let resp = context
@@ -112,7 +111,7 @@ async fn test_sign_wrprc_validity_too_long() {
                 signer: "REGISTRATION_CERTIFICATE".to_string(),
                 data: dummy_registration_certificate_payload(),
                 validity_start: None,
-                validity_end: Some(OffsetDateTime::now_utc() + time::Duration::days(365 * 100)),
+                validity_end: Some(one_core::clock::now_utc() + time::Duration::days(365 * 100)),
             },
             None,
         )
@@ -135,8 +134,8 @@ async fn test_sign_wrprc_validity_start_after_end() {
                 issuer_certificate: None,
                 signer: "REGISTRATION_CERTIFICATE".to_string(),
                 data: dummy_registration_certificate_payload(),
-                validity_start: Some(OffsetDateTime::now_utc() + time::Duration::days(2)),
-                validity_end: Some(OffsetDateTime::now_utc() + time::Duration::days(1)),
+                validity_start: Some(one_core::clock::now_utc() + time::Duration::days(2)),
+                validity_end: Some(one_core::clock::now_utc() + time::Duration::days(1)),
             },
             None,
         )
@@ -159,8 +158,8 @@ async fn test_sign_wrprc_validity_start_end_in_past() {
                 issuer_certificate: None,
                 signer: "REGISTRATION_CERTIFICATE".to_string(),
                 data: dummy_registration_certificate_payload(),
-                validity_start: Some(OffsetDateTime::now_utc() - time::Duration::days(2)),
-                validity_end: Some(OffsetDateTime::now_utc() - time::Duration::days(1)),
+                validity_start: Some(one_core::clock::now_utc() - time::Duration::days(2)),
+                validity_end: Some(one_core::clock::now_utc() - time::Duration::days(1)),
             },
             None,
         )
@@ -232,7 +231,7 @@ async fn test_create_signature_x509_intermediary_ca_success() {
     let mut params = CertificateParams::default();
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
 
-    let now_rounded = OffsetDateTime::now_utc().replace_millisecond(0).unwrap();
+    let now_rounded = one_core::clock::now_utc().replace_millisecond(0).unwrap();
     let start = now_rounded + time::Duration::days(1);
     let end = now_rounded + time::Duration::days(2);
 
@@ -306,7 +305,7 @@ async fn test_create_signature_x509_intermediary_ca_disabled() {
     let mut params = CertificateParams::default();
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
 
-    let now_rounded = OffsetDateTime::now_utc().replace_millisecond(0).unwrap();
+    let now_rounded = one_core::clock::now_utc().replace_millisecond(0).unwrap();
     let start = now_rounded + time::Duration::days(1);
     let end = now_rounded + time::Duration::days(2);
 
@@ -380,8 +379,8 @@ async fn test_create_signature_x509_success_no_crl() {
         .map(|pem| pem.parse_x509())
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-
     let leaf_cert = certs.first().unwrap();
+
     let crl_ext = leaf_cert
         .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
         .unwrap();
@@ -455,15 +454,9 @@ async fn test_create_signature_access_certificate_natural_person_success() {
         .unwrap();
 
     let leaf_cert = certs.first().unwrap();
-    let crl_ext = leaf_cert
-        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
-        .unwrap()
-        .unwrap()
-        .parsed_extension();
-    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
     assert_eq!(
         leaf_cert.subject.to_string(),
-        "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, givenName=Max, surname=Muster"
+        "C=CH, OID(2.5.4.81)=https://some-url.com, CN=common name, serialNumber=orgId, givenName=Max, surname=Muster"
     );
     assert!(leaf_cert.validity.not_before < ASN1Time::now());
     // expires in ~ 5 years
@@ -475,6 +468,18 @@ async fn test_create_signature_access_certificate_natural_person_success() {
             .whole_days(),
         365 * 5 - 1 // -1 to account for the fractional day since issuance
     );
+
+    let crl_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+        .unwrap()
+        .unwrap()
+        .parsed_extension();
+    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
+
+    let key_usage_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_KEY_USAGE)
+        .unwrap();
+    assert!(key_usage_ext.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -514,15 +519,9 @@ async fn test_create_signature_access_certificate_legal_person_success() {
         .unwrap();
 
     let leaf_cert = certs.first().unwrap();
-    let crl_ext = leaf_cert
-        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
-        .unwrap()
-        .unwrap()
-        .parsed_extension();
-    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
     assert_eq!(
         leaf_cert.subject.to_string(),
-        "C=CH, OID(2.5.4.97)=orgId, OID(2.5.4.81)=https://some-url.com, CN=common name, O=Org name"
+        "C=CH, OID(2.5.4.81)=https://some-url.com, CN=common name, OID(2.5.4.97)=orgId, O=Org name"
     );
     assert!(leaf_cert.validity.not_before < ASN1Time::now());
     // expires in ~ 5 years
@@ -534,6 +533,18 @@ async fn test_create_signature_access_certificate_legal_person_success() {
             .whole_days(),
         365 * 5 - 1 // -1 to account for the fractional day since issuance
     );
+
+    let crl_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_CRL_DISTRIBUTION_POINTS)
+        .unwrap()
+        .unwrap()
+        .parsed_extension();
+    let_assert!(ParsedExtension::CRLDistributionPoints(_) = crl_ext);
+
+    let key_usage_ext = leaf_cert
+        .get_extension_unique(&OID_X509_EXT_KEY_USAGE)
+        .unwrap();
+    assert!(key_usage_ext.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

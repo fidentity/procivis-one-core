@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use coset::iana::EnumI64;
+use coset::{CoseKey, CoseKeyBuilder, iana};
 use one_crypto::Signer;
 use one_crypto::signer::eddsa::EDDSASigner;
 use shared_types::KeyId;
@@ -117,7 +119,7 @@ struct RemoteSecureElementKeyHandle {
 
 impl SignaturePublicKeyHandle for RemoteSecureElementKeyHandle {
     fn as_jwk(&self) -> Result<PublicJwk, KeyHandleError> {
-        eddsa_public_key_as_jwk(&self.key.public_key, "Ed25519", None)
+        eddsa_public_key_as_jwk(&self.key.public_key, None)
     }
 
     fn as_multibase(&self) -> Result<String, KeyHandleError> {
@@ -130,6 +132,23 @@ impl SignaturePublicKeyHandle for RemoteSecureElementKeyHandle {
 
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(EDDSASigner.verify(message, signature, &self.key.public_key)?)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(EDDSASigner::public_key_to_der(&self.key.public_key)?)
+    }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        Ok(CoseKeyBuilder::new_okp_key()
+            .param(
+                iana::Ec2KeyParameter::Crv.to_i64(),
+                ciborium::Value::from(iana::EllipticCurve::Ed25519.to_i64()),
+            )
+            .param(
+                iana::Ec2KeyParameter::X as i64,
+                ciborium::Value::from(self.key.public_key.to_owned()),
+            )
+            .build())
     }
 }
 

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use one_core::model::certificate::{Certificate, CertificateRelations, CertificateState};
+use one_core::model::certificate::{
+    Certificate, CertificateRelations, CertificateRole, CertificateState,
+};
 use one_core::model::key::Key;
 use one_core::repository::certificate_repository::CertificateRepository;
 use shared_types::{CertificateId, IdentifierId, OrganisationId};
@@ -21,6 +23,7 @@ pub struct TestingCertificateParams {
     pub state: Option<CertificateState>,
     pub key: Option<Key>,
     pub organisation_id: Option<OrganisationId>,
+    pub roles: Option<Vec<CertificateRole>>,
 }
 
 impl From<Certificate> for TestingCertificateParams {
@@ -36,6 +39,7 @@ impl From<Certificate> for TestingCertificateParams {
             state: Some(certificate.state),
             key: certificate.key,
             organisation_id: certificate.organisation_id,
+            roles: Some(certificate.roles),
         }
     }
 }
@@ -54,7 +58,7 @@ impl CertificatesDB {
         identifier_id: IdentifierId,
         params: TestingCertificateParams,
     ) -> Certificate {
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
 
         let certificate = Certificate {
             id: params.id.unwrap_or(Uuid::new_v4().into()),
@@ -66,6 +70,10 @@ impl CertificatesDB {
             chain: unwrap_or_random(params.chain),
             fingerprint: unwrap_or_random(params.fingerprint),
             state: params.state.unwrap_or(CertificateState::Active),
+            roles: params.roles.unwrap_or(vec![
+                CertificateRole::Authentication,
+                CertificateRole::AssertionMethod,
+            ]),
             key: params.key,
             organisation_id: params.organisation_id,
         };

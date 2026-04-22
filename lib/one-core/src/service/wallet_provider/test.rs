@@ -8,7 +8,7 @@ use secrecy::SecretSlice;
 use serde_json::json;
 use shared_types::IdentifierId;
 use similar_asserts::assert_eq;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use uuid::Uuid;
 
 use crate::config;
@@ -17,9 +17,7 @@ use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::key::Key;
 use crate::model::organisation::Organisation;
-use crate::model::wallet_unit::{
-    WalletProviderType, WalletUnit, WalletUnitListQuery, WalletUnitOs, WalletUnitStatus,
-};
+use crate::model::wallet_unit::{WalletProviderType, WalletUnit, WalletUnitOs, WalletUnitStatus};
 use crate::proto::certificate_validator::MockCertificateValidator;
 use crate::proto::clock::DefaultClock;
 use crate::proto::jwt::Jwt;
@@ -39,10 +37,14 @@ use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::repository::trust_collection_repository::MockTrustCollectionRepository;
 use crate::repository::wallet_unit_repository::MockWalletUnitRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::test_utilities::{dummy_organisation, generic_config, get_dummy_date};
 use crate::service::wallet_provider::WalletProviderService;
-use crate::service::wallet_provider::dto::RegisterWalletUnitRequestDTO;
+use crate::service::wallet_provider::dto::{
+    RegisterWalletUnitRequestDTO, WalletUnitFilterParamsDTO,
+};
 
 const BASE_URL: &str = "https://localhost";
 
@@ -52,6 +54,7 @@ fn mock_wallet_provider_service() -> WalletProviderService {
         wallet_unit_repository: Arc::new(MockWalletUnitRepository::default()),
         identifier_repository: Arc::new(MockIdentifierRepository::default()),
         history_repository: Arc::new(MockHistoryRepository::default()),
+        trust_collection_repository: Arc::new(MockTrustCollectionRepository::default()),
         tx_manager: Arc::new(NoTransactionManager),
         key_provider: Arc::new(MockKeyProvider::default()),
         key_algorithm_provider: Arc::new(MockKeyAlgorithmProvider::default()),
@@ -103,6 +106,10 @@ fn wallet_provider_config(
                 "appVersion": {
                     "minimum": "v1.50.0",
                 },
+                "featureFlags": {
+                    "trustEcosystemsEnabled": true
+                },
+                "legacyTrustManagementEnabled" : true
             })),
             private: None,
         }),
@@ -176,6 +183,7 @@ async fn test_register_wallet_unit() {
                     organisation: None,
                 }),
                 certificates: None,
+                trust_information: None,
             }))
         });
 
@@ -288,6 +296,7 @@ async fn test_register_wallet_unit_integrity_check() {
                     organisation: None,
                 }),
                 certificates: None,
+                trust_information: None,
             }))
         });
 
@@ -350,15 +359,24 @@ async fn provider_wallet_unit_ops_session_org_mismatch() {
 
     // when
     let result = service
-        .get_wallet_unit_list(
-            &Uuid::new_v4().into(),
-            WalletUnitListQuery {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_wallet_unit_list(ListQueryDTO {
+            page: 0,
+            page_size: 1,
+            sort: None,
+            sort_direction: None,
+            filter: WalletUnitFilterParamsDTO {
+                name: None,
+                ids: None,
+                status: None,
+                os: None,
+                wallet_provider_type: None,
+                attestation: None,
+                organisation_id: Uuid::new_v4().into(),
+                created_date_after: None,
+                created_date_before: None,
             },
-        )
+            include: None,
+        })
         .await;
 
     // then
@@ -410,7 +428,7 @@ async fn create_proof() -> (String, KeyHandle) {
 
     let jwk = holder_key_handle.public_key_as_jwk().unwrap();
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let proof = Jwt {
         header: JWTHeader {
             algorithm: "ES256".to_string(),

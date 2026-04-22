@@ -35,5 +35,10 @@ mod remote_entity_cache_tests;
 mod revocation_list_tests;
 #[path = "test/trust.rs"]
 mod trust_tests;
+#[path = "test/verifier_instance.rs"]
+mod verifier_instance_tests;
 #[path = "test/wallet_unit.rs"]
 mod wallet_unit_tests;
+
+#[path = "test/identifier_trust_information.rs"]
+mod identifier_trust_information_tests;

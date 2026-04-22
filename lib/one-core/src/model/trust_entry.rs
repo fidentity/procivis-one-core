@@ -13,7 +13,7 @@ pub struct TrustEntry {
     pub id: TrustEntryId,
     pub created_date: OffsetDateTime,
     pub last_modified: OffsetDateTime,
-    pub status: TrustEntryStatusEnum,
+    pub state: TrustEntryStateEnum,
     pub metadata: Vec<u8>,
     pub trust_list_publication_id: TrustListPublicationId,
     pub identifier_id: IdentifierId,
@@ -25,7 +25,7 @@ pub struct TrustEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum TrustEntryStatusEnum {
+pub enum TrustEntryStateEnum {
     Active,
     Suspended,
     Removed,
@@ -39,14 +39,14 @@ pub struct TrustEntryRelations {
 
 #[derive(Clone, Debug, Default)]
 pub struct UpdateTrustEntryRequest {
-    pub status: Option<TrustEntryStatusEnum>,
+    pub state: Option<TrustEntryStateEnum>,
     pub metadata: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SortableTrustEntryColumn {
     Identifier,
-    Status,
+    State,
     LastModified,
     CreatedDate,
 }
@@ -55,7 +55,7 @@ pub enum SortableTrustEntryColumn {
 pub enum TrustEntryFilterValue {
     TrustListPublicationId(TrustListPublicationId),
     IdentifierIds(Vec<IdentifierId>),
-    Status(Vec<TrustEntryStatusEnum>),
+    State(Vec<TrustEntryStateEnum>),
     CreatedDate(ValueComparison<OffsetDateTime>),
     LastModified(ValueComparison<OffsetDateTime>),
     Ids(Vec<TrustEntryId>),

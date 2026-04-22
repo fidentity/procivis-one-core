@@ -74,6 +74,11 @@ impl ListFilterValue for KeyFilterValue {}
 
 pub type KeyListQuery = ListQuery<SortableKeyColumn, KeyFilterValue>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactKeyFilterColumn {
+    Name,
+}
+
 pub type GetKeyList = GetListResponse<Key>;
 
 pub trait PrivateJwkExt {

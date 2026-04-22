@@ -71,7 +71,8 @@ pub enum RemoteEntityType {
     TrustList,
     X509Crl,
     AndroidAttestationCrl,
-    OpenIDMetadata,
+    OpenIdMetadataHolder,
+    OpenIdMetadataIssuer,
 }
 
 #[derive(Clone, Error, Debug)]

@@ -45,6 +45,7 @@ impl TryFrom<history::Model> for History {
             source: value.source.into(),
             target: value.target,
             user: value.user,
+            metadata_blob_id: value.metadata_blob_id,
         })
     }
 }
@@ -72,6 +73,7 @@ impl TryFrom<History> for history::ActiveModel {
             source: Set(value.source.into()),
             target: Set(value.target),
             user: Set(value.user),
+            metadata_blob_id: Set(value.metadata_blob_id),
         })
     }
 }
@@ -117,7 +119,7 @@ pub(super) fn map_to_stats(
 
     let Some(first) = rows.first() else {
         // The empty time series needs to start somewhere. If we're not given a start, fall back to now.
-        let from = floor(from.unwrap_or(OffsetDateTime::now_utc()), resolution)?;
+        let from = floor(from.unwrap_or(one_core::clock::now_utc()), resolution)?;
         // Empty rows, create zero time series
         fill_missing_zeros(&mut result, resolution, from, to, FillMode::Inclusive)?;
         return Ok(result);

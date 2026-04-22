@@ -4,6 +4,7 @@ use std::ops::Add;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use coset::CoseKey;
 use ct_codecs::{Base64UrlSafeNoPadding, Decoder};
 use dto::{AzureHsmGetTokenResponse, AzureHsmKeyResponse, AzureHsmSignResponse};
 use mapper::{
@@ -26,7 +27,7 @@ use crate::error::ContextWithErrorCode;
 use crate::model::key::{Key, PrivateJwkExt};
 use crate::proto::http_client::HttpClient;
 use crate::provider::key_algorithm::ecdsa::{
-    ecdsa_public_key_as_jwk, ecdsa_public_key_as_multibase,
+    ecdsa_public_key_as_cose, ecdsa_public_key_as_jwk, ecdsa_public_key_as_multibase,
 };
 use crate::provider::key_algorithm::key::{
     KeyHandle, KeyHandleError, SignatureKeyHandle, SignaturePrivateKeyHandle,
@@ -232,6 +233,14 @@ impl SignaturePublicKeyHandle for AzureVaultKeyHandle {
     fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), KeyHandleError> {
         Ok(ECDSASigner.verify(message, signature, &self.key.public_key)?)
     }
+
+    fn as_cose(&self) -> Result<CoseKey, KeyHandleError> {
+        ecdsa_public_key_as_cose(&self.key.public_key)
+    }
+
+    fn as_der(&self) -> Result<Vec<u8>, KeyHandleError> {
+        Ok(ECDSASigner::public_key_to_der(&self.key.public_key)?)
+    }
 }
 
 #[async_trait]
@@ -307,7 +316,7 @@ impl AzureClient {
         } else {
             // todo: should this be atomic? (here multiple requests are all going to acquire a new token and set the new token)
             let response = self.acquire_new_token().await?;
-            let valid_until = OffsetDateTime::now_utc().add(Duration::seconds(response.expires_in));
+            let valid_until = crate::clock::now_utc().add(Duration::seconds(response.expires_in));
             let mut storage = self.access_token.lock().await;
             *storage = Some(AzureAccessToken {
                 token: response.access_token.clone(),
@@ -324,7 +333,7 @@ impl AzureClient {
             None => false,
             Some(token) => {
                 // Adding 5 seconds tolerance for network requests delay
-                token.valid_until > OffsetDateTime::now_utc().add(Duration::seconds(5))
+                token.valid_until > crate::clock::now_utc().add(Duration::seconds(5))
             }
         }
     }

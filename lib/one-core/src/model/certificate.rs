@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use shared_types::{CertificateId, IdentifierId, OrganisationId};
+use strum::{Display, EnumString};
 use time::OffsetDateTime;
 
 use super::common::GetListResponse;
@@ -20,9 +21,17 @@ pub struct Certificate {
     pub chain: String,
     pub fingerprint: String,
     pub state: CertificateState,
+    pub roles: Vec<CertificateRole>,
 
     // Relations:
     pub key: Option<Key>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumString, Display)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+pub enum CertificateRole {
+    Authentication,
+    AssertionMethod,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

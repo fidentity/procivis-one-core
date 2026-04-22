@@ -1,7 +1,11 @@
+use one_core::model::history::HistorySearchEnum;
+use one_core::service::error::ServiceError;
 use one_core::service::history::dto::{
-    CreateHistoryRequestDTO, HistoryErrorMetadataDTO, HistoryResponseDTO,
+    CreateHistoryRequestDTO, HistoryErrorMetadataDTO, HistoryFilterParamsDTO, HistoryResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryFrom, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryFrom, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -166,6 +170,8 @@ pub enum HistoryAction {
     InteractionErrored,
     InteractionExpired,
     Delivered,
+    WrpAcReceived,
+    WrpRcReceived,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
@@ -198,6 +204,9 @@ pub enum HistoryEntityType {
     Notification,
     SupervisoryAuthority,
     TrustListPublication,
+    TrustCollection,
+    TrustListSubscription,
+    VerifierInstance,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
@@ -234,58 +243,98 @@ pub(crate) enum SortableHistoryColumnRestDTO {
     OrganisationId,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into(HistorySearchEnum)]
+pub(crate) enum HistorySearchTypeRestEnum {
+    All,
+    ClaimName,
+    ClaimValue,
+    CredentialSchemaName,
+    IssuerDid,
+    IssuerName,
+    VerifierDid,
+    VerifierName,
+    ProofSchemaName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = HistoryFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetHistoryQuery
 pub(crate) struct HistoryFilterQueryParamsRest {
     /// Return only events associated with the specified entity type(s).
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "entityTypes[]", inline, nullable = false)]
     pub entity_types: Option<Vec<HistoryEntityType>>,
     /// Return only events associated with the provided entity UUID(s).
     #[param(rename = "entityIds[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub entity_ids: Option<Vec<EntityId>>,
     /// Return only events of the specified action(s).
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "actions[]", inline, nullable = false)]
     pub actions: Option<Vec<HistoryAction>>,
     /// Return only events which occurred after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only events which occurred before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only events associated with the provided Identifier UUID.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub identifier_id: Option<IdentifierId>,
     /// Return only events associated with the provided credential UUID.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub credential_id: Option<CredentialId>,
     /// Return only events associated with the provided proof UUID.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub proof_id: Option<ProofId>,
     /// Return only events associated with the provided credential schema UUID.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub credential_schema_id: Option<CredentialSchemaId>,
     /// Return only events associated with the provided proof schema UUID.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub proof_schema_id: Option<ProofSchemaId>,
     /// Return only events associated with the provided users. Only applicable
     /// in STS authentication mode.
     #[param(rename = "users[]", nullable = false)]
+    #[try_into(infallible)]
     pub users: Option<Vec<String>>,
     /// Return only events associated with the provided sources.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "sources[]", inline, nullable = false)]
     pub sources: Option<Vec<HistorySource>>,
     /// Specify the organizaton(s) from which to return history events.
     #[param(rename = "organisationIds[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub organisation_ids: Option<Vec<OrganisationId>>,
+    /// Search for a string. Pass a `searchType` to control which field
+    /// is searched. When omitted, defaults to searching all fields.
+    #[param(nullable = false)]
+    #[try_into(infallible, rename = "search_query")]
+    pub search_text: Option<String>,
+    /// Changes where `searchText` is searched. To search history entries,
+    /// pass a `searchText` and optionally a `searchType`.
+    #[try_into(infallible, with_fn = convert_inner, rename = "search_type")]
+    #[param(inline, nullable = false)]
+    pub search_type: Option<HistorySearchTypeRestEnum>,
     /// Controls cross-organization access. When `false` (default), returns
     /// events from the organization in your STS token, or requires at least
     /// one value in `organisationIds[]` if not using STS authentication.
     /// When `true`, returns events from all organizations; requires
     /// `SYSTEM_HISTORY_LIST` permission in STS authentication mode.
     #[param(inline, nullable = false)]
+    #[try_into(skip)]
     pub show_system_history: Option<Boolean>,
 }

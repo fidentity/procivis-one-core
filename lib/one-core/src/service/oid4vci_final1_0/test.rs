@@ -9,7 +9,6 @@ use serde_json::json;
 use shared_types::{CredentialFormat, DidId, InteractionId};
 use similar_asserts::assert_eq;
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::OID4VCIFinal1_0Service;
@@ -26,10 +25,15 @@ use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::interaction::{Interaction, InteractionType};
 use crate::model::organisation::{Organisation, OrganisationRelations};
 use crate::proto::certificate_validator::MockCertificateValidator;
+use crate::proto::credential_schema::importer::MockCredentialSchemaImporter;
+use crate::proto::http_client::MockHttpClient;
 use crate::proto::identifier_creator::{MockIdentifierCreator, RemoteIdentifierRelation};
+use crate::proto::session_provider::MockSessionProvider;
 use crate::proto::transaction_manager::NoTransactionManager;
 use crate::proto::wallet_unit::MockHolderWalletUnitProto;
+use crate::proto::wrp_validator::MockWRPValidator;
 use crate::provider::blob_storage_provider::MockBlobStorageProvider;
+use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
 use crate::provider::credential_formatter::model::FormatterCapabilities;
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
@@ -37,7 +41,10 @@ use crate::provider::did_method::model::{DidDocument, DidVerificationMethod};
 use crate::provider::did_method::provider::MockDidMethodProvider;
 use crate::provider::issuance_protocol::MockIssuanceProtocol;
 use crate::provider::issuance_protocol::error::{IssuanceProtocolError, OpenID4VCIError};
-use crate::provider::issuance_protocol::model::SubmitIssuerResponse;
+use crate::provider::issuance_protocol::model::{
+    CommonParams, OpenID4VCRedirectUriParams, SubmitIssuerResponse,
+};
+use crate::provider::issuance_protocol::openid4vci_final1_0::OpenID4VCIFinal1_0;
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::*;
 use crate::provider::issuance_protocol::provider::MockIssuanceProtocolProvider;
 use crate::provider::key_algorithm::key::{
@@ -45,11 +52,22 @@ use crate::provider::key_algorithm::key::{
 };
 use crate::provider::key_algorithm::provider::MockKeyAlgorithmProvider;
 use crate::provider::key_algorithm::{KeyAlgorithm, MockKeyAlgorithm};
+use crate::provider::key_security_level::provider::MockKeySecurityLevelProvider;
+use crate::provider::key_storage::provider::MockKeyProvider;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
 use crate::repository::credential_repository::MockCredentialRepository;
 use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
 use crate::repository::error::DataLayerError;
+use crate::repository::history_repository::MockHistoryRepository;
+use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
+use crate::repository::identifier_repository::MockIdentifierRepository;
 use crate::repository::interaction_repository::MockInteractionRepository;
+use crate::repository::key_repository::MockKeyRepository;
+use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
+use crate::service::oid4vci_final1_0::dto::{
+    OID4VCIFinal1_0IssuerMetadataResponseEnum, OID4VCIFinal1_0IssuerMetadataResponseTypeEnum,
+};
+use crate::service::oid4vci_final1_0::resolver::MockCredentialIssuerMetadataFetcher;
 use crate::service::test_utilities::*;
 
 #[derive(Default)]
@@ -57,16 +75,17 @@ struct Mocks {
     pub credential_schema_repository: MockCredentialSchemaRepository,
     pub credential_repository: MockCredentialRepository,
     pub interaction_repository: MockInteractionRepository,
+    pub identifier_repository: MockIdentifierRepository,
     pub config: CoreConfig,
     pub exchange_provider: MockIssuanceProtocolProvider,
     pub did_method_provider: MockDidMethodProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
-    pub formatter_provider: MockCredentialFormatterProvider,
     pub revocation_method_provider: MockRevocationMethodProvider,
     pub certificate_validator: MockCertificateValidator,
     pub blob_storage_provider: MockBlobStorageProvider,
     pub holder_wallet_unit_proto: MockHolderWalletUnitProto,
     pub identifier_creator: MockIdentifierCreator,
+    pub credential_issuer_metadata_cache: MockCredentialIssuerMetadataFetcher,
 }
 
 fn setup_service(mocks: Mocks) -> OID4VCIFinal1_0Service {
@@ -75,22 +94,94 @@ fn setup_service(mocks: Mocks) -> OID4VCIFinal1_0Service {
         Arc::new(mocks.credential_schema_repository),
         Arc::new(mocks.credential_repository),
         Arc::new(mocks.interaction_repository),
+        Arc::new(mocks.identifier_repository),
         Arc::new(mocks.config),
         Arc::new(mocks.exchange_provider),
         Arc::new(mocks.did_method_provider),
         Arc::new(mocks.key_algorithm_provider),
-        Arc::new(mocks.formatter_provider),
         Arc::new(mocks.revocation_method_provider),
         Arc::new(mocks.certificate_validator),
         Arc::new(mocks.blob_storage_provider),
         Arc::new(NoTransactionManager),
         Arc::new(mocks.holder_wallet_unit_proto),
         Arc::new(mocks.identifier_creator),
+        Arc::new(mocks.credential_issuer_metadata_cache),
+    )
+}
+
+#[derive(Default)]
+pub struct ProtocolMocks {
+    pub client: MockHttpClient,
+    pub metadata_cache: MockOpenIDMetadataFetcher,
+    pub credential_repository: MockCredentialRepository,
+    pub key_repository: MockKeyRepository,
+    pub identifier_creator: MockIdentifierCreator,
+    pub credential_schema_importer: MockCredentialSchemaImporter,
+    pub validity_credential_repository: MockValidityCredentialRepository,
+    pub credential_schema_repository: MockCredentialSchemaRepository,
+    pub formatter_provider: MockCredentialFormatterProvider,
+    pub revocation_provider: MockRevocationMethodProvider,
+    pub did_method_provider: MockDidMethodProvider,
+    pub key_algorithm_provider: MockKeyAlgorithmProvider,
+    pub key_provider: MockKeyProvider,
+    pub key_security_level_provider: MockKeySecurityLevelProvider,
+    pub blob_storage_provider: MockBlobStorageProvider,
+    pub holder_wallet_unit_proto: MockHolderWalletUnitProto,
+    pub holder_wallet_unit_repository: MockHolderWalletUnitRepository,
+    pub certificate_validator: MockCertificateValidator,
+    pub wrp_validator: MockWRPValidator,
+    pub history_repository: MockHistoryRepository,
+    pub session_provider: MockSessionProvider,
+}
+
+fn setup_protocol(protocol_mocks: ProtocolMocks) -> OpenID4VCIFinal1_0 {
+    OpenID4VCIFinal1_0::new(
+        Arc::new(protocol_mocks.client),
+        Arc::new(protocol_mocks.metadata_cache),
+        Arc::new(protocol_mocks.credential_repository),
+        Arc::new(protocol_mocks.key_repository),
+        Arc::new(protocol_mocks.identifier_creator),
+        Arc::new(protocol_mocks.credential_schema_importer),
+        Arc::new(protocol_mocks.validity_credential_repository),
+        Arc::new(protocol_mocks.credential_schema_repository),
+        Arc::new(protocol_mocks.formatter_provider),
+        Arc::new(protocol_mocks.revocation_provider),
+        Arc::new(protocol_mocks.did_method_provider),
+        Arc::new(protocol_mocks.key_algorithm_provider),
+        Arc::new(protocol_mocks.key_provider),
+        Arc::new(protocol_mocks.key_security_level_provider),
+        Arc::new(protocol_mocks.blob_storage_provider),
+        Some("http://127.0.0.1:3000".to_string()),
+        Arc::new(generic_config().core),
+        OpenID4VCIFinal1Params {
+            pre_authorized_code_expires_in: Default::default(),
+            token_expires_in: Default::default(),
+            refresh_expires_in: Default::default(),
+            credential_offer_by_value: false,
+            encryption: Default::default(),
+            url_scheme: "".to_string(),
+            redirect_uri: OpenID4VCRedirectUriParams {
+                enabled: false,
+                allowed_schemes: vec![],
+            },
+            nonce: None,
+            oauth_attestation_leeway: 0,
+            key_attestation_leeway: 0,
+            request_signed_metadata: false,
+            common: CommonParams { webhook_task: None },
+        },
+        "configId".to_string(),
+        Arc::new(protocol_mocks.holder_wallet_unit_proto),
+        Arc::new(protocol_mocks.holder_wallet_unit_repository),
+        Arc::new(protocol_mocks.certificate_validator),
+        Arc::new(protocol_mocks.wrp_validator),
+        Arc::new(protocol_mocks.history_repository),
+        Arc::new(protocol_mocks.session_provider),
     )
 }
 
 fn generic_organisation() -> Organisation {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     Organisation {
         id: Uuid::new_v4().into(),
         name: "organisation name".to_string(),
@@ -103,7 +194,7 @@ fn generic_organisation() -> Organisation {
 }
 
 fn generic_credential_schema() -> CredentialSchema {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     CredentialSchema {
         id: Uuid::new_v4().into(),
         deleted_at: None,
@@ -163,8 +254,8 @@ fn dummy_interaction(
 
     Interaction {
         id: id.unwrap_or(Uuid::new_v4().into()),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         data: Some(data.to_string().into_bytes()),
         organisation: None,
         nonce_id: None,
@@ -181,9 +272,9 @@ fn dummy_credential(
 ) -> Credential {
     Credential {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
         issuance_date: None,
-        last_modified: OffsetDateTime::now_utc(),
+        last_modified: crate::clock::now_utc(),
         deleted_at: None,
         protocol: protocol.to_string(),
         redirect_uri: None,
@@ -191,7 +282,7 @@ fn dummy_credential(
         state,
         suspend_end_date: None,
         claims: None,
-        issuer_identifier: None,
+        issuer_identifier: Some(dummy_identifier()),
         issuer_certificate: None,
         holder_identifier: None,
         schema,
@@ -262,7 +353,7 @@ async fn test_get_issuer_metadata_jwt() {
         .with(eq(CredentialFormat::from("JWT")))
         .return_once(move |_| Some(Arc::new(formatter)));
 
-    let mut repository = MockCredentialSchemaRepository::default();
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut schema = generic_credential_schema();
     schema.organisation = Some(generic_organisation());
     let relations = CredentialSchemaRelations {
@@ -271,27 +362,56 @@ async fn test_get_issuer_metadata_jwt() {
     };
     {
         let clone = schema.clone();
-        repository
+        credential_schema_repository
             .expect_get_credential_schema()
             .times(1)
             .with(eq(schema.id.to_owned()), eq(relations))
             .returning(move |_, _| Ok(Some(clone.clone())));
     }
-    let service = setup_service(Mocks {
-        credential_schema_repository: repository,
+
+    let issuance_protocol = setup_protocol(ProtocolMocks {
+        credential_schema_repository,
         did_method_provider,
         key_algorithm_provider,
-        config: generic_config().core,
         formatter_provider,
         ..Default::default()
     });
+
+    let identifier = dummy_identifier();
+    let identifier_id = identifier.id;
+
+    let mut identifier_repository = MockIdentifierRepository::default();
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    let mut issuance_protocol_provider = MockIssuanceProtocolProvider::default();
+    issuance_protocol_provider
+        .expect_get_protocol()
+        .return_once(|_| Some(Arc::new(issuance_protocol)));
+
+    let service = setup_service(Mocks {
+        exchange_provider: issuance_protocol_provider,
+        config: generic_config().core,
+        identifier_repository,
+        ..Default::default()
+    });
     let result = service
-        .get_issuer_metadata("OPENID4VCI_FINAL1", &schema.id)
+        .get_issuer_metadata(
+            "OPENID4VCI_FINAL1",
+            &identifier_id,
+            &schema.id,
+            OID4VCIFinal1_0IssuerMetadataResponseTypeEnum::Model,
+        )
         .await;
     assert!(result.is_ok());
     let result = result.unwrap();
 
-    let credential_configuration = result.credential_configurations_supported[0].to_owned();
+    let OID4VCIFinal1_0IssuerMetadataResponseEnum::Model(model) = result else {
+        panic!("assertion failed: Expected an IssuerMetadataResponseEnum::Model")
+    };
+
+    let credential_configuration = model.credential_configurations_supported[0].to_owned();
     assert_eq!("jwt_vc_json".to_string(), credential_configuration.format);
     assert_eq!(
         schema.name,
@@ -337,7 +457,7 @@ async fn test_get_issuer_metadata_jwt() {
 
 #[tokio::test]
 async fn test_get_issuer_metadata_sd_jwt() {
-    let mut repository = MockCredentialSchemaRepository::default();
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut did_method_provider = MockDidMethodProvider::default();
     did_method_provider
         .expect_supported_method_names()
@@ -381,25 +501,55 @@ async fn test_get_issuer_metadata_sd_jwt() {
     };
     {
         let clone = schema.clone();
-        repository
+        credential_schema_repository
             .expect_get_credential_schema()
             .times(1)
             .with(eq(schema.id.to_owned()), eq(relations))
             .returning(move |_, _| Ok(Some(clone.clone())));
     }
-    let service = setup_service(Mocks {
-        credential_schema_repository: repository,
+
+    let issuance_protocol = setup_protocol(ProtocolMocks {
+        credential_schema_repository,
         did_method_provider,
         key_algorithm_provider,
-        config: generic_config().core,
         formatter_provider,
         ..Default::default()
     });
+
+    let identifier = dummy_identifier();
+    let identifier_id = identifier.id;
+
+    let mut identifier_repository = MockIdentifierRepository::default();
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    let mut issuance_protocol_provider = MockIssuanceProtocolProvider::default();
+    issuance_protocol_provider
+        .expect_get_protocol()
+        .return_once(|_| Some(Arc::new(issuance_protocol)));
+
+    let service = setup_service(Mocks {
+        exchange_provider: issuance_protocol_provider,
+        config: generic_config().core,
+        identifier_repository,
+        ..Default::default()
+    });
     let result = service
-        .get_issuer_metadata("OPENID4VCI_FINAL1", &schema.id)
+        .get_issuer_metadata(
+            "OPENID4VCI_FINAL1",
+            &identifier_id,
+            &schema.id,
+            OID4VCIFinal1_0IssuerMetadataResponseTypeEnum::Model,
+        )
         .await
         .unwrap();
-    let credential = result.credential_configurations_supported[0].to_owned();
+
+    let OID4VCIFinal1_0IssuerMetadataResponseEnum::Model(model) = result else {
+        panic!("assertion failed: Expected an IssuerMetadataResponseEnum::Model")
+    };
+
+    let credential = model.credential_configurations_supported[0].to_owned();
     assert_eq!("vc+sd-jwt".to_string(), credential.format);
     assert_eq!(
         schema.name,
@@ -437,7 +587,7 @@ async fn test_get_issuer_metadata_sd_jwt() {
 
 #[tokio::test]
 async fn test_get_issuer_metadata_mdoc() {
-    let mut repository = MockCredentialSchemaRepository::default();
+    let mut credential_schema_repository = MockCredentialSchemaRepository::default();
     let mut did_method_provider = MockDidMethodProvider::default();
     did_method_provider
         .expect_supported_method_names()
@@ -475,7 +625,7 @@ async fn test_get_issuer_metadata_mdoc() {
     let mut schema = generic_credential_schema();
     schema.format = "MDOC".into();
     schema.organisation = Some(generic_organisation());
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     schema.claim_schemas = Some(vec![
         ClaimSchema {
             id: Uuid::new_v4().into(),
@@ -505,25 +655,53 @@ async fn test_get_issuer_metadata_mdoc() {
     };
     {
         let clone = schema.clone();
-        repository
+        credential_schema_repository
             .expect_get_credential_schema()
             .times(1)
             .with(eq(schema.id.to_owned()), eq(relations))
             .returning(move |_, _| Ok(Some(clone.clone())));
     }
-    let service = setup_service(Mocks {
-        credential_schema_repository: repository,
+    let issuance_protocol = setup_protocol(ProtocolMocks {
+        credential_schema_repository,
         did_method_provider,
         key_algorithm_provider,
-        config: generic_config().core,
         formatter_provider,
         ..Default::default()
     });
+
+    let identifier = dummy_identifier();
+    let identifier_id = identifier.id;
+
+    let mut identifier_repository = MockIdentifierRepository::default();
+    identifier_repository
+        .expect_get()
+        .returning(move |_, _| Ok(Some(identifier.clone())));
+
+    let mut issuance_protocol_provider = MockIssuanceProtocolProvider::default();
+    issuance_protocol_provider
+        .expect_get_protocol()
+        .return_once(|_| Some(Arc::new(issuance_protocol)));
+
+    let service = setup_service(Mocks {
+        exchange_provider: issuance_protocol_provider,
+        config: generic_config().core,
+        identifier_repository,
+        ..Default::default()
+    });
     let result = service
-        .get_issuer_metadata("OPENID4VCI_FINAL1", &schema.id)
+        .get_issuer_metadata(
+            "OPENID4VCI_FINAL1",
+            &identifier_id,
+            &schema.id,
+            OID4VCIFinal1_0IssuerMetadataResponseTypeEnum::Model,
+        )
         .await
         .unwrap();
-    let credential = result.credential_configurations_supported[0].to_owned();
+    let OID4VCIFinal1_0IssuerMetadataResponseEnum::Model(model) = result else {
+        panic!("assertion failed: Expected an IssuerMetadataResponseEnum::Model")
+    };
+
+    let credential = model.credential_configurations_supported[0].to_owned();
     assert_eq!("mso_mdoc".to_string(), credential.format);
     assert_eq!(
         schema.name,

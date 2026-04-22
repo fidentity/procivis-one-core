@@ -1,22 +1,24 @@
-use shared_types::{CredentialSchemaId, OrganisationId};
+use shared_types::CredentialSchemaId;
 use uuid::Uuid;
 
 use super::CredentialSchemaService;
 use super::dto::{
     CreateCredentialSchemaRequestDTO, CredentialSchemaDetailResponseDTO,
+    CredentialSchemaFilterParamsDTO, CredentialSchemaListIncludeEntityTypeEnum,
     CredentialSchemaShareResponseDTO, GetCredentialSchemaListResponseDTO,
-    GetCredentialSchemaQueryDTO, ImportCredentialSchemaRequestDTO,
+    ImportCredentialSchemaRequestDTO,
 };
 use super::error::CredentialSchemaServiceError;
-use super::mapper::from_create_request_with_id;
+use super::mapper::{from_create_request_with_id, schema_to_detail_response_dto};
 use super::validator::UniquenessCheckResult;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::credential_schema_claim::claim_schema_from_metadata_claim_schema;
 use crate::mapper::list_response_into;
 use crate::model::claim_schema::ClaimSchemaRelations;
-use crate::model::credential_schema::CredentialSchemaRelations;
+use crate::model::credential_schema::{CredentialSchemaRelations, SortableCredentialSchemaColumn};
 use crate::model::organisation::OrganisationRelations;
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::util::logging::quoted_opt_provider;
 use crate::validator::{
     throw_if_org_not_matching_session, throw_if_org_relation_not_matching_session,
@@ -221,24 +223,31 @@ impl CredentialSchemaService {
             ));
         }
 
-        schema.try_into()
+        schema_to_detail_response_dto(schema, &self.config)
     }
 
     /// Returns list of credential schemas according to query
     ///
     /// # Arguments
     ///
-    /// * `query` - query parameters
+    /// * `filter_params` - query parameters
     pub async fn get_credential_schema_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: GetCredentialSchemaQueryDTO,
+        filter_params: ListQueryDTO<
+            SortableCredentialSchemaColumn,
+            CredentialSchemaFilterParamsDTO,
+            CredentialSchemaListIncludeEntityTypeEnum,
+        >,
     ) -> Result<GetCredentialSchemaListResponseDTO, CredentialSchemaServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
         let result = self
             .credential_schema_repository
-            .get_credential_schema_list(query, &Default::default())
+            .get_credential_schema_list(filter_params.into(), &Default::default())
             .await
             .error_while("getting credential schemas")?;
         Ok(list_response_into(result))

@@ -24,14 +24,18 @@ use crate::router::AppState;
         Runs a task. Tasks can be also be run via the CLI after starting
         the core-server.
 
-        Related guide: [Configuration](/configure)
+        Related guide: [Regular Tasks](https://docs.procivis.ch/reference/configuration/core#regular-tasks)
     "},
 )]
 pub(crate) async fn post_task(
     state: State<AppState>,
     WithRejection(Json(request), _): WithRejection<Json<TaskRequestRestDTO>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<TaskResponseRestDTO> {
-    let result = state.core.task_service.run(&request.name.into()).await;
+    let result = state
+        .core
+        .task_service
+        .run(&request.name.into(), request.params)
+        .await;
     OkOrErrorResponse::from_result(
         result.map(|result| TaskResponseRestDTO { result }),
         state,

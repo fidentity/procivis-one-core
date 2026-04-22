@@ -38,13 +38,11 @@ pub struct JWTHeader {
     pub x5c: Option<Vec<String>>,
 }
 
-pub type JWTPayload<CustomPayload> = Payload<Option<String>, CustomPayload>;
-
 /// <https://www.rfc-editor.org/rfc/rfc7519.html#section-4.1>
 #[skip_serializing_none]
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Payload<Subject: SerdeSkippable, CustomPayload> {
+pub struct JWTPayload<CustomPayload> {
     #[serde(rename = "iat", default, with = "crate::mapper::timestamp::option")]
     pub issued_at: Option<OffsetDateTime>,
 
@@ -57,11 +55,8 @@ pub struct Payload<Subject: SerdeSkippable, CustomPayload> {
     #[serde(rename = "iss", default)]
     pub issuer: Option<String>,
 
-    // This is generic to account for ETSI wallet relying party registration certificate subject
-    // (see ETSI TS 119 475, https://www.etsi.org/deliver/etsi_ts/119400_119499/119475/01.01.01_60/ts_119475v010101p.pdf)
-    // which is in violation of the JWT spec and defines the sub claim as an object.
-    #[serde(rename = "sub", skip_serializing_if = "SerdeSkippable::skip")]
-    pub subject: Subject,
+    #[serde(rename = "sub", default)]
+    pub subject: Option<String>,
 
     #[serde(rename = "aud", default)]
     #[serde_as(as = "Option<OneOrMany<_>>")]
@@ -78,21 +73,10 @@ pub struct Payload<Subject: SerdeSkippable, CustomPayload> {
     pub custom: CustomPayload,
 }
 
-pub trait SerdeSkippable {
-    fn skip(&self) -> bool;
-}
-impl<T> SerdeSkippable for Option<T> {
-    fn skip(&self) -> bool {
-        self.is_none()
-    }
-}
-
-pub type DecomposedJwt<CustomPayload> = DecomposedToken<Option<String>, CustomPayload>;
-
 #[derive(Debug)]
-pub struct DecomposedToken<Subject: SerdeSkippable, CustomPayload> {
+pub struct DecomposedJwt<CustomPayload> {
     pub header: JWTHeader,
-    pub payload: Payload<Subject, CustomPayload>,
+    pub payload: JWTPayload<CustomPayload>,
     pub signature: Vec<u8>,
     pub unverified_jwt: String,
 }

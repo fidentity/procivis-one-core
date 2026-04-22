@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::proto::session_provider::SessionProvider;
+use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::signer::provider::SignerProvider;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
@@ -17,6 +18,7 @@ pub struct SignatureService {
     revocation_list_repository: Arc<dyn RevocationListRepository>,
     identifier_repository: Arc<dyn IdentifierRepository>,
     history: Arc<dyn HistoryRepository>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
     session_provider: Arc<dyn SessionProvider>,
 }
 
@@ -26,6 +28,7 @@ impl SignatureService {
         revocation_list_repository: Arc<dyn RevocationListRepository>,
         identifier_repository: Arc<dyn IdentifierRepository>,
         history: Arc<dyn HistoryRepository>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
         session_provider: Arc<dyn SessionProvider>,
     ) -> Self {
         Self {
@@ -33,6 +36,7 @@ impl SignatureService {
             revocation_list_repository,
             identifier_repository,
             history,
+            blob_storage_provider,
             session_provider,
         }
     }

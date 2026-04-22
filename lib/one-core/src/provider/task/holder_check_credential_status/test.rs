@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::config::core_config::CoreConfig;
@@ -164,7 +163,7 @@ async fn test_task_holder_check_credential_status_being_revoked() {
         HolderCheckCredentialStatus::new(Some(params), credential_repository, validity_manager);
 
     // when
-    let result = holder_check_credential_status.run().await;
+    let result = holder_check_credential_status.run(None).await;
 
     // then
     assert!(result.is_ok());
@@ -206,7 +205,7 @@ fn setup_validity_manager(repositories: Repositories) -> Arc<dyn CredentialValid
 }
 
 fn generic_credential() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let claim_schema = ClaimSchema {
         array: false,
@@ -234,8 +233,8 @@ fn generic_credential() -> Credential {
             role: KeyRole::AssertionMethod,
             key: Key {
                 id: Uuid::new_v4().into(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 public_key: vec![],
                 name: "key_name".to_string(),
                 key_reference: None,
@@ -283,6 +282,7 @@ fn generic_credential() -> Credential {
             did: Some(issuer_did),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         issuer_certificate: None,
         holder_identifier: None,

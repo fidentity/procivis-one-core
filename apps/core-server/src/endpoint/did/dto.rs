@@ -1,9 +1,12 @@
+use one_core::model::did::ExactDidFilterColumn;
 use one_core::service::did::dto::{
-    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidListItemResponseDTO, DidPatchRequestDTO,
-    DidResponseDTO, DidResponseKeysDTO,
+    CreateDidRequestDTO, CreateDidRequestKeysDTO, DidFilterParamsDTO, DidListItemResponseDTO,
+    DidPatchRequestDTO, DidResponseDTO, DidResponseKeysDTO,
 };
 use one_core::service::error::ServiceError;
-use one_dto_mapper::{From, Into, TryFrom, TryInto, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryFrom, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{DidId, DidValue, KeyId, OrganisationId};
@@ -127,7 +130,7 @@ pub(crate) struct CreateDidRequestRestDTO {
 }
 
 /// Each DID has five verification relationships defining the verification
-/// method used for different purposes. Related guide: [Keys object](/dids#keys-object)
+/// method used for different purposes. Related guide: https://docs.procivis.ch/dids#keys-object
 #[derive(Clone, Debug, Deserialize, ToSchema, Into)]
 #[into(CreateDidRequestKeysDTO)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -156,7 +159,8 @@ pub(crate) enum SortableDidColumnRestDTO {
     Deactivated,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[into(ExactDidFilterColumn)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum ExactDidFilterColumnRestEnum {
     Name,
@@ -175,45 +179,57 @@ pub(crate) enum KeyRoleRestEnum {
     UpdateKey,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = DidFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] //  // No deny_unknown_fields because of flattening inside GetDidQuery
 pub(crate) struct DidFilterQueryParamsRest {
     /// Return only DIDs with a name starting with this string. Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Return all DIDs with addresses starting with this string. Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub did: Option<String>,
     /// Filter by DIDs created locally or DIDs of remote wallets from credentials
     /// issued or proofs requested.
+    #[try_into(infallible, with_fn = convert_inner)]
     #[param(nullable = false)]
     pub r#type: Option<DidType>,
     /// Set which filters apply in an exact way.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "exact[]", inline, nullable = false)]
     pub exact: Option<Vec<ExactDidFilterColumnRestEnum>>,
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     #[param(nullable = false)]
     pub organisation_id: Option<OrganisationId>,
     /// Filter by active or deactivated DIDs.
+    #[try_into(infallible, with_fn = convert_inner)]
     #[param(inline, nullable = false)]
     pub deactivated: Option<Boolean>,
     /// Return only DIDs which support the key algorithms specified here. Uses values
     /// from the configuration.
+    #[try_into(infallible)]
     #[param(rename = "keyAlgorithms[]", nullable = false)]
     pub key_algorithms: Option<Vec<String>>,
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "keyRoles[]", inline, nullable = false)]
     pub key_roles: Option<Vec<KeyRoleRestEnum>>,
     /// Return only DIDs whose keys use the specified key storage type. Check the
     /// `keyStorage` object of the configuration for supported options.
+    #[try_into(infallible)]
     #[param(rename = "keyStorages[]", nullable = false)]
     pub key_storages: Option<Vec<String>>,
     /// Return only DIDs which use the specified keys.
+    #[try_into(infallible)]
     #[param(rename = "keyIds[]", inline, nullable = false)]
     pub key_ids: Option<Vec<KeyId>>,
     /// Return only DIDs of the method(s) specified here. Check the `did` object
     /// of the configuration for supported options.
+    #[try_into(infallible)]
     #[param(rename = "didMethods[]", nullable = false)]
     pub did_methods: Option<Vec<String>>,
 }

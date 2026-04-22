@@ -1,4 +1,7 @@
-use shared_types::{IdentifierId, KeyId, OrganisationId};
+use shared_types::{
+    BlobId, CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId,
+    TrustListSubscriberId,
+};
 
 use crate::config::core_config::IdentifierType;
 use crate::error::{ErrorCode, ErrorCodeMixin, NestedError};
@@ -20,12 +23,22 @@ pub enum IdentifierServiceError {
     OrganisationDeactivated(OrganisationId),
     #[error("Key `{0}` not found")]
     MissingKey(KeyId),
+    #[error("Trust information blob `{0}` not found")]
+    MissingTrustInformationBlob(BlobId),
+    #[error("Invalid trust information: {0}")]
+    InvalidTrustInformation(String),
 
     #[error("Mapping error: `{0}`")]
     MappingError(String),
 
     #[error(transparent)]
     Nested(#[from] NestedError),
+    #[error("Missing trust list subscriber `{0}`")]
+    MissingTrustListSubscriber(TrustListSubscriberId),
+    #[error("Credential schema `{0}` not found")]
+    CredentialSchemaNotFound(CredentialSchemaId),
+    #[error("Proof schema `{0}` not found")]
+    ProofSchemaNotFound(ProofSchemaId),
 }
 
 impl ErrorCodeMixin for IdentifierServiceError {
@@ -38,7 +51,12 @@ impl ErrorCodeMixin for IdentifierServiceError {
             Self::OrganisationDeactivated(_) => ErrorCode::BR_0241,
             Self::MissingKey(_) => ErrorCode::BR_0037,
             Self::MappingError(_) => ErrorCode::BR_0047,
+            Self::CredentialSchemaNotFound(_) => ErrorCode::BR_0413,
+            Self::ProofSchemaNotFound(_) => ErrorCode::BR_0414,
             Self::Nested(nested) => nested.error_code(),
+            Self::MissingTrustListSubscriber(_) => ErrorCode::BR_0388,
+            Self::MissingTrustInformationBlob(_) => ErrorCode::BR_0415,
+            Self::InvalidTrustInformation(_) => ErrorCode::BR_0416,
         }
     }
 }

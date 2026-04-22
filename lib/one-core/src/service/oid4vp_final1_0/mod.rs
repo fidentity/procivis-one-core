@@ -13,7 +13,6 @@ use crate::repository::proof_repository::ProofRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
 
 pub mod error;
-pub mod mapper;
 pub(crate) mod proof_request;
 pub mod service;
 

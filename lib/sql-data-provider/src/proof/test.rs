@@ -14,7 +14,7 @@ use one_core::model::key::{Key, KeyRelations};
 use one_core::model::list_filter::ListFilterValue;
 use one_core::model::list_query::ListPagination;
 use one_core::model::proof::{
-    GetProofQuery, Proof, ProofClaimRelations, ProofRelations, ProofRole, ProofStateEnum,
+    Proof, ProofClaimRelations, ProofListQuery, ProofRelations, ProofRole, ProofStateEnum,
 };
 use one_core::model::proof_schema::{ProofSchema, ProofSchemaRelations};
 use one_core::repository::certificate_repository::{
@@ -366,6 +366,7 @@ async fn test_create_proof_success() {
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         interaction: None,
         profile: None,
@@ -406,7 +407,7 @@ async fn test_get_proof_list() {
     .await;
 
     let result = repository
-        .get_proof_list(GetProofQuery {
+        .get_proof_list(ProofListQuery {
             pagination: Some(ListPagination {
                 page_size: 1,
                 page: 0,
@@ -540,6 +541,7 @@ async fn test_get_proof_with_relations() {
                 }),
                 key: None,
                 certificates: None,
+                trust_information: None,
             }))
         });
 

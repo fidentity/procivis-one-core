@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use dcql::CredentialMeta;
 use serde::Deserialize;
 use standardized_types::jwa::EncryptionAlgorithm;
 use standardized_types::jwk::PublicJwk;
@@ -10,6 +11,7 @@ use super::model::{AuthorizationRequest, AuthorizationRequestQueryParams, Params
 use crate::model::proof::Proof;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
+use crate::provider::signer::registration_certificate;
 use crate::provider::verification_protocol::openid4vp::VerificationProtocolError;
 use crate::provider::verification_protocol::openid4vp::mapper::{
     format_authorization_request_client_id_scheme_did,
@@ -164,9 +166,7 @@ fn format_params_for_redirect_uri(
         ),
         client_metadata: Some(metadata),
         dcql_query: Some(dcql_query),
-        request: None,
-        request_uri: None,
-        redirect_uri: None,
+        ..Default::default()
     })
 }
 
@@ -234,6 +234,7 @@ impl TryFrom<AuthorizationRequestQueryParams> for AuthorizationRequest {
             client_metadata: query_params.client_metadata.map(json_parse).transpose()?,
             redirect_uri: query_params.redirect_uri,
             dcql_query: query_params.dcql_query.map(json_parse).transpose()?,
+            verifier_info: vec![],
         })
     }
 }
@@ -274,6 +275,88 @@ impl TryFrom<AuthorizationRequest> for OpenID4VPHolderInteractionData {
             verifier_details: None,
         })
     }
+}
+
+pub(super) fn credential_query_matches_reg_cert_credential(
+    credential_query: &dcql::CredentialQuery,
+    req_cert_credential: &registration_certificate::model::Credential,
+) -> bool {
+    if credential_query.format != req_cert_credential.format {
+        return false;
+    }
+
+    match (&credential_query.meta, &req_cert_credential.meta) {
+        (
+            CredentialMeta::MsoMdoc {
+                doctype_value: requested,
+            },
+            CredentialMeta::MsoMdoc {
+                doctype_value: allowed,
+            },
+        ) if requested == allowed => {}
+        (
+            CredentialMeta::SdJwtVc {
+                vct_values: requested,
+            },
+            CredentialMeta::SdJwtVc {
+                vct_values: allowed,
+            },
+        ) if requested.iter().all(|vct| allowed.contains(vct)) => {}
+        (
+            CredentialMeta::W3cVc {
+                type_values: types_requested,
+            },
+            CredentialMeta::W3cVc {
+                type_values: types_allowed,
+            },
+        ) if types_requested
+            .iter()
+            .all(|requested| types_allowed.iter().any(|allowed| requested == allowed)) => {}
+        _ => {
+            return false;
+        }
+    };
+
+    // B.2.9 <https://www.etsi.org/deliver/etsi_ts/119400_119499/119475/01.02.01_60/ts_119475v010201p.pdf>
+    // If claim is absent, the WRPRC does not declare any specific attributes intended to be requested by the WRP.
+    if let Some(allowed_claims) = &req_cert_credential.claim {
+        let Some(requested_claims) = &credential_query.claims else {
+            return false;
+        };
+
+        for requested_claim in requested_claims {
+            if !allowed_claims.iter().any(|allowed_claim| {
+                query_claim_matches_reg_cert_claim(requested_claim, allowed_claim)
+            }) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn query_claim_matches_reg_cert_claim(
+    query: &dcql::ClaimQuery,
+    claim: &registration_certificate::model::Claim,
+) -> bool {
+    if query.path != claim.path {
+        return false;
+    }
+
+    // B.2.10 <https://www.etsi.org/deliver/etsi_ts/119400_119499/119475/01.02.01_60/ts_119475v010201p.pdf>
+    // If claim values specified, the request must use a subset
+    if let Some(allowed_values) = &claim.values {
+        let Some(requested) = &query.values else {
+            return false;
+        };
+
+        if !requested.iter().all(|value| allowed_values.contains(value)) {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

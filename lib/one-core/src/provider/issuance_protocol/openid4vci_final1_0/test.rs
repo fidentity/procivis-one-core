@@ -2,6 +2,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use assert2::let_assert;
+use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 use indexmap::IndexMap;
 use mockall::predicate::{always, eq};
 use one_crypto::encryption::encrypt_data;
@@ -10,7 +11,7 @@ use serde_json::{Value, json};
 use shared_types::CredentialFormat;
 use similar_asserts::assert_eq;
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use url::Url;
 use uuid::Uuid;
 use wiremock::http::Method;
@@ -25,16 +26,24 @@ use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
 use crate::model::credential_schema::{CredentialSchema, KeyStorageSecurity, LayoutType};
 use crate::model::did::{Did, DidType, KeyRole, RelatedKey};
+use crate::model::holder_wallet_unit::HolderWalletUnit;
 use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
 use crate::model::interaction::{Interaction, InteractionType};
 use crate::model::key::Key;
-use crate::proto::certificate_validator::MockCertificateValidator;
+use crate::model::wallet_unit::{WalletProviderType, WalletUnitStatus};
+use crate::proto::certificate_validator::{MockCertificateValidator, ParsedCertificate};
 use crate::proto::credential_schema::importer::MockCredentialSchemaImporter;
 use crate::proto::http_client::reqwest_client::ReqwestClient;
+use crate::proto::http_client::{MockHttpClient, Request, RequestBuilder, Response, StatusCode};
 use crate::proto::identifier_creator::{
     CreateLocalIdentifierRequest, IdentifierRole, MockIdentifierCreator, RemoteIdentifierRelation,
 };
+use crate::proto::jwt::model::JWTPayload;
+use crate::proto::session_provider::NoSessionProvider;
 use crate::proto::wallet_unit::MockHolderWalletUnitProto;
+use crate::proto::wrp_validator::{
+    AccessCertificateResult, MockWRPValidator, RegistrationCertificateResult,
+};
 use crate::provider::blob_storage_provider::MockBlobStorageProvider;
 use crate::provider::caching_loader::openid_metadata::MockOpenIDMetadataFetcher;
 use crate::provider::credential_formatter::MockCredentialFormatter;
@@ -68,9 +77,15 @@ use crate::provider::key_storage::MockKeyStorage;
 use crate::provider::key_storage::model::{KeyStorageCapabilities, StorageGeneratedKey};
 use crate::provider::key_storage::provider::MockKeyProvider;
 use crate::provider::revocation::provider::MockRevocationMethodProvider;
+use crate::provider::signer::registration_certificate;
+use crate::provider::signer::registration_certificate::model::SupervisoryAuthority;
 use crate::repository::credential_repository::MockCredentialRepository;
+use crate::repository::credential_schema_repository::MockCredentialSchemaRepository;
+use crate::repository::history_repository::MockHistoryRepository;
+use crate::repository::holder_wallet_unit_repository::MockHolderWalletUnitRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::validity_credential_repository::MockValidityCredentialRepository;
+use crate::service::certificate::dto::CertificateX509AttributesDTO;
 use crate::service::storage_proxy::MockStorageProxy;
 use crate::service::test_utilities::{
     dummy_did, dummy_identifier, dummy_key, dummy_organisation, get_dummy_date,
@@ -84,6 +99,7 @@ struct TestInputs {
     pub identifier_creator: MockIdentifierCreator,
     pub metadata_cache: MockOpenIDMetadataFetcher,
     pub validity_credential_repository: MockValidityCredentialRepository,
+    pub credential_schema_repository: MockCredentialSchemaRepository,
     pub formatter_provider: MockCredentialFormatterProvider,
     pub revocation_provider: MockRevocationMethodProvider,
     pub key_algorithm_provider: MockKeyAlgorithmProvider,
@@ -93,19 +109,27 @@ struct TestInputs {
     pub key_security_level_provider: MockKeySecurityLevelProvider,
     pub certificate_validator: MockCertificateValidator,
     pub holder_wallet_unit_proto: MockHolderWalletUnitProto,
+    pub holder_wallet_unit_repository: MockHolderWalletUnitRepository,
+    pub wrp_validator: MockWRPValidator,
+    pub history_repository: MockHistoryRepository,
     pub config: CoreConfig,
     pub params: Option<OpenID4VCIFinal1Params>,
+    pub client: Option<MockHttpClient>,
 }
 
 fn setup_protocol(inputs: TestInputs) -> OpenID4VCIFinal1_0 {
     OpenID4VCIFinal1_0::new(
-        Arc::new(ReqwestClient::default()),
+        inputs
+            .client
+            .map(|mock| Arc::new(mock) as _)
+            .unwrap_or(Arc::new(ReqwestClient::default())),
         Arc::new(inputs.metadata_cache),
         Arc::new(inputs.credential_repository),
         Arc::new(inputs.key_repository),
         Arc::new(inputs.identifier_creator),
         Arc::new(MockCredentialSchemaImporter::new()),
         Arc::new(inputs.validity_credential_repository),
+        Arc::new(inputs.credential_schema_repository),
         Arc::new(inputs.formatter_provider),
         Arc::new(inputs.revocation_provider),
         Arc::new(inputs.did_method_provider),
@@ -116,29 +140,21 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VCIFinal1_0 {
         Some("http://base_url".to_string()),
         Arc::new(inputs.config),
         inputs.params.unwrap_or(OpenID4VCIFinal1Params {
-            pre_authorized_code_expires_in: Duration::seconds(10),
-            token_expires_in: Duration::seconds(10),
             credential_offer_by_value: false,
-            refresh_expires_in: Duration::seconds(1000),
-            encryption: SecretSlice::from(vec![0; 32]),
-            url_scheme: "openid-credential-offer".to_string(),
-            redirect_uri: OpenID4VCRedirectUriParams {
-                enabled: true,
-                allowed_schemes: vec!["https".to_string()],
-            },
-            nonce: None,
-            oauth_attestation_leeway: 60,
-            key_attestation_leeway: 60,
-            common: CommonParams { webhook_task: None },
+            ..test_params("openid-credential-offer")
         }),
         "OPENID4VCI_FINAL1".to_string(),
         Arc::new(inputs.holder_wallet_unit_proto),
+        Arc::new(inputs.holder_wallet_unit_repository),
         Arc::new(inputs.certificate_validator),
+        Arc::new(inputs.wrp_validator),
+        Arc::new(inputs.history_repository),
+        Arc::new(NoSessionProvider),
     )
 }
 
 fn generic_credential_did() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let issuer_did = Did {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
             .unwrap()
@@ -169,12 +185,13 @@ fn generic_credential_did() -> Credential {
         did: Some(issuer_did),
         key: None,
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
 
 fn generic_credential_key() -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let issuer_key = Key {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
             .unwrap()
@@ -206,12 +223,13 @@ fn generic_credential_key() -> Credential {
         did: None,
         key: Some(issuer_key),
         certificates: None,
+        trust_information: None,
     };
     generic_credential(issuer_identifier)
 }
 
 fn generic_credential(issuer_identifier: Identifier) -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let claim_schema = ClaimSchema {
         id: Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965")
@@ -325,19 +343,21 @@ async fn test_generate_offer() {
     let protocol_base_url = "BASE_URL/ssi/openid4vci/final-1.0".to_string();
     let interaction_id = Uuid::from_str("c322aa7f-9803-410d-b891-939b279fb965").unwrap();
     let credential = generic_credential_did();
+    let issuer_identifier_id = credential.issuer_identifier.as_ref().unwrap().id;
 
     let offer = create_credential_offer(
         &protocol_base_url,
         &credential.protocol,
         &interaction_id.to_string(),
         credential.schema.as_ref().unwrap(),
+        Some(issuer_identifier_id),
     )
     .unwrap();
 
     assert_eq!(
         json!(&offer),
         json!({
-            "credential_issuer": format!("BASE_URL/ssi/openid4vci/final-1.0/{}/c322aa7f-9803-410d-b891-939b279fb965", credential.protocol),
+            "credential_issuer": format!("BASE_URL/ssi/openid4vci/final-1.0/{}/{issuer_identifier_id}/c322aa7f-9803-410d-b891-939b279fb965", credential.protocol),
             "credential_configuration_ids" : [
                 credential.schema.as_ref().unwrap().schema_id,
             ],
@@ -365,22 +385,7 @@ async fn test_generate_share_credentials_offer_by_value() {
     let credential = generic_credential_did();
 
     let protocol = setup_protocol(TestInputs {
-        params: Some(OpenID4VCIFinal1Params {
-            pre_authorized_code_expires_in: Duration::seconds(10),
-            token_expires_in: Duration::seconds(10),
-            credential_offer_by_value: true,
-            refresh_expires_in: Duration::seconds(1000),
-            encryption: SecretSlice::from(vec![0; 32]),
-            url_scheme: "openid-credential-offer".to_string(),
-            redirect_uri: OpenID4VCRedirectUriParams {
-                enabled: true,
-                allowed_schemes: vec!["https".to_string()],
-            },
-            nonce: None,
-            oauth_attestation_leeway: 60,
-            key_attestation_leeway: 60,
-            common: CommonParams { webhook_task: None },
-        }),
+        params: Some(test_params("openid-credential-offer")),
         ..Default::default()
     });
 
@@ -388,7 +393,7 @@ async fn test_generate_share_credentials_offer_by_value() {
     // Everything except for interaction id is here.
     // Generating token with predictable interaction id is tested somewhere else.
     assert!(
-        result.url.starts_with(r#"openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22http%3A%2F%2Fbase_url%2Fssi%2Fopenid4vci%2Ffinal-1.0%2FOPENID4VCI_FINAL1%2Fc322aa7f-9803-410d-b891-939b279fb965%22%2C%22credential_configuration_ids%22%3A%5B%22CredentialSchemaId%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%"#)
+        result.url.starts_with(r#"openid-credential-offer://?credential_offer=%7B%22credential_issuer%22%3A%22http%3A%2F%2Fbase_url%2Fssi%2Fopenid4vci%2Ffinal-1.0%2FOPENID4VCI_FINAL1%2Fc322aa7f-9803-410d-b891-939b279fb965%2Fc322aa7f-9803-410d-b891-939b279fb965%22%2C%22credential_configuration_ids%22%3A%5B%22CredentialSchemaId%22%5D%2C%22grants%22%3A%7B%22urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Apre-authorized_code%22%3A%7B%22pre-authorized_code%22%3A%"#)
     );
 }
 
@@ -429,6 +434,8 @@ async fn test_holder_accept_credential_success() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -450,9 +457,9 @@ async fn test_holder_accept_credential_success() {
             {
                 "access_token": "321",
                 "token_type": "bearer",
-                "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                 "refresh_token": "321",
-                "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -572,11 +579,18 @@ async fn test_holder_accept_credential_success() {
             move |_, _, _| Ok((identifier, RemoteIdentifierRelation::Key(dummy_key())))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
         key_algorithm_provider,
         identifier_creator,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -594,7 +608,6 @@ async fn test_holder_accept_credential_success() {
                 key,
             }),
             &storage_access,
-            None,
             None,
         )
         .await
@@ -649,6 +662,8 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -670,9 +685,9 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             {
                 "access_token": "321",
                 "token_type": "bearer",
-                "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                 "refresh_token": "321",
-                "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -794,11 +809,18 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
             ))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
         key_algorithm_provider,
         identifier_creator,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -826,7 +848,6 @@ async fn test_holder_accept_credential_none_existing_issuer_key_id_success() {
                 key,
             }),
             &storage_access,
-            None,
             None,
         )
         .await
@@ -877,6 +898,8 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -898,9 +921,9 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
             {
                 "access_token": "321",
                 "token_type": "bearer",
-                "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                 "refresh_token": "321",
-                "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -1071,6 +1094,12 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
             move |_, _, _| Ok((identifier, RemoteIdentifierRelation::Key(dummy_key())))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         formatter_provider,
         key_provider,
@@ -1078,12 +1107,13 @@ async fn test_holder_accept_credential_autogenerate_holder_binding() {
         identifier_creator,
         key_algorithm_provider,
         key_security_level_provider,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
 
     let result = openid_provider
-        .holder_accept_credential(interaction, None, &storage_access, None, None)
+        .holder_accept_credential(interaction, None, &storage_access, None)
         .await
         .unwrap();
 
@@ -1142,6 +1172,8 @@ async fn test_holder_reject_credential() {
             notification_id: Some("notification_id".to_string()),
             protocol: "OPENID4VCI_FINAL1".to_string(),
             format: "jwt_vc_json".to_string(),
+            access_certificate: None,
+            registration_certificate: None,
         };
 
         credential.interaction = Some(Interaction {
@@ -1166,9 +1198,9 @@ async fn test_holder_reject_credential() {
             {
                 "access_token": "321",
                 "token_type": "bearer",
-                "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                 "refresh_token": "321",
-                "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -1250,22 +1282,6 @@ async fn test_holder_reject_credential() {
         did_method_provider,
         key_algorithm_provider,
         config: dummy_config(),
-        params: Some(OpenID4VCIFinal1Params {
-            pre_authorized_code_expires_in: Duration::seconds(10),
-            token_expires_in: Duration::seconds(10),
-            credential_offer_by_value: true,
-            refresh_expires_in: Duration::seconds(1000),
-            encryption,
-            url_scheme: "openid-credential-offer".to_string(),
-            redirect_uri: OpenID4VCRedirectUriParams {
-                enabled: true,
-                allowed_schemes: vec!["https".to_string()],
-            },
-            nonce: None,
-            oauth_attestation_leeway: 60,
-            key_attestation_leeway: 60,
-            common: CommonParams { webhook_task: None },
-        }),
         ..Default::default()
     });
 
@@ -1342,11 +1358,12 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
             .expect_get()
             .with(eq(format!(
                 "{issuer_url}.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}"
-            )))
+            )),
+            eq("application/json"))
             .once()
             .returning({
                     let credential_issuer = credential_issuer.clone();
-                    move |_| Ok(json!({
+                    move |_,_| Ok(json!({
                         "authorization_endpoint": format!("{credential_issuer}/authorize"),
                         "grant_types_supported": [
                             "urn:ietf:params:oauth:grant-type:pre-authorized_code"
@@ -1368,9 +1385,10 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
         .expect_get()
         .with(eq(format!(
             "{issuer_url}.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{credential_schema_id}"
-        )))
+        )),
+    eq("application/json"))
         .once()
-        .returning(move |_| Ok(json!({
+        .returning(move |_,_| Ok(json!({
             "credential_endpoint": format!("{credential_issuer}/credential"),
             "credential_issuer": credential_issuer,
             "nonce_endpoint": format!("{credential_issuer}/nonce"),
@@ -1432,6 +1450,274 @@ async fn inner_test_handle_invitation_credential_by_ref_success(
 }
 
 #[tokio::test]
+async fn test_handle_invitation_signed_metadata() {
+    let mut client = MockHttpClient::new();
+
+    let credential_offer = json!({
+        "credential_issuer": "http://issuer.url",
+        "credential_configuration_ids" : ["doctype"],
+        "grants": {
+            "urn:ietf:params:oauth:grant-type:pre-authorized_code": { "pre-authorized_code": "c322aa7f-9803-410d-b891-939b279fb965" }
+        }
+    });
+
+    client
+        .expect_get()
+        .with(eq("http://issuer.url/offer"))
+        .once()
+        .return_once(|url| {
+            let mut client = MockHttpClient::new();
+            client
+                .expect_send()
+                .once()
+                .return_once(move |url, body, headers, method, timeout| {
+                    Ok(Response {
+                        body: credential_offer.to_string().as_bytes().to_vec(),
+                        headers: Default::default(),
+                        status: StatusCode(200),
+                        request: Request {
+                            body,
+                            headers: headers.unwrap_or_default(),
+                            method,
+                            url: url.to_string(),
+                            timeout,
+                        },
+                    })
+                });
+
+            RequestBuilder::new(
+                Arc::new(client),
+                crate::proto::http_client::Method::Get,
+                url,
+            )
+        });
+
+    let mut metadata_cache = MockOpenIDMetadataFetcher::new();
+
+    let access_certificate = "MIIDDDCCArKgAwIBAgIUG8SguUrbgpJUvd6v+07Sp8utLfQwCgYIKoZIzj0EAwIwXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4XDTI1MDQxMDA2NDU1OFoXDTI3MDQxMDA2NDU1N1owVzEdMBsGA1UEAwwURVVESSBSZW1vdGUgVmVyaWZpZXIxCjAIBgNVBAUTATExHTAbBgNVBAoMFEVVREkgUmVtb3RlIFZlcmlmaWVyMQswCQYDVQQGEwJVVDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABOciV42mIT8nQMAN8kW9CHNUTYwkieem5hl1QsLf62kEbbZh6wul5iL28g/A3ZqcTX9XoLnw/nvJ8/HRp3+95eKjggFVMIIBUTAMBgNVHRMBAf8EAjAAMB8GA1UdIwQYMBaAFGLHlEcovQ+iFiCnmsJJlETxAdPHMDkGA1UdEQQyMDCBEm5vLXJlcGx5QGV1ZGl3LmRldoIadmVyaWZpZXItYmFja2VuZC5ldWRpdy5kZXYwEgYDVR0lBAswCQYHKIGMXQUBBjBDBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9jcmwvcGlkX0NBX1VUXzAyLmNybDAdBgNVHQ4EFgQUgAh9KsoYXYK8jndUbFQEtfDsHjYwDgYDVR0PAQH/BAQDAgeAMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNvbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJlZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwIDSAAwRQIgDFCgyEjGnJS25n/FfdP7HX0elz7C2q4uUQ/7Zcrl0QYCIQC/rrJpQ5sF1O4aiHejIPPLuO3JjdrLJPZSA+FQH+eIrA==";
+    let registration_certificate = "registration-certificate";
+    let jwt = {
+        let header = json!({
+            "typ": "openidvci-issuer-metadata+jwt",
+            "alg" : "ES256",
+            "x5c": [access_certificate]
+        });
+        let payload = json!({
+            "credential_endpoint": "http://issuer.url/credential",
+            "credential_issuer": "http://issuer.url",
+            "nonce_endpoint": "http://issuer.url/nonce",
+            "credential_configurations_supported": {
+                "doctype": {
+                    "format": "mso_mdoc",
+                    "doctype": "doctype"
+                }
+            },
+            "issuer_info": [{
+                "format": "registration_cert",
+                "data": registration_certificate
+            }]
+        });
+
+        let header =
+            Base64UrlSafeNoPadding::encode_to_string(header.to_string().as_bytes()).unwrap();
+        let payload =
+            Base64UrlSafeNoPadding::encode_to_string(payload.to_string().as_bytes()).unwrap();
+        format!("{header}.{payload}.c2lnbmF0dXJl")
+    };
+
+    metadata_cache
+        .expect_get()
+        .with(
+            eq("http://issuer.url/.well-known/openid-credential-issuer"),
+            eq("application/jwt"),
+        )
+        .once()
+        .return_once(move |_, _| Ok(jwt.as_bytes().to_vec()));
+
+    metadata_cache
+        .expect_get()
+        .with(
+            eq("http://issuer.url/.well-known/oauth-authorization-server"),
+            eq("application/json"),
+        )
+        .once()
+        .return_once(|_, _| {
+            Ok(json!({
+                "authorization_endpoint": "http://issuer.url/authorize",
+                "grant_types_supported": [
+                    "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+                ],
+                "id_token_signing_alg_values_supported": [],
+                "issuer": "http://issuer.url",
+                "jwks_uri": "http://issuer.url/jwks",
+                "token_endpoint": "http://issuer.url/token",
+                "response_types_supported": [
+                    "token"
+                ],
+                "subject_types_supported": [
+                    "public"
+                ]
+            })
+            .to_string()
+            .as_bytes()
+            .to_vec())
+        });
+
+    let mut key_algorithm_provider = MockKeyAlgorithmProvider::new();
+    key_algorithm_provider
+        .expect_key_algorithm_from_jose_alg()
+        .with(eq("ES256"))
+        .once()
+        .return_once(|_| {
+            let mut key_algorithm = MockKeyAlgorithm::new();
+            key_algorithm
+                .expect_algorithm_type()
+                .once()
+                .return_const(KeyAlgorithmType::Ecdsa);
+            Some((KeyAlgorithmType::Ecdsa, Arc::new(key_algorithm)))
+        });
+
+    let mut certificate_validator = MockCertificateValidator::new();
+    certificate_validator
+        .expect_parse_pem_chain()
+        .once()
+        .return_once(|_, _| {
+            let mut signature_handle = MockSignaturePublicKeyHandle::new();
+            signature_handle
+                .expect_verify()
+                .once()
+                .return_once(|_, _| Ok(()));
+
+            Ok(ParsedCertificate {
+                attributes: CertificateX509AttributesDTO {
+                    serial_number: "test".to_string(),
+                    not_before: crate::clock::now_utc(),
+                    not_after: crate::clock::now_utc(),
+                    issuer: "Test Issuer".to_string(),
+                    subject: "Test Subject".to_string(),
+                    fingerprint: "test".to_string(),
+                    extensions: vec![],
+                },
+                subject_common_name: Some("Test".to_string()),
+                subject_key_identifier: None,
+                public_key: KeyHandle::SignatureOnly(SignatureKeyHandle::PublicKeyOnly(Arc::new(
+                    signature_handle,
+                ))),
+            })
+        });
+
+    let rp_id = "rp_id";
+    let mut wrp_validator = MockWRPValidator::new();
+    wrp_validator
+        .expect_validate_access_certificate_trust()
+        .once()
+        .return_once(|_, _| {
+            Ok(AccessCertificateResult {
+                trust_entity: None,
+                rp_id: rp_id.to_string(),
+                registry_url: None,
+            })
+        });
+    wrp_validator
+        .expect_validate_registration_certificate()
+        .with(eq(registration_certificate), eq(rp_id), always())
+        .once()
+        .return_once(|_, _, _| {
+            Ok(RegistrationCertificateResult {
+                trust_entity: None,
+                payload: JWTPayload {
+                    issued_at: Some(crate::clock::now_utc()),
+                    expires_at: None,
+                    invalid_before: None,
+                    issuer: None,
+                    subject: Some(rp_id.to_string()),
+                    audience: None,
+                    jwt_id: None,
+                    proof_of_possession_key: None,
+                    custom: registration_certificate::model::Payload {
+                        name: "".to_string(),
+                        sub_ln: None,
+                        sub_gn: None,
+                        sub_fn: None,
+                        country: "".to_string(),
+                        registry_uri: Url::parse("https://example.com").unwrap(),
+                        service_descriptions: vec![],
+                        entitlements: vec![],
+                        privacy_policy: Url::parse("https://example.com").unwrap(),
+                        info_uri: Url::parse("https://example.com").unwrap(),
+                        supervisory_authority: SupervisoryAuthority {
+                            email: "".to_string(),
+                            phone: "".to_string(),
+                            uri: "".to_string(),
+                        },
+                        policy_id: vec![],
+                        certificate_policy: Url::parse("https://example.com").unwrap(),
+                        status: None,
+                        provides_attestations: Some(vec![
+                            registration_certificate::model::Credential {
+                                format: dcql::CredentialFormat::MsoMdoc,
+                                meta: dcql::CredentialMeta::MsoMdoc {
+                                    doctype_value: "doctype".to_string(),
+                                },
+                                claim: None,
+                            },
+                        ]),
+                        credentials: None,
+                        purpose: None,
+                        intended_use_id: Some("intended_use_id".to_string()),
+                        public_body: None,
+                        support_uri: Url::parse("https://example.com").unwrap(),
+                        intermediary: None,
+                    },
+                },
+            })
+        });
+
+    let protocol = setup_protocol(TestInputs {
+        metadata_cache,
+        key_algorithm_provider,
+        certificate_validator,
+        wrp_validator,
+        client: Some(client),
+        params: Some(OpenID4VCIFinal1Params {
+            request_signed_metadata: true,
+            ..test_params("openid-credential-offer")
+        }),
+        ..Default::default()
+    });
+
+    let mut storage_proxy = MockStorageProxy::new();
+    storage_proxy
+        .expect_create_interaction()
+        .withf(move |interaction| {
+            let data: HolderInteractionData =
+                serde_json::from_slice(interaction.data.as_ref().unwrap()).unwrap();
+
+            assert_eq!(data.access_certificate.unwrap(), access_certificate);
+            assert_eq!(
+                data.registration_certificate.unwrap(),
+                registration_certificate
+            );
+            true
+        })
+        .once()
+        .return_once(|_| Ok(Uuid::new_v4().into()));
+
+    let url = Url::parse(
+        "openid-credential-offer://?credential_offer_uri=http%3A%2F%2Fissuer.url%2Foffer",
+    )
+    .unwrap();
+    let result = protocol
+        .holder_handle_invitation(url, dummy_organisation(None), &storage_proxy, None)
+        .await
+        .unwrap();
+
+    assert2::assert!(
+        let InvitationResponseEnum::Credential {..} = result
+    );
+}
+
+#[tokio::test]
 async fn test_continue_issuance_with_scope_success() {
     inner_continue_issuance_test(true, false).await;
 }
@@ -1458,11 +1744,12 @@ async fn inner_continue_issuance_test(with_scope: bool, with_credential_configur
 
     metadata_cache
         .expect_get()
-        .with(eq(format!("http://issuer/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}")))
+        .with(eq(format!("http://issuer/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{credential_schema_id}")),
+    eq("application/json"))
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_,_| {
                 Ok(json!({
                     "authorization_endpoint": format!("{credential_issuer}/authorize"),
                     "grant_types_supported": [
@@ -1488,11 +1775,12 @@ async fn inner_continue_issuance_test(with_scope: bool, with_credential_configur
         .expect_get()
         .with(eq(format!(
             "http://issuer/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{credential_schema_id}"
-        )))
+        )),
+        eq("application/json"))
         .once()
         .returning({
             let credential_issuer = credential_issuer.clone();
-            move |_| {
+            move |_,_| {
                 Ok(json!({
                     "credential_endpoint": format!("{credential_issuer}/credential"),
                     "credential_issuer": credential_issuer,
@@ -1625,8 +1913,11 @@ async fn test_can_handle_issuance_success_with_custom_url_scheme() {
     let mut metadata_cache = MockOpenIDMetadataFetcher::new();
     metadata_cache
         .expect_get()
-        .with(eq("http://base_url/.well-known/openid-credential-issuer"))
-        .returning(|_| Ok(dummy_issuer_metadata()));
+        .with(
+            eq("http://base_url/.well-known/openid-credential-issuer"),
+            eq("application/json"),
+        )
+        .returning(|_, _| Ok(dummy_issuer_metadata()));
 
     let protocol = setup_protocol(TestInputs {
         params: Some(test_params(url_scheme)),
@@ -1730,6 +2021,8 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -1762,8 +2055,15 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
             Some(Arc::new(security))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| Ok(None));
+
     let openid_provider = setup_protocol(TestInputs {
         key_security_level_provider,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -1785,14 +2085,13 @@ async fn test_holder_accept_credential_fails_without_wallet_unit_id_when_key_att
             }),
             &MockStorageProxy::default(),
             None,
-            None,
         )
         .await;
 
     let err = result.unwrap_err();
     assert!(
         err.to_string()
-            .contains("key storage attestation requires holder wallet unit id"),
+            .contains("key storage attestation requires active holder wallet unit id"),
     );
 }
 
@@ -1846,6 +2145,8 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
         notification_id: None,
         protocol: "OPENID4VCI_FINAL1".to_string(),
         format: "jwt_vc_json".to_string(),
+        access_certificate: None,
+        registration_certificate: None,
     };
 
     let interaction = Interaction {
@@ -1867,9 +2168,9 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
             {
                 "access_token": "321",
                 "token_type": "bearer",
-                "expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
                 "refresh_token": "321",
-                "refresh_token_expires_in": OffsetDateTime::now_utc().unix_timestamp() + 3600,
+                "refresh_token_expires_in": crate::clock::now_utc().unix_timestamp() + 3600,
             }
         )))
         .expect(1)
@@ -1995,6 +2296,26 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
             Some(Arc::new(security))
         });
 
+    let mut holder_wallet_unit_repository = MockHolderWalletUnitRepository::new();
+    holder_wallet_unit_repository
+        .expect_get_holder_wallet_unit_by_org_id()
+        .once()
+        .return_once(|_| {
+            Ok(Some(HolderWalletUnit {
+                id: Uuid::new_v4().into(),
+                created_date: get_dummy_date(),
+                last_modified: get_dummy_date(),
+                wallet_provider_type: WalletProviderType::ProcivisOne,
+                wallet_provider_name: "provider".to_string(),
+                wallet_provider_url: "provider.url".to_string(),
+                provider_wallet_unit_id: Uuid::new_v4().into(),
+                status: WalletUnitStatus::Active,
+                organisation: None,
+                authentication_key: None,
+                wallet_unit_attestations: None,
+            }))
+        });
+
     let mut holder_wallet_unit_proto = MockHolderWalletUnitProto::new();
     holder_wallet_unit_proto
         .expect_issue_wallet_attestations()
@@ -2024,6 +2345,7 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
         identifier_creator,
         key_security_level_provider,
         holder_wallet_unit_proto,
+        holder_wallet_unit_repository,
         config: dummy_config(),
         ..Default::default()
     });
@@ -2032,7 +2354,7 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
         storage_type: "INTERNAL".to_string(),
         ..dummy_key()
     };
-    let wallet_unit_id = Uuid::new_v4().into();
+
     let result = openid_provider
         .holder_accept_credential(
             interaction,
@@ -2046,7 +2368,6 @@ async fn test_holder_accept_credential_succeeds_with_wallet_unit_id_when_key_att
             }),
             &storage_access,
             None,
-            Some(wallet_unit_id),
         )
         .await
         .unwrap();
@@ -2071,6 +2392,7 @@ fn test_params(issuance_url_scheme: &str) -> OpenID4VCIFinal1Params {
         nonce: None,
         oauth_attestation_leeway: 60,
         key_attestation_leeway: 60,
+        request_signed_metadata: false,
         common: CommonParams { webhook_task: None },
     }
 }

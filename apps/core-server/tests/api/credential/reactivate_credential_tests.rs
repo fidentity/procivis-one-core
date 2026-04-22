@@ -1,5 +1,5 @@
 use one_core::model::credential::CredentialStateEnum;
-use one_core::model::revocation_list::{RevocationListEntryStatus, RevocationListPurpose};
+use one_core::model::revocation_list::{RevocationListEntryState, RevocationListPurpose};
 use similar_asserts::assert_eq;
 
 use crate::fixtures::TestingCredentialParams;
@@ -57,7 +57,7 @@ async fn test_reactivate_credential_with_bitstring_status_list_success() {
         .update_entry(
             revocation_list.id,
             0,
-            Some(RevocationListEntryStatus::Revoked),
+            Some(RevocationListEntryState::Revoked),
         )
         .await;
 
@@ -78,7 +78,7 @@ async fn test_reactivate_credential_with_bitstring_status_list_success() {
         .await;
     assert_eq!(revocation_list_entry.len(), 1);
     assert_eq!(
-        revocation_list_entry[0].status,
-        RevocationListEntryStatus::Active
+        revocation_list_entry[0].state,
+        RevocationListEntryState::Active
     );
 }

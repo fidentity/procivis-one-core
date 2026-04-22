@@ -16,14 +16,16 @@ use super::app_integrity::android::validate_attestation_android;
 use super::app_integrity::ios::{validate_attestation_ios, webauthn_signed_jwt_to_msg_and_sig};
 use super::dto::{
     GetWalletUnitListResponseDTO, GetWalletUnitResponseDTO, IssueWalletUnitAttestationRequestDTO,
-    IssueWalletUnitAttestationResponseDTO, NoncePayload, RegisterWalletUnitRequestDTO,
-    RegisterWalletUnitResponseDTO, WalletInstanceAttestationClaims,
+    IssueWalletUnitAttestationResponseDTO, NoncePayload, ProviderTrustCollectionDTO,
+    RegisterWalletUnitRequestDTO, RegisterWalletUnitResponseDTO, WalletInstanceAttestationClaims,
     WalletProviderMetadataResponseDTO, WalletProviderParams, WalletRegistrationRequirement,
     WalletUnitActivationRequestDTO, WalletUnitAttestationClaims, WalletUnitAttestationMetadataDTO,
+    WalletUnitFilterParamsDTO,
 };
 use super::error::WalletProviderError;
 use super::mapper::{
-    map_already_exists_error, public_key_from_wallet_unit, wallet_unit_from_request,
+    map_already_exists_error, params_into_display_names, public_key_from_wallet_unit,
+    wallet_unit_from_request,
 };
 use super::validator::{
     validate_org_wallet_provider, validate_proof_payload, validate_revocation_method,
@@ -40,11 +42,14 @@ use crate::model::history::{
 };
 use crate::model::identifier::{IdentifierRelations, IdentifierType};
 use crate::model::key::KeyRelations;
+use crate::model::list_filter::ListFilterValue;
+use crate::model::list_query::{ListPagination, ListSorting};
 use crate::model::organisation::{Organisation, OrganisationRelations};
 use crate::model::revocation_list::RevocationListRelations;
+use crate::model::trust_collection::{TrustCollectionFilterValue, TrustCollectionListQuery};
 use crate::model::wallet_unit::{
-    UpdateWalletUnitRequest, WalletUnit, WalletUnitListQuery, WalletUnitOs, WalletUnitRelations,
-    WalletUnitStatus,
+    SortableWalletUnitColumn, UpdateWalletUnitRequest, WalletUnit, WalletUnitListQuery,
+    WalletUnitOs, WalletUnitRelations, WalletUnitStatus,
 };
 use crate::model::wallet_unit_attested_key::{
     WalletUnitAttestedKey, WalletUnitAttestedKeyRelations, WalletUnitAttestedKeyRevocationInfo,
@@ -61,6 +66,7 @@ use crate::provider::key_algorithm::error::KeyAlgorithmProviderError;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::revocation::RevocationMethod;
 use crate::provider::revocation::model::{CredentialRevocationInfo, RevocationState};
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::error::MissingProviderError;
 use crate::util::key_selection::KeyFilter;
 use crate::validator::{
@@ -108,11 +114,34 @@ impl WalletProviderService {
     /// * `query` - query parameters
     pub async fn get_wallet_unit_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: WalletUnitListQuery,
+        filter_params: ListQueryDTO<SortableWalletUnitColumn, WalletUnitFilterParamsDTO>,
     ) -> Result<GetWalletUnitListResponseDTO, WalletProviderError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
+        // We can't use the From impl to convert the ListQueryDto to a ListQuery
+        // because the filter param conversion involves computing a sha256 hash, which is faliable (unlike other cases)
+        let filtering = filter_params
+            .filter
+            .try_into()
+            .error_while("mapping filter query")?;
+
+        let query = WalletUnitListQuery {
+            pagination: Some(ListPagination {
+                page: filter_params.page,
+                page_size: filter_params.page_size,
+            }),
+            sorting: filter_params.sort.map(|column| ListSorting {
+                column,
+                direction: filter_params.sort_direction,
+            }),
+            filtering: Some(filtering),
+            include: None,
+        };
+
         let result = self
             .wallet_unit_repository
             .get_wallet_unit_list(query)
@@ -271,6 +300,7 @@ impl WalletProviderService {
                 entity_id: Some(EntityId::from(*wallet_unit_id)),
                 entity_type: HistoryEntityType::WalletUnit,
                 metadata,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })
@@ -338,7 +368,7 @@ impl WalletProviderService {
 
         match wallet_unit.status {
             WalletUnitStatus::Pending => {} // OK
-            WalletUnitStatus::Active | WalletUnitStatus::Error => {
+            WalletUnitStatus::Active | WalletUnitStatus::Unattested | WalletUnitStatus::Error => {
                 return Err(WalletProviderError::InvalidWalletUnitState
                     .error_while("checking status")
                     .into());
@@ -986,7 +1016,6 @@ impl WalletProviderService {
             .get(
                 issuer_identifier_id,
                 &IdentifierRelations {
-                    organisation: None,
                     did: Some(DidRelations {
                         keys: Some(KeyRelations::default()),
                         ..Default::default()
@@ -996,6 +1025,7 @@ impl WalletProviderService {
                         key: Some(KeyRelations::default()),
                         ..Default::default()
                     }),
+                    ..Default::default()
                 },
             )
             .await
@@ -1303,6 +1333,47 @@ impl WalletProviderService {
             WalletRegistrationRequirement::Optional => (true, false),
             WalletRegistrationRequirement::Disabled => (false, false),
         };
+
+        let trust_collections = if params.trust_collections.is_empty() {
+            vec![]
+        } else {
+            let models = self
+                .trust_collection_repository
+                .list(TrustCollectionListQuery {
+                    filtering: Some(
+                        TrustCollectionFilterValue::Ids(
+                            params.trust_collections.keys().cloned().collect(),
+                        )
+                        .condition(),
+                    ),
+                    ..Default::default()
+                })
+                .await
+                .error_while("getting trust collections")?
+                .values;
+
+            params
+                .trust_collections
+                .into_iter()
+                .map(|(collection_id, params)| {
+                    let model = models.iter().find(|m| m.id == collection_id).ok_or(
+                        WalletProviderError::MappingError(format!(
+                            "Missing collection {}",
+                            collection_id
+                        )),
+                    )?;
+
+                    Ok(ProviderTrustCollectionDTO {
+                        id: collection_id,
+                        name: model.name.to_owned(),
+                        logo: params.logo,
+                        display_name: params_into_display_names(params.display_name),
+                        description: params_into_display_names(params.description),
+                    })
+                })
+                .collect::<Result<_, WalletProviderError>>()?
+        };
+
         Ok(WalletProviderMetadataResponseDTO {
             wallet_unit_attestation: WalletUnitAttestationMetadataDTO {
                 app_integrity_check_required: params
@@ -1314,6 +1385,8 @@ impl WalletProviderService {
             },
             name: wallet_provider,
             app_version: params.app_version,
+            feature_flags: params.feature_flags,
+            trust_collections,
         })
     }
 }

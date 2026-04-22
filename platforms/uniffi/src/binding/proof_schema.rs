@@ -1,7 +1,5 @@
-use one_core::model::common::ExactColumn;
-use one_core::model::proof_schema::SortableProofSchemaColumn;
+use one_core::model::proof_schema::{ExactProofSchemaFilterColumn, SortableProofSchemaColumn};
 use one_core::service::error::ServiceError;
-use one_core::service::proof::dto::ProofClaimDTO;
 use one_core::service::proof_schema::dto::{
     GetProofSchemaListItemDTO, GetProofSchemaListResponseDTO, GetProofSchemaResponseDTO,
     ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO, ImportProofSchemaInputSchemaDTO,
@@ -11,7 +9,7 @@ use one_core::service::proof_schema::dto::{
 use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
 use shared_types::ProofSchemaId;
 
-use super::OneCoreBinding;
+use super::OneCore;
 use super::common::SortDirection;
 use super::credential_schema::{
     CredentialSchemaBindingDTO, CredentialSchemaLayoutPropertiesBindingDTO,
@@ -22,7 +20,11 @@ use crate::error::{BindingError, ErrorResponseBindingDTO};
 use crate::utils::{TimestampFormat, into_id, into_timestamp, into_timestamp_opt};
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
+    /// Creates a proof schema, which defines the credentials and claims to
+    /// request from a wallet. Proof schemas reference credential schemas
+    /// already created in your own system; create or import those first
+    /// before building a proof schema that includes their claims.
     #[uniffi::method]
     pub async fn create_proof_schema(
         &self,
@@ -54,15 +56,14 @@ impl OneCoreBinding {
     }
 
     #[uniffi::method]
-    pub async fn get_proof_schemas(
+    pub async fn list_proof_schemas(
         &self,
         filter: ListProofSchemasFiltersBindingDTO,
     ) -> Result<ProofSchemaListBindingDTO, BindingError> {
-        let organisation_id = into_id(filter.organisation_id.clone())?;
         let core = self.use_core().await?;
         Ok(core
             .proof_schema_service
-            .get_proof_schema_list(&organisation_id, filter.try_into()?)
+            .get_proof_schema_list(filter.try_into()?)
             .await?
             .into())
     }
@@ -110,6 +111,7 @@ impl OneCoreBinding {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetProofSchemaListItemDTO)]
+#[uniffi(name = "ProofSchemaListItem")]
 pub struct GetProofSchemaListItemBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -120,11 +122,16 @@ pub struct GetProofSchemaListItemBindingDTO {
     #[from(with_fn = optional_time)]
     pub deleted_at: Option<String>,
     pub name: String,
+    /// Defines how long the system will store data received from wallets. After
+    /// the defined duration, the received proof and its data are deleted from
+    /// the system. If 0, proofs received when using this schema will not be
+    /// deleted.
     pub expire_duration: u32,
 }
 
 #[derive(Debug, TryInto, uniffi::Record)]
 #[try_into(T = ImportProofSchemaRequestDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "ImportProofSchemaRequest")]
 pub struct ImportProofSchemaRequestBindingsDTO {
     pub schema: ImportProofSchemaBindingDTO,
     #[try_into(with_fn_ref = into_id)]
@@ -133,6 +140,7 @@ pub struct ImportProofSchemaRequestBindingsDTO {
 
 #[derive(Debug, TryInto, uniffi::Record)]
 #[try_into(T = ImportProofSchemaDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "ImportProofSchema")]
 pub struct ImportProofSchemaBindingDTO {
     #[try_into(with_fn_ref = into_id)]
     pub id: String,
@@ -142,18 +150,25 @@ pub struct ImportProofSchemaBindingDTO {
     pub last_modified: String,
     #[try_into(infallible)]
     pub name: String,
+    /// Specifies the organizational context for this operation.
     #[try_into(with_fn_ref = into_id)]
     pub organisation_id: String,
+    /// Defines how long the system will store data received from wallets. After
+    /// the defined duration, the received proof and its data are deleted from
+    /// the system. If 0, proofs received when using this schema will not be
+    /// deleted.
     #[try_into(infallible)]
     pub expire_duration: u32,
     #[try_into(infallible)]
     pub imported_source_url: String,
+    /// Set of all claims to request.
     #[try_into(with_fn = try_convert_inner)]
     pub proof_input_schemas: Vec<ImportProofSchemaInputSchemaBindingDTO>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetProofSchemaResponseDTO)]
+#[uniffi(name = "ProofSchemaDetail")]
 pub struct GetProofSchemaBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -162,17 +177,25 @@ pub struct GetProofSchemaBindingDTO {
     #[from(with_fn_ref = "TimestampFormat::format_timestamp")]
     pub last_modified: String,
     pub name: String,
+    /// Specifies organizational context for this operation.
     #[from(with_fn_ref = "ToString::to_string")]
     pub organisation_id: String,
+    /// Defines how long the system will store data received from wallets. After
+    /// the defined duration, the received proof and its data are deleted from
+    /// the system. If 0, proofs received when using this schema will not be
+    /// deleted.
     pub expire_duration: u32,
+    /// Set of requested claims.
     #[from(with_fn = convert_inner)]
     pub proof_input_schemas: Vec<ProofInputSchemaBindingDTO>,
+    /// Source URL for imported schema.
     #[from(with_fn = convert_inner)]
     pub imported_source_url: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProofInputSchemaResponseDTO)]
+#[uniffi(name = "ProofInputSchema")]
 pub struct ProofInputSchemaBindingDTO {
     #[from(with_fn = convert_inner)]
     pub claim_schemas: Vec<ProofClaimSchemaBindingDTO>,
@@ -181,6 +204,7 @@ pub struct ProofInputSchemaBindingDTO {
 
 #[derive(Debug, TryInto, uniffi::Record)]
 #[try_into(T = ImportProofSchemaInputSchemaDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "ImportProofSchemaInputSchema")]
 pub struct ImportProofSchemaInputSchemaBindingDTO {
     #[try_into(with_fn = try_convert_inner)]
     pub claim_schemas: Vec<ImportProofSchemaClaimSchemaBindingDTO>,
@@ -189,6 +213,7 @@ pub struct ImportProofSchemaInputSchemaBindingDTO {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = ImportProofSchemaCredentialSchemaDTO, Error = ErrorResponseBindingDTO)]
+#[uniffi(name = "ImportProofSchemaCredentialSchema")]
 pub struct ImportProofSchemaCredentialSchemaBindingDTO {
     #[try_into(with_fn_ref = into_id)]
     pub id: String,
@@ -221,6 +246,7 @@ pub struct ImportProofSchemaCredentialSchemaBindingDTO {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "ImportProofSchemaClaimSchema")]
 pub struct ImportProofSchemaClaimSchemaBindingDTO {
     pub id: String,
     pub requested: bool,
@@ -232,15 +258,8 @@ pub struct ImportProofSchemaClaimSchemaBindingDTO {
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
-#[from(ProofClaimDTO)]
-pub struct ProofRequestClaimBindingDTO {
-    pub schema: ProofClaimSchemaBindingDTO,
-    #[from(with_fn = convert_inner)]
-    pub value: Option<ProofRequestClaimValueBindingDTO>,
-}
-
-#[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProofClaimSchemaResponseDTO)]
+#[uniffi(name = "ProofClaimSchema")]
 pub struct ProofClaimSchemaBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -253,24 +272,16 @@ pub struct ProofClaimSchemaBindingDTO {
     pub array: bool,
 }
 
-#[derive(Clone, Debug, uniffi::Enum)]
-pub enum ProofRequestClaimValueBindingDTO {
-    Value {
-        value: String,
-    },
-    Claims {
-        value: Vec<ProofRequestClaimBindingDTO>,
-    },
-}
-
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProofSchemaShareResponseDTO)]
+#[uniffi(name = "ProofSchemaShareResponse")]
 pub struct ProofSchemaShareResponseBindingDTO {
     pub url: String,
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = one_core::service::proof_schema::dto::CreateProofSchemaRequestDTO, Error = ServiceError)]
+#[uniffi(name = "CreateProofSchemaRequest")]
 pub struct CreateProofSchemaRequestDTO {
     #[try_into(infallible)]
     pub name: String,
@@ -278,12 +289,14 @@ pub struct CreateProofSchemaRequestDTO {
     pub organisation_id: String,
     #[try_into(infallible)]
     pub expire_duration: u32,
+    /// Set of all claims to request.
     #[try_into(with_fn = try_convert_inner)]
     pub proof_input_schemas: Vec<ProofInputSchemaRequestDTO>,
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = one_core::service::proof_schema::dto::ProofInputSchemaRequestDTO, Error = ServiceError)]
+#[uniffi(name = "CreateProofSchemaInput")]
 pub struct ProofInputSchemaRequestDTO {
     #[try_into(with_fn_ref = into_id)]
     pub credential_schema_id: String,
@@ -293,6 +306,7 @@ pub struct ProofInputSchemaRequestDTO {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = one_core::service::proof_schema::dto::CreateProofSchemaClaimRequestDTO, Error = ServiceError)]
+#[uniffi(name = "CreateProofSchemaInputClaim")]
 pub struct CreateProofSchemaClaimRequestDTO {
     #[try_into(with_fn_ref = into_id)]
     pub id: String,
@@ -301,12 +315,14 @@ pub struct CreateProofSchemaClaimRequestDTO {
 }
 
 #[derive(Clone, Debug, Into, PartialEq, uniffi::Enum)]
-#[into(ExactColumn)]
+#[into(ExactProofSchemaFilterColumn)]
+#[uniffi(name = "ProofSchemaListQueryExactColumn")]
 pub enum ProofSchemaListQueryExactColumnBinding {
     Name,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "ProofSchemaListQuery")]
 pub struct ListProofSchemasFiltersBindingDTO {
     pub page: u32,
     pub page_size: u32,
@@ -328,6 +344,7 @@ pub struct ListProofSchemasFiltersBindingDTO {
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
 #[into(SortableProofSchemaColumn)]
+#[uniffi(name = "SortableProofSchemaColumn")]
 pub enum SortableProofSchemaColumnBinding {
     Name,
     CreatedDate,
@@ -335,6 +352,7 @@ pub enum SortableProofSchemaColumnBinding {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetProofSchemaListResponseDTO)]
+#[uniffi(name = "ProofSchemaList")]
 pub struct ProofSchemaListBindingDTO {
     #[from(with_fn = convert_inner)]
     pub values: Vec<GetProofSchemaListItemBindingDTO>,

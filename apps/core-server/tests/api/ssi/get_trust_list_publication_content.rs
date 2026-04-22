@@ -1,10 +1,11 @@
 use core_server::endpoint::trust_list_publication::dto::{
-    TrustEntryStateRestEnum, TrustListPublicationRoleRestEnum,
+    TrustEntryStateRestEnum, TrustListRoleRestEnum,
 };
 use one_core::proto::jwt::Jwt;
 use similar_asserts::assert_eq;
 use uuid::Uuid;
 
+use crate::fixtures::create_cert_identifier;
 use crate::utils::api_clients::trust_list_publication::CreateTrustListPublicationTestParams;
 use crate::utils::context::TestContext;
 use crate::utils::field_match::FieldHelpers;
@@ -20,7 +21,7 @@ async fn test_get_trust_list_publication_success() {
         .trust_list_publication
         .create_trust_list_publication(CreateTrustListPublicationTestParams {
             name: "test_trust_list_publication",
-            role: TrustListPublicationRoleRestEnum::PidProvider,
+            role: TrustListRoleRestEnum::PidProvider,
             r#type: "LOTE_PUBLISHER".into(),
             identifier_id: identifier.id,
             organisation_id: organisation.id,
@@ -76,13 +77,14 @@ async fn test_get_trust_list_publication_with_entries() {
     // GIVEN
     let (context, organisation, identifier, ..) =
         TestContext::new_with_certificate_identifier(None).await;
+    let identifier2 = create_cert_identifier(&context, &organisation, Default::default()).await;
 
     let create_resp = context
         .api
         .trust_list_publication
         .create_trust_list_publication(CreateTrustListPublicationTestParams {
             name: "test_trust_list_with_entries",
-            role: TrustListPublicationRoleRestEnum::PidProvider,
+            role: TrustListRoleRestEnum::PidProvider,
             r#type: "LOTE_PUBLISHER".into(),
             identifier_id: identifier.id,
             organisation_id: organisation.id,
@@ -114,7 +116,7 @@ async fn test_get_trust_list_publication_with_entries() {
         .trust_list_publication
         .create_trust_entry(
             trust_list_publication_id,
-            identifier.id,
+            identifier2.id,
             Some(serde_json::json!({
                 "entity": {
                     "name": [{ "lang": "en", "value": "Test Entity #2"}]
@@ -168,13 +170,14 @@ async fn test_get_trust_list_publication_with_suspended_entries() {
     // GIVEN
     let (context, organisation, identifier, ..) =
         TestContext::new_with_certificate_identifier(None).await;
+    let identifier2 = create_cert_identifier(&context, &organisation, Default::default()).await;
 
     let create_resp = context
         .api
         .trust_list_publication
         .create_trust_list_publication(CreateTrustListPublicationTestParams {
             name: "test_trust_list_with_suspended",
-            role: TrustListPublicationRoleRestEnum::WalletProvider,
+            role: TrustListRoleRestEnum::WalletProvider,
             r#type: "LOTE_PUBLISHER".into(),
             identifier_id: identifier.id,
             organisation_id: organisation.id,
@@ -206,7 +209,7 @@ async fn test_get_trust_list_publication_with_suspended_entries() {
         .trust_list_publication
         .create_trust_entry(
             trust_list_publication_id,
-            identifier.id,
+            identifier2.id,
             Some(serde_json::json!({
                  "entity": {
                     "name": [{ "lang": "en", "value": "Suspended Test Entity"}]

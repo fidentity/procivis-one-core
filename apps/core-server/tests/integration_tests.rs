@@ -76,6 +76,9 @@ mod generic_api_tests;
 #[path = "api/wallet_unit/mod.rs"]
 mod api_wallet_unit_tests;
 
+#[path = "api/verifier_instance/mod.rs"]
+mod api_verifier_instance_tests;
+
 #[path = "api/signature/mod.rs"]
 mod api_signature_tests;
 
@@ -90,3 +93,6 @@ mod authorization;
 
 #[path = "api/trust_list_publication/mod.rs"]
 mod trust_list_publication;
+
+#[path = "api/trust_collection/mod.rs"]
+mod trust_collection;

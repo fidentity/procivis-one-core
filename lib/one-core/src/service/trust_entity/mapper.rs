@@ -1,22 +1,26 @@
 use one_dto_mapper::{convert_inner, convert_inner_of_inner};
 use shared_types::{DidValue, TrustEntityKey};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::dto::{
     CreateTrustEntityFromDidPublisherRequestDTO, CreateTrustEntityParamsDTO,
     CreateTrustEntityRequestDTO, CreateTrustEntityTypeDTO, GetTrustEntityResponseDTO,
-    TrustEntityCertificateResponseDTO, TrustEntityContent,
-    UpdateTrustEntityActionFromDidRequestDTO, UpdateTrustEntityFromDidRequestDTO,
+    TrustEntityCertificateResponseDTO, TrustEntityContent, TrustEntityFilterParamsDTO,
+    TrustEntityFilterValue, UpdateTrustEntityActionFromDidRequestDTO,
+    UpdateTrustEntityFromDidRequestDTO,
 };
 use super::error::TrustEntityServiceError;
 use crate::model::certificate::CertificateState;
 use crate::model::did::Did;
 use crate::model::identifier::Identifier;
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, StringMatch, StringMatchType, ValueComparison,
+};
 use crate::model::organisation::Organisation;
 use crate::model::trust_anchor::TrustAnchor;
 use crate::model::trust_entity::{
-    TrustEntity, TrustEntityState, TrustEntityType, UpdateTrustEntityRequest,
+    ExactTrustEntityFilterColumn, TrustEntity, TrustEntityState, TrustEntityType,
+    UpdateTrustEntityRequest,
 };
 use crate::proto::certificate_validator::ParsedCertificate;
 use crate::provider::trust_management::model::TrustEntityByEntityKey;
@@ -80,7 +84,7 @@ pub(super) fn trust_entity_from_request(
     trust_anchor: TrustAnchor,
 ) -> TrustEntity {
     let id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     TrustEntity {
         id,
@@ -108,7 +112,7 @@ pub(super) fn trust_entity_from_did_request(
     did: DidValue,
 ) -> TrustEntity {
     let id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     TrustEntity {
         id,
@@ -291,5 +295,82 @@ pub(super) fn trust_entity_from_partial_and_did_and_anchor(
         trust_anchor: trust_anchor.into(),
         entity_key,
         identifier: identifier.map(Into::into),
+    }
+}
+
+impl From<TrustEntityFilterParamsDTO> for ListFilterCondition<TrustEntityFilterValue> {
+    fn from(filter: TrustEntityFilterParamsDTO) -> Self {
+        let exact = filter.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let name = filter.name.map(|name| {
+            TrustEntityFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(ExactTrustEntityFilterColumn::Name),
+                value: name,
+            })
+        });
+
+        let role = filter.role.map(TrustEntityFilterValue::Role);
+
+        let did_id = filter.did_id.map(TrustEntityFilterValue::DidId);
+
+        let trust_anchor = filter.trust_anchor.map(TrustEntityFilterValue::TrustAnchor);
+
+        let organisation_id = filter
+            .organisation_id
+            .map(TrustEntityFilterValue::OrganisationId);
+
+        let types = filter.types.map(TrustEntityFilterValue::Types);
+
+        let states = filter.states.map(TrustEntityFilterValue::States);
+
+        let entity_key = filter.entity_key.map(TrustEntityFilterValue::EntityKey);
+
+        let created_date_after = filter.created_date_after.map(|date| {
+            TrustEntityFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+
+        let created_date_before = filter.created_date_before.map(|date| {
+            TrustEntityFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = filter.last_modified_after.map(|date| {
+            TrustEntityFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_before = filter.last_modified_before.map(|date| {
+            TrustEntityFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        ListFilterCondition::<TrustEntityFilterValue>::from(did_id)
+            & trust_anchor
+            & name
+            & role
+            & organisation_id
+            & types
+            & states
+            & entity_key
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

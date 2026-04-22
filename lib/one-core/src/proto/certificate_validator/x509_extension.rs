@@ -1,8 +1,8 @@
 use x509_parser::der_parser::Oid;
 use x509_parser::prelude::{
     AccessDescription, AuthorityKeyIdentifier, CRLDistributionPoint, DistributionPointName,
-    ExtendedKeyUsage, FromDer, GeneralName, KeyIdentifier, KeyUsage, ParsedExtension, ReasonFlags,
-    X509Certificate, X509Extension, oid_registry,
+    ExtendedKeyUsage, FromDer, GeneralName, KeyIdentifier, KeyUsage, ParsedExtension,
+    PolicyInformation, ReasonFlags, X509Certificate, X509Extension, oid_registry,
 };
 use x509_parser::x509::X509Name;
 
@@ -43,6 +43,9 @@ pub(crate) fn parse(extension: &X509Extension) -> Result<CertificateX509Extensio
             .flat_map(parse_access_description)
             .collect(),
         ParsedExtension::CRLNumber(crl) => vec![format!("{crl:x}")],
+        ParsedExtension::CertificatePolicies(policies) => {
+            policies.iter().flat_map(parse_certificate_policy).collect()
+        }
         _ => vec![hex::encode(extension.value)],
     };
 
@@ -281,4 +284,18 @@ fn parse_access_description(description: &AccessDescription) -> Vec<String> {
         description.access_method.to_id_string(),
         format!("{}", description.access_location),
     ]
+}
+
+fn parse_certificate_policy(policy: &PolicyInformation<'_>) -> Vec<String> {
+    let mut result = vec![policy.policy_id.to_id_string()];
+    if let Some(qualifiers) = &policy.policy_qualifiers {
+        for qualifier in qualifiers {
+            result.push(format!(
+                "{}({})",
+                qualifier.policy_qualifier_id.to_id_string(),
+                hex::encode(qualifier.qualifier)
+            ));
+        }
+    }
+    result
 }

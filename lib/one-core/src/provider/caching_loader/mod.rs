@@ -10,6 +10,8 @@
 //! [cac]: https://docs.procivis.ch/api/caching
 
 use std::cmp::min;
+use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,8 +24,10 @@ use super::remote_entity_storage::{
 use crate::error::{
     ContextWithErrorCode, ErrorCode, ErrorCodeMixin, ErrorCodeMixinExt, NestedError,
 };
+use crate::proto::jwt::TokenError;
 
 pub mod android_attestation_crl;
+pub mod etsi_lote;
 pub mod json_ld_context;
 pub mod openid_metadata;
 pub mod trust_list;
@@ -45,6 +49,11 @@ pub trait Resolver: Send + Sync {
 pub enum CacheError {
     #[error("Failed cached value serialization: {0}")]
     SerdeJson(#[from] serde_json::Error),
+    #[error("Failed cached value serialization: {0}")]
+    FromUtf8Error(#[from] FromUtf8Error),
+    #[error("Failed cached value serialization: {0}")]
+    TokenError(#[from] TokenError),
+
     #[error("Failed cache hashing: {0}")]
     Hasher(#[from] one_crypto::HasherError),
 
@@ -67,13 +76,28 @@ pub enum ResolverError {
     InvalidResponse(String),
 
     #[error("Failed deserializing response body: {0}")]
-    InvalidResponseBody(#[from] serde_json::Error),
+    InvalidResponseBody(Box<dyn std::error::Error + Send + Sync>),
 
     #[error("Unexpected resolve result")]
     UnexpectedResolveResult,
 
+    #[error("Mapping error: {0}")]
+    MappingError(String),
+
     #[error(transparent)]
     Nested(#[from] NestedError),
+}
+
+impl From<serde_json::Error> for ResolverError {
+    fn from(err: serde_json::Error) -> Self {
+        ResolverError::InvalidResponseBody(Box::new(err))
+    }
+}
+
+impl From<Utf8Error> for ResolverError {
+    fn from(err: Utf8Error) -> Self {
+        ResolverError::InvalidResponseBody(Box::new(err))
+    }
 }
 
 impl ErrorCodeMixin for ResolverError {
@@ -216,7 +240,7 @@ impl<E: From<NestedError> + ErrorCodeMixin> CachingLoader<E> {
                         media_type,
                         expiry_date,
                     } => {
-                        context.last_modified = OffsetDateTime::now_utc();
+                        context.last_modified = crate::clock::now_utc();
                         context.value = content;
                         context.media_type = media_type;
                         context.expiration_date = self.effective_expiry(expiry_date)
@@ -233,7 +257,7 @@ impl<E: From<NestedError> + ErrorCodeMixin> CachingLoader<E> {
             }
         }
 
-        context.last_used = OffsetDateTime::now_utc();
+        context.last_used = crate::clock::now_utc();
 
         if let Err(error) = self.storage.insert(context.to_owned()).await {
             match error {
@@ -262,7 +286,7 @@ impl<E: From<NestedError> + ErrorCodeMixin> CachingLoader<E> {
                 media_type,
                 expiry_date,
             } => {
-                let now = OffsetDateTime::now_utc();
+                let now = crate::clock::now_utc();
                 if let Err(err) = self
                     .storage
                     .insert(RemoteEntity {
@@ -294,7 +318,7 @@ impl<E: From<NestedError> + ErrorCodeMixin> CachingLoader<E> {
     /// Calculates the effective expiry date to use based on the value suggested by the resolver (if any)
     /// and the cache configuration.
     fn effective_expiry(&self, resolved_expiry: Option<OffsetDateTime>) -> Option<OffsetDateTime> {
-        let default_exp = OffsetDateTime::now_utc() + self.cache_refresh_timeout;
+        let default_exp = crate::clock::now_utc() + self.cache_refresh_timeout;
         resolved_expiry
             .map(|exp| min(exp, default_exp))
             .or(Some(default_exp))
@@ -317,7 +341,7 @@ fn context_requires_update(
     expiration_date: OffsetDateTime,
     refresh_after: time::Duration,
 ) -> ContextRequiresUpdate {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     if expiration_date < now {
         return ContextRequiresUpdate::MustBeUpdated;

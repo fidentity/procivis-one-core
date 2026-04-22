@@ -2,15 +2,12 @@ use std::sync::Arc;
 
 use assert2::let_assert;
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::KeyService;
 use crate::config::core_config::KeyAlgorithmType;
 use crate::error::{ErrorCode, ErrorCodeMixin};
-use crate::model::key::{GetKeyList, Key, KeyFilterValue, KeyListQuery};
-use crate::model::list_filter::{ListFilterValue, StringMatch};
-use crate::model::list_query::ListPagination;
+use crate::model::key::{GetKeyList, Key};
 use crate::proto::csr_creator::{CsrCreationError, MockCsrCreator};
 use crate::proto::session_provider::NoSessionProvider;
 use crate::proto::session_provider::test::StaticSessionProvider;
@@ -20,9 +17,10 @@ use crate::provider::key_storage::provider::MockKeyProvider;
 use crate::repository::history_repository::MockHistoryRepository;
 use crate::repository::key_repository::MockKeyRepository;
 use crate::repository::organisation_repository::MockOrganisationRepository;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::key::dto::{
-    KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile, KeyGenerateCSRRequestSubjectDTO,
-    KeyRequestDTO,
+    KeyFilterParamsDTO, KeyGenerateCSRRequestDTO, KeyGenerateCSRRequestProfile,
+    KeyGenerateCSRRequestSubjectDTO, KeyRequestDTO,
 };
 use crate::service::test_utilities::{dummy_organisation, generic_config};
 
@@ -52,7 +50,7 @@ fn setup_service(
 }
 
 fn generic_key(name: &str, organisation_id: Uuid) -> Key {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     Key {
         id: Uuid::new_v4().into(),
         created_date: now,
@@ -191,20 +189,28 @@ async fn test_get_key_list() {
         csr_creator,
     );
 
-    let query = KeyListQuery {
-        pagination: Some(ListPagination {
-            page: 0,
-            page_size: 10,
-        }),
-        sorting: None,
-        filtering: Some(
-            KeyFilterValue::Name(StringMatch::contains("Name")).condition()
-                & KeyFilterValue::OrganisationId(org_id.into()),
-        ),
+    let query = ListQueryDTO {
+        page: 0,
+        page_size: 10,
+        sort: None,
+        sort_direction: None,
+        filter: KeyFilterParamsDTO {
+            name: Some("Name".to_string()),
+            key_types: None,
+            key_storages: None,
+            ids: None,
+            exact: None,
+            is_remote: None,
+            organisation_id: org_id.into(),
+            created_date_after: None,
+            created_date_before: None,
+            last_modified_after: None,
+            last_modified_before: None,
+        },
         include: None,
     };
 
-    let result = service.get_key_list(&org_id.into(), query).await;
+    let result = service.get_key_list(query).await;
 
     assert!(result.is_ok());
 
@@ -308,15 +314,26 @@ async fn test_list_key_session_org_mismatch() {
     );
 
     let result = service
-        .get_key_list(
-            &Uuid::new_v4().into(),
-            KeyListQuery {
-                pagination: None,
-                sorting: None,
-                filtering: None,
-                include: None,
+        .get_key_list(ListQueryDTO {
+            page: 0,
+            page_size: 10,
+            sort: None,
+            sort_direction: None,
+            filter: KeyFilterParamsDTO {
+                name: None,
+                key_types: None,
+                key_storages: None,
+                ids: None,
+                exact: None,
+                is_remote: None,
+                organisation_id: Uuid::new_v4().into(),
+                created_date_after: None,
+                created_date_before: None,
+                last_modified_after: None,
+                last_modified_before: None,
             },
-        )
+            include: None,
+        })
         .await
         .err()
         .unwrap();

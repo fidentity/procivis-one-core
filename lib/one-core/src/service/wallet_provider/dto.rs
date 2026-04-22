@@ -1,7 +1,9 @@
+use std::collections::HashMap;
+
 use one_dto_mapper::From;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::skip_serializing_none;
-use shared_types::{RevocationMethodId, WalletUnitId};
+use shared_types::{RevocationMethodId, TrustCollectionId, WalletUnitId};
 use standardized_types::jwk::PublicJwk;
 use time::OffsetDateTime;
 
@@ -79,6 +81,25 @@ pub(super) struct WalletProviderParams {
     pub device_auth_leeway: u64,
     pub app_version: Option<AppVersionDTO>,
     pub eudi_wallet_info: Option<EudiWalletInfoConfig>,
+    #[serde(default)]
+    pub trust_collections: HashMap<TrustCollectionId, TrustCollectionParams>, // FIX ME: This is a temporary solution, should be changed to a proper structure ONE-9309
+    pub feature_flags: FeatureFlags,
+    #[allow(dead_code)] // TODO: remove allowed once used
+    pub legacy_trust_management_enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureFlags {
+    pub trust_ecosystems_enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TrustCollectionParams {
+    pub logo: String,
+    pub display_name: HashMap<String, String>,
+    pub description: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -219,10 +240,42 @@ pub struct GetWalletUnitResponseDTO {
 pub type GetWalletUnitListResponseDTO = GetListResponse<GetWalletUnitResponseDTO>;
 
 #[derive(Clone, Debug)]
+pub struct WalletUnitFilterParamsDTO {
+    pub name: Option<String>,
+    pub ids: Option<Vec<shared_types::WalletUnitId>>,
+    pub status: Option<Vec<WalletUnitStatus>>,
+    pub os: Option<Vec<WalletUnitOs>>,
+    pub wallet_provider_type: Option<Vec<String>>,
+    pub attestation: Option<String>,
+    pub organisation_id: shared_types::OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
 pub struct WalletProviderMetadataResponseDTO {
     pub wallet_unit_attestation: WalletUnitAttestationMetadataDTO,
     pub name: String,
     pub app_version: Option<AppVersionDTO>,
+    pub trust_collections: Vec<ProviderTrustCollectionDTO>,
+    pub feature_flags: FeatureFlags,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTrustCollectionDTO {
+    pub id: TrustCollectionId,
+    pub name: String,
+    pub logo: String,
+    pub display_name: Vec<DisplayNameDTO>,
+    pub description: Vec<DisplayNameDTO>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayNameDTO {
+    pub lang: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug)]

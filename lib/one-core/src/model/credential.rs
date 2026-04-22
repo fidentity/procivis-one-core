@@ -68,6 +68,7 @@ pub enum CredentialStateEnum {
     InteractionExpired,
 }
 
+#[derive(Clone, Debug)]
 pub enum SortableCredentialColumn {
     CreatedDate,
     SchemaName,
@@ -76,7 +77,7 @@ pub enum SortableCredentialColumn {
 }
 
 pub type GetCredentialList = GetListResponse<Credential>;
-pub type GetCredentialQuery =
+pub type CredentialListQuery =
     ListQuery<SortableCredentialColumn, CredentialFilterValue, CredentialListIncludeEntityTypeEnum>;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -132,6 +133,11 @@ pub enum CredentialFilterValue {
 }
 
 impl ListFilterValue for CredentialFilterValue {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactCredentialFilterColumn {
+    Name,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, EnumString, Display)]
 #[strum(serialize_all = "camelCase")]

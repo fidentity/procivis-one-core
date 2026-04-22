@@ -12,7 +12,6 @@ use sea_orm::{
     QuerySelect, RelationTrait,
 };
 use shared_types::{TrustEntryId, TrustListPublicationId};
-use time::OffsetDateTime;
 
 use super::TrustEntryProvider;
 use crate::common::calculate_pages_count;
@@ -93,7 +92,7 @@ impl TrustEntryRepository for TrustEntryProvider {
                 trust_entry::Column::Id,
                 trust_entry::Column::CreatedDate,
                 trust_entry::Column::LastModified,
-                trust_entry::Column::Status,
+                trust_entry::Column::State,
                 trust_entry::Column::Metadata,
                 trust_entry::Column::TrustListPublicationId,
             ])
@@ -138,9 +137,9 @@ impl TrustEntryRepository for TrustEntryProvider {
         id: TrustEntryId,
         request: UpdateTrustEntryRequest,
     ) -> Result<(), DataLayerError> {
-        let status = match request.status {
-            None => Unchanged(trust_entry::TrustEntryStatus::Active),
-            Some(status) => Set(status.into()),
+        let state = match request.state {
+            None => Unchanged(trust_entry::TrustEntryState::Active),
+            Some(state) => Set(state.into()),
         };
 
         let metadata = match request.metadata {
@@ -150,8 +149,8 @@ impl TrustEntryRepository for TrustEntryProvider {
 
         trust_entry::ActiveModel {
             id: Unchanged(id),
-            last_modified: Set(OffsetDateTime::now_utc()),
-            status,
+            last_modified: Set(one_core::clock::now_utc()),
+            state,
             metadata,
             ..Default::default()
         }

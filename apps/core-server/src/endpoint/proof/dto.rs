@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use one_core::model::proof::{ProofRole, ProofStateEnum, SortableProofColumn};
+use one_core::model::proof::{
+    ExactProofFilterColumn, ProofRole, ProofStateEnum, SortableProofColumn,
+};
 use one_core::provider::verification_protocol::dto::{
     CredentialDetailClaimExtResponseDTO, CredentialQueryFailureHintResponseDTO,
     CredentialQueryFailureReasonEnum, CredentialQueryResponseDTO, CredentialSetResponseDTO,
@@ -10,12 +12,15 @@ use one_core::provider::verification_protocol::dto::{
     PresentationDefinitionV2ResponseDTO,
 };
 use one_core::provider::verification_protocol::openid4vp::model::ClientIdScheme;
+use one_core::service::error::ServiceError;
 use one_core::service::proof::dto::{
     CreateProofRequestDTO, ProofClaimDTO, ProofClaimValueDTO, ProofDetailResponseDTO,
-    ProofInputDTO, ProofListItemResponseDTO, ShareProofRequestDTO, ShareProofRequestParamsDTO,
-    ShareProofResponseDTO,
+    ProofFilterParamsDTO, ProofInputDTO, ProofListItemResponseDTO, ShareProofRequestDTO,
+    ShareProofRequestParamsDTO, ShareProofResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryFrom, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryFrom, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
 use shared_types::{
@@ -25,7 +30,8 @@ use time::OffsetDateTime;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::common::ListQueryParamsRest;
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::certificate::dto::CertificateResponseRestDTO;
 use crate::endpoint::credential::dto::{
     CredentialDetailClaimResponseRestDTO, CredentialDetailClaimValueResponseRestDTO,
@@ -141,82 +147,99 @@ pub(crate) enum SortableProofColumnRestEnum {
     State,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetProofQuery
+#[try_into(T = ProofFilterParamsDTO, Error = ServiceError)]
 pub(crate) struct ProofsFilterQueryParamsRest {
-    /// Required when not using STS authentication mode. Specifies the
-    /// organizational context for this operation. When using STS
-    /// authentication, this value is derived from the token.
-    #[param(nullable = false)]
-    pub organisation_id: Option<OrganisationId>,
     /// Return only proof requests with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by one or more country profiles.
     #[param(rename = "profiles[]", nullable = false)]
+    #[try_into(infallible)]
     pub profiles: Option<Vec<String>>,
     /// Filter by one or more proof states.
     #[param(rename = "states[]", inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub states: Option<Vec<ProofStateRestEnum>>,
     /// Filter proof requests by one or more roles: requested by the system
     /// or received by the system.
     #[param(rename = "roles[]", inline, nullable = false)]
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     pub roles: Option<Vec<ProofRoleRestEnum>>,
     /// Filter proof requests by their associated proof schema. Pass an array
     /// of UUID strings.
     #[param(rename = "proofSchemaIds[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub proof_schema_ids: Option<Vec<ProofSchemaId>>,
     /// Filter proof requests by their associated verifier identifiers.
     /// Pass an array of UUID strings.
     #[param(rename = "verifiers[]", inline, nullable = false)]
+    #[try_into(infallible, rename = "verifier_ids")]
     pub verifiers: Option<Vec<IdentifierId>>,
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<ProofId>>,
     /// Set which filters apply in an exact way.
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
-
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
+    pub exact: Option<Vec<ExactProofFilterColumnRestEnum>>,
+    /// Required when not using STS authentication mode. Specifies the
+    /// organizational context for this operation. When using STS
+    /// authentication, this value is derived from the token.
+    #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
+    pub organisation_id: Option<OrganisationId>,
     /// Return only proof requests created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only proof requests created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only proof requests last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only proof requests last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
     /// Return only proof requests requested after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub requested_date_after: Option<OffsetDateTime>,
     /// Return only proof requests requested before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub requested_date_before: Option<OffsetDateTime>,
     /// Return only proof requests completed after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub completed_date_after: Option<OffsetDateTime>,
     /// Return only proof requests completed before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub completed_date_before: Option<OffsetDateTime>,
 }
 
@@ -584,4 +607,11 @@ pub(crate) struct ShareProofResponseRestDTO {
     #[serde(serialize_with = "front_time_option")]
     #[schema(nullable = false, example = "2023-06-09T14:19:57.000Z")]
     pub expires_at: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
+#[into(ExactProofFilterColumn)]
+pub(crate) enum ExactProofFilterColumnRestEnum {
+    Name,
 }

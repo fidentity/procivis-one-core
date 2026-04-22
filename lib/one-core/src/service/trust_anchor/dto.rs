@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use crate::model::common::GetListResponse;
 use crate::model::list_filter::{ListFilterValue, StringMatch, ValueComparison};
 use crate::model::list_query::ListQuery;
-use crate::model::trust_anchor::TrustAnchor;
+use crate::model::trust_anchor::{ExactTrustAnchorFilterColumn, TrustAnchor};
 use crate::model::trust_entity::{TrustEntityRole, TrustEntityState, TrustEntityType};
 use crate::service::trust_entity::dto::TrustEntityContent;
 
@@ -87,6 +87,18 @@ impl TrustAnchorFilterValue {
 impl ListFilterValue for TrustAnchorFilterValue {}
 
 pub type ListTrustAnchorsQueryDTO = ListQuery<SortableTrustAnchorColumn, TrustAnchorFilterValue>;
+
+#[derive(Clone, Debug)]
+pub struct TrustAnchorFilterParamsDTO {
+    pub name: Option<String>,
+    pub is_publisher: Option<bool>,
+    pub r#type: Option<String>,
+    pub exact: Option<Vec<ExactTrustAnchorFilterColumn>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
 
 #[derive(Clone, Debug, Into)]
 #[into(TrustAnchor)]

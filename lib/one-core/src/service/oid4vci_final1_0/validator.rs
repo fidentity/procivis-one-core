@@ -1,7 +1,6 @@
 use one_crypto::Hasher;
 use one_crypto::hasher::sha256::SHA256;
 use standardized_types::jwk::PublicJwk;
-use time::OffsetDateTime;
 
 use super::error::OID4VCIFinal1_0ServiceError;
 use crate::config::ConfigValidationError;
@@ -53,7 +52,7 @@ fn is_access_token_valid(
             .is_ok_and(|hash| hash == interaction_data.access_token_hash)
         && interaction_data
             .access_token_expires_at
-            .is_some_and(|expires_at| expires_at > OffsetDateTime::now_utc())
+            .is_some_and(|expires_at| expires_at > crate::clock::now_utc())
 }
 
 pub(crate) fn throw_if_access_token_invalid(
@@ -197,15 +196,9 @@ pub(crate) async fn validate_key_attestation(
         return Err(OpenID4VCIError::InvalidRequest.into());
     }
 
-    let wua_issuer_key = match (&wua.header.jwk, &wua.header.x5c) {
-        (Some(jwk), None) => jwk.into(),
-        (None, Some(x5c)) => PublicKeySource::X5c { x5c },
-        _ => {
-            tracing::info!("WUA issuer not specified");
-            return Err(OpenID4VCIError::InvalidRequest.into());
-        }
-    };
-
+    let wua_issuer_key = wua
+        .public_key_source(None)
+        .error_while("extracting public key from WUA JWT")?;
     wua.verify_signature(wua_issuer_key, verifier)
         .await
         .error_while("validating WUA token")?;

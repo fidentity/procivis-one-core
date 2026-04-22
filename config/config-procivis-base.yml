@@ -131,6 +131,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: swiyu
+        requestSignedMetadata: false
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
@@ -147,6 +148,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: openid-credential-offer
+        requestSignedMetadata: true
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
@@ -165,6 +167,7 @@ issuanceProtocol:
       public:
         webhookTask: "WEBHOOK_NOTIFY"
         urlScheme: haip-vci
+        requestSignedMetadata: false
         oauthAttestationLeeway: 60
         keyAttestationLeeway: 60
         preAuthorizedCodeExpiresIn: 300
@@ -342,8 +345,7 @@ verificationProtocol:
               x509_san_dns,
               x509_hash,
             ]
-          # EUDI compatibility flag for non-standard compliant vp_token formatting
-          dcqlVpTokenSinglePresentation: true
+          trustEcosystemsEnabled: false
         redirectUri:
           enabled: true
           allowedSchemes: ["https"]
@@ -691,6 +693,14 @@ task:
           interval: 1
           maxAttempts: 5
           exponentialFactor: 2.5
+  TRUST_LIST_SUBSCRIPTION_UPDATE:
+    type: "TRUST_LIST_SUBSCRIPTION_UPDATE"
+    display: "task.trustListSubscriptionUpdate"
+    order: 6
+  TRUST_COLLECTION_SYNC:
+    type: "TRUST_COLLECTION_SYNC"
+    display: "task.trustCollectionSync"
+    order: 7
 cacheEntities:
   X509_CRL:
     cacheType: DB
@@ -732,6 +742,11 @@ cacheEntities:
     refreshAfter: 300
     cacheRefreshTimeout: 86400
     cacheSize: 1000
+  CREDENTIAL_ISSUER_METADATA:
+    cacheType: DB
+    refreshAfter: 86400
+    cacheRefreshTimeout: 86400
+    cacheSize: 1000
 trustManagement:
   SIMPLE_TRUST_LIST:
     display: "trustManagement.simpleTrustList"
@@ -750,6 +765,16 @@ trustListPublisher:
     params:
       public:
         refreshIntervalSeconds: 86400
+        contentType: "application/jwt"
+trustListSubscriber:
+  LOTE_SUBSCRIBER:
+    type: ETSI_LOTE
+    order: 1
+    display: "trustListSubscriber.etsiLote"
+    params:
+      private:
+        accepts: "application/jwt"
+        leeway: 60
 blobStorage:
   DB:
     enabled: true

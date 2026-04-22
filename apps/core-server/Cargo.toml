@@ -1,12 +1,12 @@
 [package]
-authors           = ["Procivis"]
-build             = "build.rs"
+authors = ["Procivis"]
+build = "build.rs"
 edition.workspace = true
-license           = "Apache-2.0"
-name              = "core-server"
-publish           = false
-version           = "0.1.0"
-rust-version = "1.92"
+license = "Apache-2.0"
+name = "core-server"
+publish = false
+rust-version.workspace = true
+version = "0.1.0"
 
 # disable doctests
 [lib]
@@ -21,6 +21,7 @@ axum.workspace = true
 axum-extra = { version = "0.12", features = ["typed-header", "with-rejection"] }
 clap.workspace = true
 ct-codecs.workspace = true
+dcql = { workspace = true, features = ["utoipa"] }
 futures.workspace = true
 headers = { version = "0.4" }
 http-body-util = "0.1.2"
@@ -33,7 +34,7 @@ proc-macros = { version = "0.1.0", path = "../../lib/proc-macros" }
 prometheus = { version = "0.14", default-features = false, features = ["process"] }
 reqwest.workspace = true
 secrecy.workspace = true
-sentry = { version = "0.46", default-features = false, features = [
+sentry = { version = "0.47", default-features = false, features = [
     "backtrace",
     "panic",
     "reqwest",
@@ -69,11 +70,12 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum"] }
 utoipauto = { version = "0.2" }
 uuid.workspace = true
 validator.workspace = true
+mime = "0.3.17"
 
 [build-dependencies]
-serde                = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-shadow-rs.workspace  = true
+shadow-rs.workspace = true
 
 [dev-dependencies]
 asn1-rs.workspace = true
@@ -92,6 +94,7 @@ one-core = { version = "0.1.0", path = "../../lib/one-core", features = [
 rand.workspace = true
 rcgen.workspace = true
 reqwest = { workspace = true, features = ["json", "form"] }
+roxmltree.workspace = true
 sea-orm.workspace = true
 secrecy.workspace = true
 serde_json_path.workspace = true

@@ -5,7 +5,7 @@ use assert2::let_assert;
 use mockall::Sequence;
 use similar_asserts::assert_eq;
 use standardized_types::jwk::{PublicJwk, PublicJwkEc};
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use uuid::Uuid;
 
 use super::creator::IdentifierCreatorProto;
@@ -18,6 +18,7 @@ use crate::model::certificate::{Certificate, CertificateState, GetCertificateLis
 use crate::model::identifier::{GetIdentifierList, Identifier};
 use crate::model::key::{GetKeyList, Key};
 use crate::proto::certificate_validator::{MockCertificateValidator, ParsedCertificate};
+use crate::proto::csr_creator::MockCsrCreator;
 use crate::proto::transaction_manager::NoTransactionManager;
 use crate::provider::credential_formatter::model::{CertificateDetails, IdentifierDetails};
 use crate::provider::did_method::model::{DidCapabilities, Operation};
@@ -52,6 +53,7 @@ struct Mocks {
     key_algorithm_provider: MockKeyAlgorithmProvider,
     identifier_repository: MockIdentifierRepository,
     signer_provider: MockSignerProvider,
+    csr_creator: MockCsrCreator,
     config: CoreConfig,
 }
 
@@ -66,6 +68,7 @@ fn setup_creator(mocks: Mocks) -> Box<dyn IdentifierCreator> {
         Arc::new(mocks.key_algorithm_provider),
         Arc::new(mocks.identifier_repository),
         Arc::new(mocks.signer_provider),
+        Arc::new(mocks.csr_creator),
         Arc::new(mocks.config),
         Arc::new(NoTransactionManager),
     ))
@@ -86,7 +89,7 @@ async fn test_get_or_create_remote_identifier_certificate_new() {
         .once()
         .returning(move |_| Ok(Uuid::new_v4().into()));
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let mut certificate_validator = MockCertificateValidator::new();
     certificate_validator
@@ -148,7 +151,7 @@ async fn test_get_or_create_remote_identifier_certificate_existing() {
     let organisation = dummy_organisation(None);
     let certificate_id = Uuid::new_v4().into();
     let identifier_id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let certificate = Certificate {
         id: certificate_id,
         identifier_id,
@@ -160,6 +163,7 @@ async fn test_get_or_create_remote_identifier_certificate_existing() {
         chain: "chain".to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     };
     certificate_repository.expect_list().once().return_once({
@@ -173,7 +177,7 @@ async fn test_get_or_create_remote_identifier_certificate_existing() {
         }
     });
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let mut identifier_repository = MockIdentifierRepository::new();
     identifier_repository

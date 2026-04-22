@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use shared_types::{
-    CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId, ProofId,
-    ProofSchemaId,
+    BlobId, CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId,
+    ProofId, ProofSchemaId,
 };
 use time::OffsetDateTime;
 
-use crate::error::ErrorCode;
+use crate::error::{ErrorCode, ErrorCodeMixin};
 use crate::model::common::GetListResponse;
 use crate::model::list_filter::{ListFilterValue, ValueComparison};
 use crate::model::list_query::ListQuery;
@@ -23,6 +23,24 @@ pub enum HistoryMetadata {
 pub struct HistoryErrorMetadata {
     pub error_code: ErrorCode,
     pub message: String,
+}
+
+impl<T: ErrorCodeMixin> From<T> for HistoryMetadata {
+    fn from(value: T) -> Self {
+        Self::ErrorMetadata(HistoryErrorMetadata {
+            error_code: value.error_code(),
+            message: value.to_string(),
+        })
+    }
+}
+
+impl From<Box<dyn ErrorCodeMixin>> for HistoryMetadata {
+    fn from(value: Box<dyn ErrorCodeMixin>) -> Self {
+        Self::ErrorMetadata(HistoryErrorMetadata {
+            error_code: value.error_code(),
+            message: value.to_string(),
+        })
+    }
 }
 
 impl From<UnexportableEntitiesResponseDTO> for HistoryMetadata {
@@ -44,6 +62,7 @@ pub struct History {
     pub metadata: Option<HistoryMetadata>,
     pub organisation_id: Option<OrganisationId>,
     pub user: Option<String>,
+    pub metadata_blob_id: Option<BlobId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -77,6 +96,8 @@ pub enum HistoryAction {
     InteractionErrored,
     InteractionExpired,
     Delivered,
+    WrpAcReceived,
+    WrpRcReceived,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -107,6 +128,9 @@ pub enum HistoryEntityType {
     Notification,
     SupervisoryAuthority,
     TrustListPublication,
+    TrustCollection,
+    TrustListSubscription,
+    VerifierInstance,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

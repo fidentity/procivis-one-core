@@ -1,6 +1,8 @@
 use ct_codecs::{Base64, Decoder};
 
-use crate::service::common_dto::BoundedB64Image;
+use crate::model::list_filter::ListFilterCondition;
+use crate::model::list_query::{ListPagination, ListQuery, ListSorting};
+use crate::service::common_dto::{BoundedB64Image, ListQueryDTO};
 use crate::service::error::ValidationError;
 
 impl<const MAX: usize> TryFrom<String> for BoundedB64Image<MAX> {
@@ -37,6 +39,27 @@ impl<const MAX: usize> TryFrom<String> for BoundedB64Image<MAX> {
 impl<const MAX: usize> From<BoundedB64Image<MAX>> for String {
     fn from(value: BoundedB64Image<MAX>) -> Self {
         value.0
+    }
+}
+
+impl<Sorting, FilterDTO, Filter, Include> From<ListQueryDTO<Sorting, FilterDTO, Include>>
+    for ListQuery<Sorting, Filter, Include>
+where
+    FilterDTO: Into<ListFilterCondition<Filter>>,
+{
+    fn from(value: ListQueryDTO<Sorting, FilterDTO, Include>) -> Self {
+        Self {
+            pagination: Some(ListPagination {
+                page: value.page,
+                page_size: value.page_size,
+            }),
+            sorting: value.sort.map(|column| ListSorting {
+                column,
+                direction: value.sort_direction,
+            }),
+            filtering: Some(value.filter.into()),
+            include: value.include,
+        }
     }
 }
 

@@ -1,13 +1,22 @@
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
-use shared_types::{IdentifierId, KeyId, OrganisationId};
+use shared_types::{
+    CredentialSchemaId, IdentifierId, KeyId, OrganisationId, ProofSchemaId, TrustCollectionId,
+    TrustListSubscriberId, TrustListSubscriptionId,
+};
 use time::OffsetDateTime;
 
+use crate::model::certificate::CertificateRole;
 use crate::model::common::GetListResponse;
-use crate::model::identifier::{IdentifierState, IdentifierType};
+use crate::model::did::KeyRole;
+use crate::model::identifier::{ExactIdentifierFilterColumn, IdentifierState, IdentifierType};
+use crate::model::trust_list_role::TrustListRoleEnum;
+use crate::model::trust_list_subscription::TrustListSubscriptionState;
+use crate::provider::trust_list_subscriber::TrustEntityResponse;
 use crate::service::certificate::dto::{CertificateResponseDTO, CreateCertificateRequestDTO};
 use crate::service::did::dto::{CreateDidRequestKeysDTO, DidResponseDTO};
 use crate::service::key::dto::{KeyGenerateCSRRequestSubjectDTO, KeyResponseDTO};
+use crate::service::trust_collection::dto::TrustCollectionListItemResponseDTO;
 
 #[derive(Clone, Debug)]
 pub struct GetIdentifierResponseDTO {
@@ -23,6 +32,50 @@ pub struct GetIdentifierResponseDTO {
     pub key: Option<KeyResponseDTO>,
     pub certificates: Option<Vec<CertificateResponseDTO>>,
     pub certificate_authorities: Option<Vec<CertificateResponseDTO>>,
+    pub trust_information: Vec<IdentifierTrustInformationResponseDTO>,
+}
+
+#[derive(Clone, Debug)]
+pub struct IdentifierTrustInformationResponseDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationType,
+    pub valid_from: Option<OffsetDateTime>,
+    pub valid_to: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
+pub enum IdentifierTrustInformationType {
+    RegistrationCertificate,
+}
+
+#[derive(Clone, Debug)]
+pub struct IdentifierFilterParamsDTO {
+    pub ids: Option<Vec<IdentifierId>>,
+    pub name: Option<String>,
+    pub types: Option<Vec<IdentifierType>>,
+    pub states: Option<Vec<IdentifierState>>,
+    pub did_methods: Option<Vec<String>>,
+    pub is_remote: Option<bool>,
+    pub key_algorithms: Option<Vec<String>>,
+    pub key_roles: Option<Vec<KeyRole>>,
+    pub key_storages: Option<Vec<String>>,
+    pub certificate_roles: Option<Vec<CertificateRole>>,
+    pub certificate_roles_match_mode: CertificateRolesMatchMode,
+    pub trust_issuance_schema_id: Option<CredentialSchemaId>,
+    pub trust_verification_schema_id: Option<ProofSchemaId>,
+    pub exact: Option<Vec<ExactIdentifierFilterColumn>>,
+    pub organisation_id: OrganisationId,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Default)]
+pub enum CertificateRolesMatchMode {
+    All,
+    #[default]
+    Any,
 }
 
 #[skip_serializing_none]
@@ -51,6 +104,13 @@ pub struct CreateIdentifierRequestDTO {
     pub certificates: Option<Vec<CreateCertificateRequestDTO>>,
     pub certificate_authorities: Option<Vec<CreateCertificateAuthorityRequestDTO>>,
     pub organisation_id: OrganisationId,
+    pub trust_information: Vec<CreateIdentifierTrustInformationRequestDTO>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateIdentifierTrustInformationRequestDTO {
+    pub data: String,
+    pub r#type: IdentifierTrustInformationType,
 }
 
 #[derive(Clone, Debug)]
@@ -99,4 +159,36 @@ pub struct CreateSelfSignedCertificateAuthorityIssuerAlternativeNameRequest {
 pub enum CreateSelfSignedCertificateAuthorityIssuerAlternativeNameType {
     Email,
     Uri,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolveTrustEntriesRequestDTO {
+    pub identifiers: Vec<IdentifierId>,
+    pub roles: Option<Vec<TrustListRoleEnum>>,
+    pub trust_collection_ids: Option<Vec<TrustCollectionId>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntriesResponseDTO {
+    pub identifier: GetIdentifierListItemResponseDTO,
+    pub trust_entries: Vec<ResolvedTrustEntryResponseDTO>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntryResponseDTO {
+    pub metadata: Option<TrustEntityResponse>,
+    pub source: ResolvedTrustEntrySourceResponseDTO,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTrustEntrySourceResponseDTO {
+    pub id: TrustListSubscriptionId,
+    pub created_date: OffsetDateTime,
+    pub last_modified: OffsetDateTime,
+    pub name: String,
+    pub role: TrustListRoleEnum,
+    pub reference: String,
+    pub r#type: TrustListSubscriberId,
+    pub state: TrustListSubscriptionState,
+    pub trust_collection: TrustCollectionListItemResponseDTO,
 }

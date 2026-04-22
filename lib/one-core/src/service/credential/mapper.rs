@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::dto::{
     CreateCredentialRequestDTO, CredentialAttestationBlobs, CredentialDetailResponseDTO,
-    CredentialListItemResponseDTO, CredentialRequestClaimDTO, DetailCredentialClaimResponseDTO,
+    CredentialFilterParamsDTO, CredentialListItemResponseDTO, CredentialRequestClaimDTO,
+    CredentialSearchTypeDTO, DetailCredentialClaimResponseDTO,
     DetailCredentialClaimValueResponseDTO, DetailCredentialSchemaResponseDTO,
     MdocMsoValidityResponseDTO, WalletInstanceAttestationDTO, WalletUnitAttestationDTO,
 };
@@ -19,10 +20,17 @@ use crate::model::blob::{Blob, BlobType};
 use crate::model::certificate::Certificate;
 use crate::model::claim::Claim;
 use crate::model::claim_schema::ClaimSchema;
-use crate::model::credential::{Credential, CredentialRole, CredentialStateEnum};
+use crate::model::credential::{
+    Credential, CredentialFilterValue, CredentialRole, CredentialStateEnum,
+    ExactCredentialFilterColumn,
+};
 use crate::model::credential_schema::CredentialSchema;
 use crate::model::identifier::Identifier;
 use crate::model::key::Key;
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::validity_credential::ValidityCredential;
 use crate::provider::credential_formatter::mdoc_formatter;
 
@@ -369,7 +377,7 @@ pub(super) fn from_create_request(
     schema: CredentialSchema,
     key: Key,
 ) -> Credential {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     Credential {
         id: credential_id,
@@ -402,7 +410,7 @@ pub(super) fn claims_from_create_request(
     claims: Vec<CredentialRequestClaimDTO>,
     claim_schemas: &[ClaimSchema],
 ) -> Result<Vec<Claim>, CredentialServiceError> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let mut claims_map = HashMap::<String, Claim>::new();
 
     for claim_dto in claims {
@@ -566,5 +574,160 @@ impl TryFrom<Blob> for WalletUnitAttestationDTO {
             ))
         })?;
         Ok(wallet_unit_attestation)
+    }
+}
+
+impl From<CredentialFilterParamsDTO> for ListFilterCondition<CredentialFilterValue> {
+    fn from(value: CredentialFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            CredentialFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            CredentialFilterValue::CredentialSchemaName(StringMatch {
+                r#match: get_string_match_type(ExactCredentialFilterColumn::Name),
+                value: name,
+            })
+        });
+
+        let profiles = value.profiles.map(CredentialFilterValue::Profiles);
+
+        let search_filters = match (value.search_text, value.search_type) {
+            (Some(search_text), Some(search_type)) => {
+                organisation_id
+                    & ListFilterCondition::Or(
+                        search_type
+                            .into_iter()
+                            .map(|filter_type| {
+                                match filter_type {
+                                    CredentialSearchTypeDTO::ClaimName => {
+                                        CredentialFilterValue::ClaimName(StringMatch {
+                                            r#match: StringMatchType::Contains,
+                                            value: search_text.clone(),
+                                        })
+                                    }
+                                    CredentialSearchTypeDTO::ClaimValue => {
+                                        CredentialFilterValue::ClaimValue(StringMatch {
+                                            r#match: StringMatchType::Contains,
+                                            value: search_text.clone(),
+                                        })
+                                    }
+                                    CredentialSearchTypeDTO::CredentialSchemaName => {
+                                        CredentialFilterValue::CredentialSchemaName(StringMatch {
+                                            r#match: StringMatchType::Contains,
+                                            value: search_text.clone(),
+                                        })
+                                    }
+                                }
+                                .condition()
+                            })
+                            .collect(),
+                    )
+            }
+            _ => organisation_id,
+        };
+
+        let roles = value.roles.map(|roles| {
+            CredentialFilterValue::Roles(
+                roles
+                    .into_iter()
+                    .map(crate::model::credential::CredentialRole::from)
+                    .collect(),
+            )
+        });
+
+        let credential_ids = value.ids.map(CredentialFilterValue::CredentialIds);
+
+        let credential_schema_ids = value
+            .credential_schema_ids
+            .map(CredentialFilterValue::CredentialSchemaIds);
+
+        let issuers = value.issuers.map(CredentialFilterValue::IssuerIds);
+
+        let states = value.states.map(|values| {
+            CredentialFilterValue::States(
+                values
+                    .into_iter()
+                    .map(crate::model::credential::CredentialStateEnum::from)
+                    .collect(),
+            )
+        });
+
+        let created_date_after = value.created_date_after.map(|date| {
+            CredentialFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            CredentialFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            CredentialFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            CredentialFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let issuance_date_after = value.issuance_date_after.map(|date| {
+            CredentialFilterValue::IssuanceDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let issuance_date_before = value.issuance_date_before.map(|date| {
+            CredentialFilterValue::IssuanceDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let revocation_date_after = value.revocation_date_after.map(|date| {
+            CredentialFilterValue::RevocationDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let revocation_date_before = value.revocation_date_before.map(|date| {
+            CredentialFilterValue::RevocationDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        search_filters
+            & name
+            & roles
+            & credential_ids
+            & credential_schema_ids
+            & issuers
+            & states
+            & profiles
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+            & issuance_date_after
+            & issuance_date_before
+            & revocation_date_after
+            & revocation_date_before
     }
 }

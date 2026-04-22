@@ -12,7 +12,7 @@ use one_dto_mapper::convert_inner;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use shared_types::{
-    BlobId, CredentialFormat, CredentialId, DidValue, HolderWalletUnitId, InteractionId,
+    BlobId, CredentialFormat, CredentialId, CredentialSchemaId, DidValue, InteractionId,
 };
 use standardized_types::jwk::PublicJwk;
 use time::{Duration, OffsetDateTime};
@@ -62,6 +62,7 @@ use crate::provider::credential_formatter::model::{
 };
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
+use crate::provider::issuance_protocol;
 use crate::provider::issuance_protocol::dto::Features;
 use crate::provider::issuance_protocol::error::TxCodeError;
 use crate::provider::issuance_protocol::mapper::{
@@ -219,7 +220,7 @@ impl OpenID4VCI13 {
                 let can_be_updated_at = mdoc_validity_credential.created_date
                     + self.mso_minimum_refresh_time(format)?;
 
-                if can_be_updated_at > OffsetDateTime::now_utc() {
+                if can_be_updated_at > crate::clock::now_utc() {
                     return Err(IssuanceProtocolError::RefreshTooSoon);
                 }
             }
@@ -361,7 +362,7 @@ impl OpenID4VCI13 {
         interaction_data: &mut HolderInteractionData,
         storage_access: &StorageAccess,
     ) -> Result<SecretString, IssuanceProtocolError> {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         if let Some(encrypted_token) = &interaction_data.access_token {
             let token_valid = interaction_data
                 .access_token_expires_at
@@ -778,7 +779,7 @@ impl IssuanceProtocol for OpenID4VCI13 {
                 append_well_known(&credential_issuer, ".well-known/openid-credential-issuer")?;
             let content = self
                 .metadata_cache
-                .fetch::<serde_json::Value>(&metadata_url)
+                .fetch_json::<serde_json::Value>(&metadata_url)
                 .await
                 .error_while("fetching issuer metadata")?;
 
@@ -826,7 +827,6 @@ impl IssuanceProtocol for OpenID4VCI13 {
         holder_binding: Option<HolderBindingInput>,
         storage_access: &StorageAccess,
         tx_code: Option<String>,
-        _holder_wallet_unit_id: Option<HolderWalletUnitId>,
     ) -> Result<UpdateResponse, IssuanceProtocolError> {
         let credential = storage_access
             .get_credential_by_interaction_id(&interaction.id)
@@ -1039,6 +1039,21 @@ impl IssuanceProtocol for OpenID4VCI13 {
         .await
     }
 
+    async fn holder_continue_issuance(
+        &self,
+        continue_issuance_dto: ContinueIssuanceDTO,
+        organisation: Organisation,
+        storage_access: &StorageAccess,
+    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
+        self.holder_continue_issuance_with_protocol(
+            continue_issuance_dto,
+            organisation,
+            IssuanceProtocolType::OpenId4VciDraft13,
+            storage_access,
+        )
+        .await
+    }
+
     async fn issuer_share_credential(
         &self,
         credential: &Credential,
@@ -1111,8 +1126,7 @@ impl IssuanceProtocol for OpenID4VCI13 {
             },
         )?);
 
-        let expires_at =
-            Some(OffsetDateTime::now_utc() + self.params.pre_authorized_code_expires_in);
+        let expires_at = Some(crate::clock::now_utc() + self.params.pre_authorized_code_expires_in);
 
         Ok(ShareResponse {
             url,
@@ -1306,7 +1320,7 @@ impl IssuanceProtocol for OpenID4VCI13 {
                     .insert(
                         Mdoc {
                             id: Uuid::new_v4(),
-                            created_date: OffsetDateTime::now_utc(),
+                            created_date: crate::clock::now_utc(),
                             credential: token.as_bytes().to_vec(),
                             linked_credential_id: *credential_id,
                         }
@@ -1330,7 +1344,7 @@ impl IssuanceProtocol for OpenID4VCI13 {
                     .insert(
                         Mdoc {
                             id: Uuid::new_v4(),
-                            created_date: OffsetDateTime::now_utc(),
+                            created_date: crate::clock::now_utc(),
                             credential: token.as_bytes().to_vec(),
                             linked_credential_id: *credential_id,
                         }
@@ -1359,19 +1373,16 @@ impl IssuanceProtocol for OpenID4VCI13 {
         })
     }
 
-    async fn holder_continue_issuance(
+    async fn issuer_metadata(
         &self,
-        continue_issuance_dto: ContinueIssuanceDTO,
-        organisation: Organisation,
-        storage_access: &StorageAccess,
-    ) -> Result<ContinueIssuanceResponseDTO, IssuanceProtocolError> {
-        self.holder_continue_issuance_with_protocol(
-            continue_issuance_dto,
-            organisation,
-            IssuanceProtocolType::OpenId4VciDraft13,
-            storage_access,
+        _protocol_id: &str,
+        _credential_schema_id: &CredentialSchemaId,
+        _issuer_identifier: Option<Arc<Identifier>>,
+    ) -> Result<issuance_protocol::dto::OpenID4VCIIssuerMetadataResponseDTO, IssuanceProtocolError>
+    {
+        unimplemented!(
+            "issuer_metadata is only usable by OpenVCIv1-final - as draft 13 is about to be removed soon"
         )
-        .await
     }
 
     fn get_capabilities(&self) -> IssuanceProtocolCapabilities {
@@ -1992,7 +2003,7 @@ async fn get_discovery_and_issuer_metadata(
         )?;
         Ok(
             if let Ok(oidc_discovery) = fetcher
-                .fetch::<OAuthAuthorizationServerMetadata>(&url)
+                .fetch_json::<OAuthAuthorizationServerMetadata>(&url)
                 .await
             {
                 oidc_discovery
@@ -2017,7 +2028,7 @@ async fn get_discovery_and_issuer_metadata(
         )?;
 
         Ok(fetcher
-            .fetch::<OpenID4VCIIssuerMetadataResponseDTO>(&url)
+            .fetch_json::<OpenID4VCIIssuerMetadataResponseDTO>(&url)
             .await
             .error_while("getting issuer metadata")?)
     };
@@ -2030,7 +2041,7 @@ async fn create_and_store_interaction(
     data: Vec<u8>,
     organisation: Option<Organisation>,
 ) -> Result<Interaction, IssuanceProtocolError> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let interaction = interaction_from_handle_invitation(Some(data), now, organisation);
 

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use shared_types::{InteractionId, OrganisationId, ProofId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::model::claim::Claim;
@@ -12,7 +11,7 @@ use crate::model::history::{
 };
 use crate::model::interaction::InteractionRelations;
 use crate::model::proof::{
-    GetProofList, GetProofQuery, Proof, ProofRelations, ProofRole, ProofStateEnum,
+    GetProofList, Proof, ProofListQuery, ProofRelations, ProofRole, ProofStateEnum,
     UpdateProofRequest,
 };
 use crate::model::proof_schema::ProofSchemaRelations;
@@ -83,7 +82,7 @@ impl ProofHistoryDecorator {
             .history_repository
             .create_history(History {
                 id: Uuid::new_v4().into(),
-                created_date: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
                 action,
                 name,
                 source: HistorySource::Core,
@@ -91,6 +90,7 @@ impl ProofHistoryDecorator {
                 entity_id: Some(proof_id.into()),
                 entity_type: HistoryEntityType::Proof,
                 metadata: error_info.map(HistoryMetadata::ErrorMetadata),
+                metadata_blob_id: None,
                 organisation_id,
                 user: self.session_provider.session().user(),
             })
@@ -193,7 +193,7 @@ impl ProofRepository for ProofHistoryDecorator {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError> {
         self.inner.get_proof_list(query_params).await
     }

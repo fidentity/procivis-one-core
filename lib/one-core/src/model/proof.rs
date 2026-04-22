@@ -77,7 +77,12 @@ pub enum SortableProofColumn {
 }
 
 pub type GetProofList = GetListResponse<Proof>;
-pub type GetProofQuery = ListQuery<SortableProofColumn, ProofFilterValue>;
+pub type ProofListQuery = ListQuery<SortableProofColumn, ProofFilterValue>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactProofFilterColumn {
+    Name,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct ProofRelations {

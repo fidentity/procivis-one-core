@@ -5,8 +5,8 @@ use std::sync::Arc;
 use autometrics::autometrics;
 use one_core::model::claim::{Claim, ClaimRelations};
 use one_core::model::credential::{
-    Credential, CredentialListIncludeEntityTypeEnum, CredentialRelations, GetCredentialList,
-    GetCredentialQuery, UpdateCredentialRequest,
+    Credential, CredentialListIncludeEntityTypeEnum, CredentialListQuery, CredentialRelations,
+    GetCredentialList, UpdateCredentialRequest,
 };
 use one_core::model::credential_schema::{CredentialSchema, CredentialSchemaRelations};
 use one_core::model::identifier::{Identifier, IdentifierRelations};
@@ -23,7 +23,6 @@ use sea_orm::{
     QueryFilter, QueryOrder, QuerySelect, RelationTrait, Select, Set, SqlErr, Unchanged,
 };
 use shared_types::{ClaimId, CredentialId, CredentialSchemaId, IdentifierId, InteractionId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::CredentialProvider;
@@ -239,7 +238,7 @@ impl CredentialProvider {
     }
 }
 
-fn get_credential_list_query(query_params: GetCredentialQuery) -> Select<credential::Entity> {
+fn get_credential_list_query(query_params: CredentialListQuery) -> Select<credential::Entity> {
     let mut query = credential::Entity::find()
         .select_only()
         .columns([
@@ -421,7 +420,7 @@ impl CredentialRepository for CredentialProvider {
     }
 
     async fn delete_credential(&self, credential: &Credential) -> Result<(), DataLayerError> {
-        let now = OffsetDateTime::now_utc();
+        let now = one_core::clock::now_utc();
 
         let credential = credential::ActiveModel {
             id: Unchanged(credential.id),
@@ -475,7 +474,7 @@ impl CredentialRepository for CredentialProvider {
 
     async fn get_credential_list(
         &self,
-        query_params: GetCredentialQuery,
+        query_params: CredentialListQuery,
     ) -> Result<GetCredentialList, DataLayerError> {
         let limit = query_params
             .pagination
@@ -566,7 +565,7 @@ impl CredentialRepository for CredentialProvider {
 
         let update_model = credential::ActiveModel {
             id: Unchanged(credential_id),
-            last_modified: Set(OffsetDateTime::now_utc()),
+            last_modified: Set(one_core::clock::now_utc()),
             issuance_date,
             holder_identifier_id,
             issuer_identifier_id,

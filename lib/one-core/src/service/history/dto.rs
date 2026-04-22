@@ -1,12 +1,16 @@
 use one_dto_mapper::{From, convert_inner};
 use serde::{Deserialize, Serialize};
-use shared_types::{EntityId, HistoryId, OrganisationId};
+use shared_types::{
+    CredentialId, CredentialSchemaId, EntityId, HistoryId, IdentifierId, OrganisationId, ProofId,
+    ProofSchemaId,
+};
 use time::OffsetDateTime;
 
 use crate::error::ErrorCode;
 use crate::model::common::GetListResponse;
 use crate::model::history::{
-    History, HistoryAction, HistoryEntityType, HistoryErrorMetadata, HistoryMetadata, HistorySource,
+    History, HistoryAction, HistoryEntityType, HistoryErrorMetadata, HistoryMetadata,
+    HistorySearchEnum, HistorySource,
 };
 use crate::service::backup::dto::UnexportableEntitiesResponseDTO;
 
@@ -44,6 +48,25 @@ pub struct HistoryResponseDTO {
 }
 
 pub type GetHistoryListResponseDTO = GetListResponse<HistoryResponseDTO>;
+
+#[derive(Clone, Debug, Default)]
+pub struct HistoryFilterParamsDTO {
+    pub organisation_ids: Option<Vec<OrganisationId>>,
+    pub entity_ids: Option<Vec<EntityId>>,
+    pub entity_types: Option<Vec<HistoryEntityType>>,
+    pub actions: Option<Vec<HistoryAction>>,
+    pub identifier_id: Option<IdentifierId>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub credential_id: Option<CredentialId>,
+    pub credential_schema_id: Option<CredentialSchemaId>,
+    pub proof_id: Option<ProofId>,
+    pub proof_schema_id: Option<ProofSchemaId>,
+    pub users: Option<Vec<String>>,
+    pub sources: Option<Vec<HistorySource>>,
+    pub search_query: Option<String>,
+    pub search_type: Option<HistorySearchEnum>,
+}
 
 #[derive(Debug, Clone)]
 pub struct CreateHistoryRequestDTO {

@@ -131,6 +131,7 @@ impl TryFrom<ProofListItemModel> for Proof {
                     .ok_or(DataLayerError::MappingError)?
                     .into(),
                 deleted_at: None,
+                trust_information: None,
             }),
         };
 

@@ -1,15 +1,14 @@
 use std::collections::HashSet;
 
 use futures::future;
-use shared_types::{CredentialSchemaId, OrganisationId, ProofSchemaId};
-use time::OffsetDateTime;
+use shared_types::{CredentialSchemaId, ProofSchemaId};
 use uuid::Uuid;
 
 use super::ProofSchemaService;
 use super::dto::{
-    CreateProofSchemaRequestDTO, GetProofSchemaListResponseDTO, GetProofSchemaQueryDTO,
-    GetProofSchemaResponseDTO, ImportProofSchemaInputSchemaDTO, ImportProofSchemaRequestDTO,
-    ImportProofSchemaResponseDTO, ProofSchemaShareResponseDTO,
+    CreateProofSchemaRequestDTO, GetProofSchemaListResponseDTO, GetProofSchemaResponseDTO,
+    ImportProofSchemaInputSchemaDTO, ImportProofSchemaRequestDTO, ImportProofSchemaResponseDTO,
+    ProofSchemaFilterParamsDTO, ProofSchemaShareResponseDTO,
 };
 use super::error::ProofSchemaServiceError;
 use super::mapper::{
@@ -25,17 +24,18 @@ use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::list_response_into;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaQuery,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
 };
 use crate::model::list_filter::ListFilterValue;
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::{Organisation, OrganisationRelations};
 use crate::model::proof_schema::{
     ProofInputSchema, ProofInputSchemaRelations, ProofSchema, ProofSchemaClaimRelations,
-    ProofSchemaRelations,
+    ProofSchemaRelations, SortableProofSchemaColumn,
 };
 use crate::proto::credential_schema::dto::ImportCredentialSchemaRequestDTO;
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::credential_schema::dto::{
     CredentialSchemaFilterValue, ImportCredentialSchemaRequestSchemaDTO,
 };
@@ -89,17 +89,20 @@ impl ProofSchemaService {
     ///
     /// # Arguments
     ///
-    /// * `query` - query parameters
+    /// * `filter_params` - query parameters
     pub async fn get_proof_schema_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: GetProofSchemaQueryDTO,
+        filter_params: ListQueryDTO<SortableProofSchemaColumn, ProofSchemaFilterParamsDTO>,
     ) -> Result<GetProofSchemaListResponseDTO, ProofSchemaServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
         let result = self
             .proof_schema_repository
-            .get_proof_schema_list(query)
+            .get_proof_schema_list(filter_params.into())
             .await
             .error_while("getting proof schemas")?;
         Ok(list_response_into(result))
@@ -157,7 +160,7 @@ impl ProofSchemaService {
         let credential_schemas = self
             .credential_schema_repository
             .get_credential_schema_list(
-                GetCredentialSchemaQuery {
+                CredentialSchemaListQuery {
                     pagination: Some(ListPagination {
                         page: 0,
                         page_size: expected_credential_schemas as u32,
@@ -200,7 +203,7 @@ impl ProofSchemaService {
             &*self.formatter_provider,
         )?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let proof_schema = proof_schema_from_create_request(
             request,
             now,
@@ -250,7 +253,7 @@ impl ProofSchemaService {
         )
         .error_while("checking session")?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         self.proof_schema_repository
             .delete_proof_schema(id, now)
             .await
@@ -323,7 +326,7 @@ impl ProofSchemaService {
         )
         .await?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let input_schemas =
             schema
                 .proof_input_schemas

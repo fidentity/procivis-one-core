@@ -6,7 +6,7 @@ use one_dto_mapper::{From, Into};
 use sea_orm::IntoSimpleExpr;
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::SimpleExpr;
-use shared_types::{EntityId, HistoryId, OrganisationId};
+use shared_types::{BlobId, EntityId, HistoryId, OrganisationId};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -19,6 +19,7 @@ pub struct Model {
     pub action: HistoryAction,
     pub entity_id: Option<EntityId>,
     pub entity_type: HistoryEntityType,
+    #[sea_orm(column_type = "Text", nullable)]
     pub metadata: Option<String>,
     pub name: String,
     pub source: HistorySource,
@@ -26,6 +27,7 @@ pub struct Model {
     pub user: Option<String>,
 
     pub organisation_id: Option<OrganisationId>,
+    pub metadata_blob_id: Option<BlobId>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -123,6 +125,10 @@ pub enum HistoryAction {
     InteractionExpired,
     #[sea_orm(string_value = "DELIVERED")]
     Delivered,
+    #[sea_orm(string_value = "WRP_AC_RECEIVED")]
+    WrpAcReceived,
+    #[sea_orm(string_value = "WRP_RC_RECEIVED")]
+    WrpRcReceived,
 }
 
 impl From<&HistoryAction> for SimpleExpr {
@@ -186,6 +192,12 @@ pub enum HistoryEntityType {
     SupervisoryAuthority,
     #[sea_orm(string_value = "TRUST_LIST_PUBLICATION")]
     TrustListPublication,
+    #[sea_orm(string_value = "TRUST_COLLECTION")]
+    TrustCollection,
+    #[sea_orm(string_value = "TRUST_LIST_SUBSCRIPTION")]
+    TrustListSubscription,
+    #[sea_orm(string_value = "VERIFIER_INSTANCE")]
+    VerifierInstance,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, EnumIter, DeriveActiveEnum, From, Into)]

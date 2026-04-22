@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use shared_types::{DidId, IdentifierId, KeyId, OrganisationId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::Error;
@@ -10,15 +9,16 @@ use super::creator::IdentifierCreatorProto;
 use crate::config::core_config::SignerType;
 use crate::config::validator::did::validate_did_method;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
-use crate::model::certificate::{Certificate, CertificateState};
+use crate::model::certificate::{Certificate, CertificateRelations, CertificateState};
 use crate::model::did::Did;
-use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
-use crate::model::key::Key;
+use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierState, IdentifierType};
+use crate::model::key::{Key, KeyRelations};
 use crate::model::organisation::Organisation;
 use crate::proto::certificate_validator::x509_extension::validate_ca;
 use crate::proto::certificate_validator::{
     CertificateValidationOptions, CrlMode, EnforceKeyUsage, ParsedCertificate,
 };
+use crate::proto::csr_creator::GenerateCsrRequest;
 use crate::provider::key_algorithm::key::KeyHandle;
 use crate::provider::signer::dto::{CreateSignatureRequest, Issuer};
 use crate::provider::signer::x509_certificate;
@@ -30,6 +30,7 @@ use crate::service::did::service::{build_keys_request, generate_update_key};
 use crate::service::did::validator::validate_request_amount_of_keys;
 use crate::service::error::MissingProviderError;
 use crate::service::identifier::dto::CreateCertificateAuthorityRequestDTO;
+use crate::service::key::dto::KeyGenerateCSRRequestProfile;
 
 impl IdentifierCreatorProto {
     pub(super) async fn create_local_did_identifier(
@@ -42,7 +43,7 @@ impl IdentifierCreatorProto {
             .create_did_without_identifier(request, organisation.to_owned())
             .await?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier = Identifier {
             id: Uuid::new_v4().into(),
             created_date: now,
@@ -56,6 +57,7 @@ impl IdentifierCreatorProto {
             did: Some(did),
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -85,7 +87,7 @@ impl IdentifierCreatorProto {
             return Err(Error::MappingError("Organisation ID mismatch".to_string()));
         }
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier = Identifier {
             id: Uuid::new_v4().into(),
             created_date: now,
@@ -99,6 +101,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: Some(key),
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -116,15 +119,16 @@ impl IdentifierCreatorProto {
     ) -> Result<Identifier, Error> {
         let id = Uuid::new_v4().into();
 
-        let mut certificates = vec![];
+        let mut certificates: Vec<Certificate> = vec![];
         for request in requests {
-            certificates.push(
-                self.validate_and_prepare_certificate(id, organisation.id, request)
-                    .await?,
-            );
+            let cert = self
+                .validate_and_prepare_certificate(id, organisation.id, request)
+                .await?;
+            validate_no_conflicts(&certificates, &cert)?;
+            certificates.push(cert);
         }
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier = Identifier {
             id,
             created_date: now,
@@ -137,7 +141,8 @@ impl IdentifierCreatorProto {
             deleted_at: None,
             did: None,
             key: None,
-            certificates: None,
+            certificates: Some(certificates.clone()),
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -167,13 +172,14 @@ impl IdentifierCreatorProto {
 
         let mut certificates = vec![];
         for request in requests {
-            certificates.push(
-                self.validate_and_prepare_certificate_authority(id, organisation.id, request)
-                    .await?,
-            );
+            let cert = self
+                .validate_and_prepare_certificate_authority(id, organisation.id, request)
+                .await?;
+            validate_no_conflicts(&certificates, &cert)?;
+            certificates.push(cert);
         }
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier = Identifier {
             id,
             created_date: now,
@@ -187,6 +193,7 @@ impl IdentifierCreatorProto {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         };
         self.identifier_repository
             .create(identifier.to_owned())
@@ -313,7 +320,7 @@ impl IdentifierCreatorProto {
             key_reference_mapping.insert(key.id, reference);
         }
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let did = did_from_did_request(
             new_did_id,
             request,
@@ -343,12 +350,117 @@ impl IdentifierCreatorProto {
         organisation_id: OrganisationId,
         request: CreateCertificateRequestDTO,
     ) -> Result<Certificate, Error> {
+        if request.roles.is_empty() {
+            return Err(Error::EmptyCertificateRoles);
+        }
         let key = self
             .key_repository
-            .get_key(&request.key_id, &Default::default())
+            .get_key(
+                &request.key_id,
+                &KeyRelations {
+                    organisation: Some(Default::default()),
+                },
+            )
             .await
             .error_while("getting key")?
             .ok_or(Error::KeyNotFound(request.key_id))?;
+
+        match (&key.organisation, organisation_id) {
+            (Some(key_org), org_id) if org_id == key_org.id => {}
+            _ => {
+                return Err(Error::OrganisationMismatch);
+            }
+        };
+
+        let generated = request.content.is_some();
+        let chain = match (request.chain, request.content) {
+            (Some(chain), None) => chain,
+            (None, Some(content)) => {
+                let signer_type = self
+                    .config
+                    .signer
+                    .get_type(&content.signer)
+                    .error_while("checking signer")?;
+                if signer_type != SignerType::X509Certificate {
+                    return Err(Error::InvalidSignerType(signer_type));
+                }
+
+                let signer = self
+                    .signer_provider
+                    .get(&content.signer)
+                    .ok_or(MissingProviderError::Signer(content.signer.clone()))
+                    .error_while("getting signer")?;
+
+                let identifier = self
+                    .identifier_repository
+                    .get(
+                        content.certificate_authority.identifier_id,
+                        &IdentifierRelations {
+                            organisation: Some(Default::default()),
+                            certificates: Some(CertificateRelations {
+                                key: Some(Default::default()),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .error_while("getting CA identifier")?
+                    .ok_or(Error::IdentifierNotFound(
+                        content.certificate_authority.identifier_id,
+                    ))?;
+
+                if identifier.r#type != IdentifierType::CertificateAuthority {
+                    return Err(Error::InvalidIdentifierType(identifier.r#type));
+                }
+
+                match (&identifier.organisation, organisation_id) {
+                    (Some(identifier_org), org_id) if org_id == identifier_org.id => {}
+                    _ => {
+                        return Err(Error::OrganisationMismatch);
+                    }
+                };
+
+                if content.profile == KeyGenerateCSRRequestProfile::Ca {
+                    return Err(Error::InvalidCSRProfile);
+                }
+
+                let csr = self
+                    .csr_creator
+                    .create_csr(
+                        key.clone(),
+                        GenerateCsrRequest {
+                            profile: content.profile.into(),
+                            subject: content.subject.into(),
+                        },
+                    )
+                    .await
+                    .error_while("creating CSR")?;
+
+                signer
+                    .sign(
+                        Issuer::Identifier {
+                            identifier: Box::new(identifier),
+                            certificate: content.certificate_authority.certificate_id,
+                            key: None,
+                        },
+                        CreateSignatureRequest {
+                            data: serde_json::to_value(x509_certificate::dto::RequestData::Csr(
+                                csr,
+                            ))
+                            .map_err(|e| Error::MappingError(e.to_string()))?,
+                            validity_start: content.validity_start,
+                            validity_end: content.validity_end,
+                        },
+                    )
+                    .await
+                    .error_while("self-signing CA certificate")?
+                    .result
+            }
+            _ => {
+                return Err(Error::InvalidCertificateInput);
+            }
+        };
 
         let ParsedCertificate {
             attributes,
@@ -358,10 +470,13 @@ impl IdentifierCreatorProto {
         } = self
             .certificate_validator
             .parse_pem_chain(
-                &request.chain,
-                CertificateValidationOptions::signature_and_revocation(Some(vec![
-                    EnforceKeyUsage::DigitalSignature,
-                ])),
+                &chain,
+                CertificateValidationOptions {
+                    validity_check: (!generated).then_some(CrlMode::X509),
+                    ..CertificateValidationOptions::signature_and_revocation(Some(vec![
+                        EnforceKeyUsage::DigitalSignature,
+                    ]))
+                },
             )
             .await
             .error_while("parsing PEM chain")?;
@@ -373,17 +488,19 @@ impl IdentifierCreatorProto {
             None => subject_common_name.ok_or(Error::MissingCertificateCommonName)?,
         };
 
+        let now = crate::clock::now_utc();
         Ok(Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
             organisation_id: Some(organisation_id),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: now,
+            last_modified: now,
             expiry_date: attributes.not_after,
             name,
-            chain: request.chain,
+            chain,
             fingerprint: attributes.fingerprint,
             state: CertificateState::Active,
+            roles: request.roles,
             key: Some(key),
         })
     }
@@ -439,7 +556,7 @@ impl IdentifierCreatorProto {
                     .result
             }
             _ => {
-                return Err(Error::InvalidCertificateAuthorityIdentifierInput);
+                return Err(Error::InvalidCertificateInput);
             }
         };
 
@@ -475,15 +592,27 @@ impl IdentifierCreatorProto {
             id: Uuid::new_v4().into(),
             identifier_id,
             organisation_id: Some(organisation_id),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             expiry_date: attributes.not_after,
             name,
             chain,
             fingerprint: attributes.fingerprint,
             state: CertificateState::Active,
+            roles: vec![],
             key: Some(key),
         })
+    }
+}
+
+fn validate_no_conflicts(certificates: &[Certificate], cert: &Certificate) -> Result<(), Error> {
+    if certificates.iter().any(|c| {
+        c.fingerprint == cert.fingerprint
+            || c.name == cert.name && c.expiry_date == cert.expiry_date
+    }) {
+        Err(Error::ConflictingCertificates)
+    } else {
+        Ok(())
     }
 }
 

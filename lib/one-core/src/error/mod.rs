@@ -689,9 +689,7 @@ pub enum ErrorCode {
     #[strum(message = "Invalid key selection")]
     BR_0330,
 
-    #[strum(
-        message = "Chain or self-signed must be specified when creating Certificate Authority identifier"
-    )]
+    #[strum(message = "Chain or content must be specified when creating Certificate")]
     BR_0331,
 
     #[strum(message = "Invalid signature payload")]
@@ -805,7 +803,7 @@ pub enum ErrorCode {
     #[strum(message = "Trust entry not found")]
     BR_0387,
 
-    #[strum(message = "Missing trust list provider")]
+    #[strum(message = "Missing trust list publisher")]
     BR_0388,
 
     #[strum(message = "Unsupported trust list key type")]
@@ -813,6 +811,89 @@ pub enum ErrorCode {
 
     #[strum(message = "Trust entry doesn't belong to specified trust list")]
     BR_0390,
+
+    #[strum(message = "Trust collection not found")]
+    BR_0391,
+
+    #[strum(message = "Trust list role was not provided and is not specified by resolved list")]
+    BR_0392,
+
+    #[strum(message = "Invalid LoTE content")]
+    BR_0393,
+
+    #[strum(message = "Ambiguous trust resolution, identifier has multiple active certificates")]
+    BR_0394,
+
+    #[strum(message = "Remote HTTP request status failure (4xx)")]
+    BR_0395,
+
+    #[strum(message = "Unsupported identifier type")]
+    BR_0396,
+
+    #[strum(message = "Failed to encode public key")]
+    BR_0397,
+
+    #[strum(message = "Trust collection already exists")]
+    BR_0398,
+
+    #[strum(message = "Invalid trust list subscription reference")]
+    BR_0399,
+
+    #[strum(message = "Trust list subscriber provider not found")]
+    BR_0400,
+
+    #[strum(message = "Local trust collection cannot be synced")]
+    BR_0401,
+
+    #[strum(message = "Trust list subscription not found")]
+    BR_0402,
+
+    #[strum(message = "Trust list subscription already exists")]
+    BR_0403,
+
+    #[strum(message = "Missing task params")]
+    BR_0404,
+
+    #[strum(message = "Invalid task params")]
+    BR_0405,
+
+    #[strum(message = "Verifier instance not found")]
+    BR_0406,
+
+    #[strum(message = "Trust collections out of sync")]
+    BR_0407,
+
+    #[strum(
+        message = "Certificates on the same identifier must not be duplicates and must not have the same name and expiry"
+    )]
+    BR_0408,
+
+    #[strum(message = "Certificate roles must not be empty")]
+    BR_0409,
+
+    #[strum(message = "Certificate not trusted")]
+    BR_0410,
+
+    #[strum(message = "Operation not allowed by registration certificate")]
+    BR_0411,
+
+    #[strum(message = "Trust management disabled")]
+    BR_0412,
+
+    #[strum(message = "Invalid filter value: credential schema not found")]
+    BR_0413,
+
+    #[strum(message = "Invalid filter value: proof schema not found")]
+    BR_0414,
+
+    #[strum(message = "Missing trust information blob")]
+    BR_0415,
+
+    #[strum(message = "Invalid trust information")]
+    BR_0416,
+
+    #[strum(message = "Certificate role not allowed")]
+    BR_0418,
 }
 
 pub trait ErrorCodeMixin: Error + Send + Sync + 'static {

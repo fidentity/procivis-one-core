@@ -8,6 +8,7 @@ use crate::repository::trust_list_publication_repository::TrustListPublicationRe
 
 pub mod dto;
 pub mod error;
+mod mapper;
 pub mod service;
 
 #[derive(Clone)]

@@ -1,6 +1,6 @@
 use one_core::model::credential::CredentialStateEnum;
 use one_core::model::history::HistoryAction;
-use one_core::model::revocation_list::{RevocationListEntryStatus, RevocationListPurpose};
+use one_core::model::revocation_list::{RevocationListEntryState, RevocationListPurpose};
 use similar_asserts::assert_eq;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -81,8 +81,8 @@ async fn test_suspend_credential_with_bitstring_status_list_success() {
         .await;
     assert_eq!(revocation_list_entry.len(), 1);
     assert_eq!(
-        revocation_list_entry[0].status,
-        RevocationListEntryStatus::Suspended
+        revocation_list_entry[0].state,
+        RevocationListEntryState::Suspended
     );
 }
 
@@ -193,7 +193,7 @@ async fn test_suspend_credential_fails_credential_deleted() {
             &identifier,
             "OPENID4VCI_DRAFT13",
             TestingCredentialParams {
-                deleted_at: Some(OffsetDateTime::now_utc()),
+                deleted_at: Some(one_core::clock::now_utc()),
                 ..Default::default()
             },
         )

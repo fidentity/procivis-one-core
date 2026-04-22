@@ -1,12 +1,15 @@
+use one_core::model::proof_schema::ExactProofSchemaFilterColumn;
 use one_core::service::error::ServiceError;
 use one_core::service::proof_schema::dto::{
     CreateProofSchemaClaimRequestDTO, CreateProofSchemaRequestDTO, GetProofSchemaListItemDTO,
     GetProofSchemaResponseDTO, ImportProofSchemaClaimSchemaDTO,
     ImportProofSchemaCredentialSchemaDTO, ImportProofSchemaDTO, ImportProofSchemaInputSchemaDTO,
     ImportProofSchemaRequestDTO, ProofClaimSchemaResponseDTO, ProofInputSchemaRequestDTO,
-    ProofInputSchemaResponseDTO, ProofSchemaShareResponseDTO,
+    ProofInputSchemaResponseDTO, ProofSchemaFilterParamsDTO, ProofSchemaShareResponseDTO,
 };
-use one_dto_mapper::{From, Into, TryInto, convert_inner, try_convert_inner};
+use one_dto_mapper::{
+    From, Into, TryInto, convert_inner, convert_inner_of_inner, try_convert_inner,
+};
 use proc_macros::options_not_nullable;
 use serde::{Deserialize, Serialize};
 use shared_types::{OrganisationId, ProofSchemaId};
@@ -16,7 +19,7 @@ use uuid::Uuid;
 use validator::Validate;
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::common::ListQueryParamsRest;
 use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::credential_schema::dto::{
     CredentialSchemaLayoutPropertiesRestDTO, CredentialSchemaLayoutType,
@@ -44,6 +47,7 @@ pub(crate) struct CreateProofSchemaRequestRestDTO {
     /// schema will not be deleted.
     #[try_into(infallible)]
     pub expire_duration: Option<u32>,
+    /// Set of all claims to request.
     #[try_into(with_fn = convert_inner, infallible)]
     #[schema(min_items = 1)]
     pub proof_input_schemas: Vec<ProofInputSchemaRequestRestDTO>,
@@ -57,7 +61,8 @@ pub(crate) struct ProofInputSchemaRequestRestDTO {
     /// ID of the credential schema from which the `claimSchemas` object
     /// is assembled.
     pub credential_schema_id: Uuid,
-    /// Defines the set of attributes being requested when making proof requests using this schema.
+    /// Defines the set of attributes being requested when making proof
+    /// requests using this schema.
     #[into(with_fn = convert_inner)]
     #[schema(min_items = 1)]
     pub claim_schemas: Vec<ClaimProofSchemaRequestRestDTO>,
@@ -187,6 +192,13 @@ pub(crate) struct ImportProofSchemaCredentialSchemaRestDTO {
 // list endpoint
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
+#[into(ExactProofSchemaFilterColumn)]
+pub(crate) enum ExactProofSchemaFilterColumnRestEnum {
+    Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
 #[into("one_core::model::proof_schema::SortableProofSchemaColumn")]
 pub(crate) enum SortableProofSchemaColumnRestEnum {
     Name,
@@ -196,47 +208,57 @@ pub(crate) enum SortableProofSchemaColumnRestEnum {
 pub(crate) type GetProofSchemaQuery =
     ListQueryParamsRest<ProofSchemasFilterQueryParamsRest, SortableProofSchemaColumnRestEnum>;
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = ProofSchemaFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetProofSchemaQuery
 pub(crate) struct ProofSchemasFilterQueryParamsRest {
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Return only proof schemas with a name starting with this string.
     /// Not case-sensitive.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by specific UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<ProofSchemaId>>,
     /// Set which filters apply in an exact way.
+    #[try_into(with_fn = convert_inner_of_inner, infallible)]
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactProofSchemaFilterColumnRestEnum>>,
     /// Return only proof schemas which use only the specified credential formats.
     #[param(rename = "formats[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub formats: Option<Vec<String>>,
 
     /// Return only proof schemas created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only proof schemas created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only proof schemas last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only proof schemas last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
 }
 
@@ -333,8 +355,8 @@ mod test {
     fn test_shared_schema_deserializes_into_import_schema() {
         let shared = GetProofSchemaResponseRestDTO {
             id: Uuid::new_v4(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: one_core::clock::now_utc(),
+            last_modified: one_core::clock::now_utc(),
             name: "name".to_string(),
             expire_duration: 42,
             imported_source_url: Some("imported_source_url".to_string()),
@@ -351,9 +373,9 @@ mod test {
                 }],
                 credential_schema: CredentialSchemaListItemResponseRestDTO {
                     id: Uuid::new_v4(),
-                    created_date: OffsetDateTime::now_utc(),
-                    last_modified: OffsetDateTime::now_utc(),
-                    deleted_at: Some(OffsetDateTime::now_utc()),
+                    created_date: one_core::clock::now_utc(),
+                    last_modified: one_core::clock::now_utc(),
+                    deleted_at: Some(one_core::clock::now_utc()),
                     name: "name".to_string(),
                     format: "format".into(),
                     revocation_method: Some("method".into()),

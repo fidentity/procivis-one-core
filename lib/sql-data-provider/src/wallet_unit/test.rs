@@ -595,7 +595,7 @@ async fn test_update_wallet_unit_status_success() {
     wallet_unit.status = WalletUnitStatus::Active;
     let original_name = wallet_unit.name.clone();
     let original_os = wallet_unit.os;
-    let original_provider_type = wallet_unit.wallet_provider_type.clone();
+    let original_provider_type = wallet_unit.wallet_provider_type;
     let original_provider_name = wallet_unit.wallet_provider_name.clone();
     let original_public_key = wallet_unit.authentication_key_jwk.clone();
 

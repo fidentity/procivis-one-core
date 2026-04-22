@@ -10,7 +10,6 @@ use shared_types::{KeyId, Permission};
 use super::dto::GetKeyQuery;
 use crate::dto::common::{EntityResponseRestDTO, GetKeyListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, OkOrErrorResponse};
 use crate::endpoint::key::dto::{
     KeyGenerateCSRRequestRestDTO, KeyGenerateCSRResponseRestDTO, KeyListItemResponseRestDTO,
@@ -71,13 +70,14 @@ pub(crate) async fn get_key(
     ),
     summary = "Create a key",
     description = indoc::formatdoc! {"
-    Creates a key within an organization, which can be used to create a DID.
+    Creates a key within an organization. When creating identifiers for your own
+    use — key identifiers, certificate identifiers, CA identifiers, or DID identifiers
+    — a key is the first step.
 
     The `keyType` and `storageType` values must reference specific configuration
-    instances from your system configuration. This is because the system allows
-    multiple configurations of the same type.
+    instances from your system configuration.
 
-    Related guide: [Keys](/keys)
+    Related guide: [Keys](https://docs.procivis.ch/keys)
 "},
 )]
 pub(crate) async fn post_key(
@@ -113,37 +113,17 @@ pub(crate) async fn get_key_list(
     WithRejection(Qs(query), _): WithRejection<Qs<GetKeyQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetKeyListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)
-            .error_while("mapping organisation from session")?;
-        state
+        let value = state
             .core
             .key_service
-            .get_key_list(
-                &organisation_id,
-                query.try_into().error_while("mapping query")?,
-            )
+            .get_key_list(query.try_into()?)
             .await
+            .error_while("getting key list")?;
+        list_try_from::<KeyListItemResponseRestDTO, KeyListItemResponseDTO>(value)
+            .map_err(|error| ServiceError::MappingError(error.to_string()))
     }
     .await;
-
-    match result {
-        Err(error) => {
-            tracing::error!("Error while getting keys: {:?}", error);
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => {
-            match list_try_from::<KeyListItemResponseRestDTO, KeyListItemResponseDTO>(value) {
-                Ok(value) => OkOrErrorResponse::ok(value),
-                Err(error) => {
-                    tracing::error!("Error while encoding base64: {:?}", error);
-                    OkOrErrorResponse::from_error(
-                        &ServiceError::MappingError(error.to_string()),
-                        state.config.hide_error_response_cause,
-                    )
-                }
-            }
-        }
-    }
+    OkOrErrorResponse::from_result(result, state, "getting keys")
 }
 
 #[endpoint(

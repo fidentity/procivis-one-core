@@ -1,15 +1,16 @@
 [package]
-authors           = ["Procivis"]
-build             = "build.rs"
-edition.workspace = true
-license           = "Apache-2.0"
-name              = "one-core"
-publish           = false
-version           = "0.1.0"
+authors                = ["Procivis"]
+build                  = "build.rs"
+edition.workspace      = true
+license                = "Apache-2.0"
+name                   = "one-core"
+publish                = false
 rust-version.workspace = true
+version                = "0.1.0"
 
 [dependencies]
 aes-gcm                      = { version = "0.10.3", features = ["std"] }
+quick-xml.workspace          = true
 anyhow.workspace             = true
 asn1-rs.workspace            = true
 async-trait.workspace        = true
@@ -23,7 +24,7 @@ coset                        = { version = "0.4", features = ["std"] }
 crc                          = { version = "3.3" }
 ct-codecs.workspace          = true
 dashmap                      = "6.1.0"
-dcql                         = { version = "0.1.0", path = "../dcql" }
+dcql.workspace               = true
 figment                      = { version = "0.10", default-features = false }
 flate2                       = { version = "1.0" }
 futures.workspace            = true
@@ -49,11 +50,12 @@ one-dto-mapper.workspace     = true
 ouroboros                    = { version = "0.18" }
 pem                          = { version = "3" }
 rand.workspace               = true
-rcgen                        = { workspace = true, features = ["x509-parser"] }
+rcgen.workspace              = true
 regex.workspace              = true
 reqwest.workspace            = true
-rumqttc                      = { version = "0.25", default-features = false, features = ["use-rustls"] }
-rustls                       = { version = "0.23", default-features = false, features = ["ring"] }
+roxmltree.workspace          = true
+rumqttc-next                 = { version = "0.27", default-features = false, features = ["use-rustls"] }
+rustls                       = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 rustls-pki-types             = { version = "1.14" }
 rustls-platform-verifier     = { workspace = true }
 secrecy                      = { workspace = true }

@@ -36,6 +36,7 @@ impl CertificateSerial {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct AuthorityKeyIdentifier(Vec<u8>);
 
 impl From<Vec<u8>> for AuthorityKeyIdentifier {
@@ -47,6 +48,13 @@ impl From<Vec<u8>> for AuthorityKeyIdentifier {
 impl AuthorityKeyIdentifier {
     pub fn from_base64url(value: &str) -> Result<Self, ct_codecs::Error> {
         Ok(Self(Base64UrlSafeNoPadding::decode_to_vec(value, None)?))
+    }
+}
+
+impl core::fmt::LowerHex for AuthorityKeyIdentifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let bytes: Vec<_> = self.0.iter().map(|b| format!("{b:02x}")).collect();
+        f.write_str(&bytes.join(":"))
     }
 }
 

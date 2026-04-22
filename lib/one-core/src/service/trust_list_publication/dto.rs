@@ -7,8 +7,9 @@ use time::OffsetDateTime;
 
 use crate::model::common::GetListResponse;
 use crate::model::identifier::Identifier;
-use crate::model::trust_entry::{TrustEntry, TrustEntryStatusEnum};
-use crate::model::trust_list_publication::{TrustListPublication, TrustListPublicationRoleEnum};
+use crate::model::trust_entry::{TrustEntry, TrustEntryStateEnum};
+use crate::model::trust_list_publication::TrustListPublication;
+use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::service::identifier::dto::GetIdentifierListItemResponseDTO;
 use crate::service::trust_list_publication::error::TrustListPublicationServiceError;
 
@@ -20,7 +21,7 @@ pub struct CreateTrustListPublicationRequestDTO {
     pub key_id: Option<KeyId>,
     pub certificate_id: Option<CertificateId>,
     pub name: String,
-    pub role: TrustListPublicationRoleEnum,
+    pub role: TrustListRoleEnum,
     pub params: Option<serde_json::Value>,
 }
 
@@ -32,7 +33,7 @@ pub struct CreateTrustEntryRequestDTO {
 
 #[derive(Clone, Debug)]
 pub struct UpdateTrustEntryRequestDTO {
-    pub status: Option<TrustEntryStatusEnum>,
+    pub state: Option<TrustEntryStateEnum>,
     pub params: Option<serde_json::Value>,
 }
 
@@ -54,7 +55,7 @@ pub struct GetTrustListPublicationResponseDTO {
     #[try_from(infallible)]
     pub r#type: TrustListPublisherId,
     #[try_from(infallible)]
-    pub role: TrustListPublicationRoleEnum,
+    pub role: TrustListRoleEnum,
     #[try_from(infallible)]
     pub content: Option<Vec<u8>>,
     #[try_from(infallible)]
@@ -74,7 +75,7 @@ pub struct TrustListPublicationListItemResponseDTO {
     pub last_modified: OffsetDateTime,
     pub organisation_id: OrganisationId,
     pub r#type: TrustListPublisherId,
-    pub role: TrustListPublicationRoleEnum,
+    pub role: TrustListRoleEnum,
     pub deleted_at: Option<OffsetDateTime>,
 }
 
@@ -91,7 +92,7 @@ pub struct TrustEntryListItemResponseDTO {
     #[try_from(infallible)]
     pub last_modified: OffsetDateTime,
     #[try_from(infallible)]
-    pub status: TrustEntryStatusEnum,
+    pub state: TrustEntryStateEnum,
     #[try_from(with_fn = "map_identifier")]
     pub identifier: GetIdentifierListItemResponseDTO,
     #[try_from(rename = "metadata", infallible)]
@@ -99,6 +100,36 @@ pub struct TrustEntryListItemResponseDTO {
 }
 
 pub type GetTrustEntryListResponseDTO = GetListResponse<TrustEntryListItemResponseDTO>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTrustListFilterColumn {
+    Name,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustListPublicationFilterParamsDTO {
+    pub name: Option<String>,
+    pub exact: Option<Vec<ExactTrustListFilterColumn>>,
+    pub organisation_id: OrganisationId,
+    pub ids: Option<Vec<TrustListPublicationId>>,
+    pub types: Option<Vec<TrustListPublisherId>>,
+    pub roles: Option<Vec<TrustListRoleEnum>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TrustEntryFilterParamsDTO {
+    pub ids: Option<Vec<TrustEntryId>>,
+    pub identifier_ids: Option<Vec<IdentifierId>>,
+    pub states: Option<Vec<TrustEntryStateEnum>>,
+    pub created_date_after: Option<OffsetDateTime>,
+    pub created_date_before: Option<OffsetDateTime>,
+    pub last_modified_after: Option<OffsetDateTime>,
+    pub last_modified_before: Option<OffsetDateTime>,
+}
 
 fn map_identifier(
     identifier: Option<Identifier>,

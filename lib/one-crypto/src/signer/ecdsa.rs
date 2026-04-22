@@ -1,14 +1,13 @@
-use ct_codecs::{Base64UrlSafeNoPadding, Encoder};
 use p256::ecdh::diffie_hellman;
 use p256::ecdsa::signature::{Signer as _, Verifier as _};
 use p256::ecdsa::{Signature, SigningKey, VerifyingKey};
+use p256::elliptic_curve::SecretKey;
 use p256::elliptic_curve::generic_array::GenericArray;
 use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
-use p256::elliptic_curve::{JwkEcKey, SecretKey};
-use p256::pkcs8::DecodePublicKey;
-use p256::{AffinePoint, EncodedPoint, NistP256, PublicKey};
+use p256::pkcs8::{DecodePublicKey, EncodePublicKey};
+use p256::{AffinePoint, EncodedPoint, NistP256};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
-use standardized_types::jwk::{PublicJwk, PublicJwkEc};
+use standardized_types::jwk::PublicJwk;
 
 use crate::encryption::EncryptionError;
 use crate::jwe::decode_b64;
@@ -94,6 +93,15 @@ impl ECDSASigner {
             .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?;
 
         Ok(pk.to_encoded_point(compressed).to_bytes().into())
+    }
+
+    pub fn public_key_to_der(public_key_raw: &[u8]) -> Result<Vec<u8>, SignerError> {
+        let vk = Self::from_bytes(public_key_raw)?;
+        Ok(vk
+            .to_public_key_der()
+            .map_err(|e| SignerError::CouldNotExtractPublicKey(e.to_string()))?
+            .as_bytes()
+            .to_vec())
     }
 
     pub fn get_public_key_coordinates(
@@ -184,11 +192,16 @@ impl ECDSASigner {
         Ok(SecretSlice::from(shared_secret))
     }
 
-    pub fn bytes_as_jwk(public_key: &[u8]) -> Result<PublicJwk, EncryptionError> {
-        let verifying_key = ECDSASigner::from_bytes(public_key)
-            .map_err(|e| EncryptionError::Crypto(e.to_string()))?;
-        let public_key = PublicKey::from(verifying_key);
-        ec_key_to_public_jwk(public_key.to_jwk())
+    pub fn public_key_coordinates(public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), SignerError> {
+        let verifying_key = ECDSASigner::from_bytes(public_key)?;
+        let point = verifying_key.to_encoded_point(false);
+        let x = point.x().ok_or(SignerError::CouldNotExtractPublicKey(
+            "Missing X coordinate".to_string(),
+        ))?;
+        let y = point.y().ok_or(SignerError::CouldNotExtractPublicKey(
+            "Missing Y coordinate".to_string(),
+        ))?;
+        Ok((x.to_vec(), y.to_vec()))
     }
 }
 
@@ -220,30 +233,4 @@ impl Signer for ECDSASigner {
         vk.verify(input, &signature)
             .map_err(|err| SignerError::CouldNotVerify(format!("couldn't verify: {err}")))
     }
-}
-
-fn ec_key_to_public_jwk(key: JwkEcKey) -> Result<PublicJwk, EncryptionError> {
-    let point = key.to_encoded_point::<NistP256>().map_err(|e| {
-        EncryptionError::Crypto(format!("failed to convert JWK to encoded point: {e}"))
-    })?;
-    let x = Base64UrlSafeNoPadding::encode_to_string(
-        point
-            .x()
-            .ok_or(EncryptionError::Crypto("missing x coordinate".to_string()))?,
-    )
-    .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {e}")))?;
-    let y = Base64UrlSafeNoPadding::encode_to_string(
-        point
-            .y()
-            .ok_or(EncryptionError::Crypto("missing y coordinate".to_string()))?,
-    )
-    .map_err(|e| EncryptionError::Crypto(format!("failed to encode x coordinate: {e}")))?;
-    Ok(PublicJwk::Ec(PublicJwkEc {
-        alg: None,
-        r#use: None,
-        kid: None,
-        crv: key.crv().to_string(),
-        x,
-        y: Some(y),
-    }))
 }

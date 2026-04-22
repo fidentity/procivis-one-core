@@ -442,7 +442,7 @@ pub(crate) async fn interaction_data_from_openid4vp_20_query(
         }
 
         let client_metadata = metadata_cache
-            .fetch(client_metadata_uri.as_str())
+            .fetch_json(client_metadata_uri.as_str())
             .await
             .error_while("fetching client metadata")?;
 

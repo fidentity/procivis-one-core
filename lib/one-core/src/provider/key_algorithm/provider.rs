@@ -35,12 +35,11 @@ pub trait KeyAlgorithmProvider: Send + Sync {
     ) -> Option<(KeyAlgorithmType, Arc<dyn KeyAlgorithm>)>;
     fn key_algorithm_from_cose_alg(
         &self,
-        cose_alg: i32,
+        cose_alg: i64,
     ) -> Option<(KeyAlgorithmType, Arc<dyn KeyAlgorithm>)>;
 
     fn parse_jwk(&self, key: &PublicJwk) -> Result<ParsedKey, KeyAlgorithmProviderError>;
     fn parse_multibase(&self, multibase: &str) -> Result<ParsedKey, KeyAlgorithmProviderError>;
-    fn parse_raw(&self, public_key_der: &[u8]) -> Result<ParsedKey, KeyAlgorithmProviderError>;
 
     fn reconstruct_key(
         &self,
@@ -83,7 +82,7 @@ impl KeyAlgorithmProvider for KeyAlgorithmProviderImpl {
 
     fn key_algorithm_from_cose_alg(
         &self,
-        cose_alg: i32,
+        cose_alg: i64,
     ) -> Option<(KeyAlgorithmType, Arc<dyn KeyAlgorithm>)> {
         self.algorithms
             .iter()
@@ -111,22 +110,6 @@ impl KeyAlgorithmProvider for KeyAlgorithmProviderImpl {
     fn parse_multibase(&self, multibase: &str) -> Result<ParsedKey, KeyAlgorithmProviderError> {
         for algorithm in self.algorithms.values() {
             if let Ok(public_key) = algorithm.parse_multibase(multibase) {
-                return Ok(ParsedKey {
-                    algorithm_type: algorithm.algorithm_type(),
-                    key: public_key,
-                });
-            }
-        }
-
-        Err(KeyAlgorithmProviderError::MissingAlgorithmImplementation(
-            "None of the algorithms supports given key".to_string(),
-        ))
-    }
-
-    #[tracing::instrument(level = "debug", skip(self), err(level = "info"))]
-    fn parse_raw(&self, public_key_der: &[u8]) -> Result<ParsedKey, KeyAlgorithmProviderError> {
-        for algorithm in self.algorithms.values() {
-            if let Ok(public_key) = algorithm.parse_raw(public_key_der) {
                 return Ok(ParsedKey {
                     algorithm_type: algorithm.algorithm_type(),
                     key: public_key,

@@ -1,13 +1,22 @@
 use one_core::service::credential::dto::CredentialRevocationCheckResponseDTO;
 use one_dto_mapper::{From, convert_inner};
 
-use super::OneCoreBinding;
+use super::OneCore;
 use super::credential::CredentialStateBindingEnum;
 use crate::error::BindingError;
 use crate::utils::into_id;
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
+    /// Checks whether a held credential has been suspended or revoked.
+    ///
+    /// For list-based revocation methods, the signed lists and any DID
+    /// documents containing public keys used to verify the lists are
+    /// cached. Use `forceRefresh` to force the system to retrieve these
+    /// from the external resource.
+    ///
+    /// For modcs, use `forceRefresh` to force the system to request a
+    /// new MSO.
     #[uniffi::method]
     pub async fn check_revocation(
         &self,
@@ -31,6 +40,7 @@ impl OneCoreBinding {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(CredentialRevocationCheckResponseDTO)]
+#[uniffi(name = "CredentialRevocationCheckResponse")]
 pub struct CredentialRevocationCheckResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub credential_id: String,

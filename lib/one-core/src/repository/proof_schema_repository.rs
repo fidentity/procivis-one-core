@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 
 use super::error::DataLayerError;
 use crate::model::proof_schema::{
-    GetProofSchemaList, GetProofSchemaQuery, ProofSchema, ProofSchemaRelations,
+    GetProofSchemaList, ProofSchema, ProofSchemaListQuery, ProofSchemaRelations,
 };
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -22,7 +22,7 @@ pub trait ProofSchemaRepository: Send + Sync {
 
     async fn get_proof_schema_list(
         &self,
-        query_params: GetProofSchemaQuery,
+        query_params: ProofSchemaListQuery,
     ) -> Result<GetProofSchemaList, DataLayerError>;
 
     async fn delete_proof_schema(

@@ -1,11 +1,15 @@
-use one_core::service::credential::dto::{
-    CreateCredentialRequestDTO, CredentialListItemResponseDTO, CredentialRequestClaimDTO,
-    CredentialRevocationCheckResponseDTO, CredentialRole, CredentialStateEnum,
-    DetailCredentialClaimResponseDTO, DetailCredentialSchemaResponseDTO,
-    MdocMsoValidityResponseDTO, ShareCredentialResponseDTO, SuspendCredentialRequestDTO,
-    WalletInstanceAttestationDTO, WalletUnitAttestationDTO,
+use one_core::model::credential::{
+    CredentialListIncludeEntityTypeEnum, ExactCredentialFilterColumn, SortableCredentialColumn,
 };
-use one_dto_mapper::{From, Into, convert_inner};
+use one_core::service::credential::dto::{
+    CreateCredentialRequestDTO, CredentialFilterParamsDTO, CredentialListItemResponseDTO,
+    CredentialRequestClaimDTO, CredentialRevocationCheckResponseDTO, CredentialRole,
+    CredentialSearchTypeDTO, CredentialStateEnum, DetailCredentialClaimResponseDTO,
+    DetailCredentialSchemaResponseDTO, MdocMsoValidityResponseDTO, ShareCredentialResponseDTO,
+    SuspendCredentialRequestDTO, WalletInstanceAttestationDTO, WalletUnitAttestationDTO,
+};
+use one_core::service::error::ServiceError;
+use one_dto_mapper::{From, Into, TryInto, convert_inner, convert_inner_of_inner};
 use proc_macros::{ModifySchema, options_not_nullable};
 use serde::{Deserialize, Serialize};
 use shared_types::{
@@ -17,7 +21,8 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::deserialize::deserialize_timestamp;
-use crate::dto::common::{ExactColumn, ListQueryParamsRest};
+use crate::dto::common::ListQueryParamsRest;
+use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::endpoint::certificate::dto::CertificateResponseRestDTO;
 use crate::endpoint::credential_schema::dto::{
     CredentialClaimSchemaResponseRestDTO, CredentialSchemaLayoutPropertiesRestDTO,
@@ -246,7 +251,8 @@ pub(crate) enum CredentialStateRestEnum {
     InteractionExpired,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[into(CredentialSearchTypeDTO)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) enum SearchType {
     ClaimName,
@@ -254,92 +260,119 @@ pub(crate) enum SearchType {
     CredentialSchemaName,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, IntoParams, TryInto)]
+#[try_into(T = CredentialFilterParamsDTO, Error = ServiceError)]
 #[serde(rename_all = "camelCase")] // No deny_unknown_fields because of flattening inside GetCredentialQuery
 pub(crate) struct CredentialsFilterQueryParamsRest {
     /// Required when not using STS authentication mode. Specifies the
     /// organizational context for this operation. When using STS
     /// authentication, this value is derived from the token.
     #[param(nullable = false)]
+    #[try_into(with_fn = fallback_organisation_id_from_session)]
     pub organisation_id: Option<OrganisationId>,
     /// Return only credentials with a name starting with this string.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub name: Option<String>,
     /// Filter by one or more country profiles.
     #[param(rename = "profiles[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub profiles: Option<Vec<String>>,
     /// Filter credentials by one or more roles: issued by the system,
     /// verified by the system, or held by the system as a wallet.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "roles[]", inline, nullable = false)]
     pub roles: Option<Vec<CredentialRoleRestEnum>>,
     /// Set which filters apply in an exact way.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "exact[]", inline, nullable = false)]
-    pub exact: Option<Vec<ExactColumn>>,
+    pub exact: Option<Vec<ExactCredentialFilterColumnRestEnum>>,
     /// Filter by one or more UUIDs.
     #[param(rename = "ids[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub ids: Option<Vec<CredentialId>>,
     /// Filter by one or more credential states.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "states[]", inline, nullable = false)]
     pub states: Option<Vec<CredentialStateRestEnum>>,
     /// Filter by one or more identifier IDs.
     #[param(rename = "issuers[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub issuers: Option<Vec<IdentifierId>>,
     /// Search for a string.
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub search_text: Option<String>,
     /// Changes where `searchText` is searched. To search credentials,
     /// choose one or more `searchType`s and pass a `searchText`.
+    #[try_into(infallible, with_fn = convert_inner_of_inner)]
     #[param(rename = "searchType[]", inline, nullable = false)]
     pub search_type: Option<Vec<SearchType>>,
 
     #[param(rename = "credentialSchemaIds[]", inline, nullable = false)]
+    #[try_into(infallible)]
     pub credential_schema_ids: Option<Vec<CredentialSchemaId>>,
 
     /// Return only credentials created after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_after: Option<OffsetDateTime>,
     /// Return only credentials created before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub created_date_before: Option<OffsetDateTime>,
     /// Return only credentials last modified after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_after: Option<OffsetDateTime>,
     /// Return only credentials last modified before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub last_modified_before: Option<OffsetDateTime>,
     /// Return only credentials issued after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub issuance_date_after: Option<OffsetDateTime>,
     /// Return only credentials issued before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub issuance_date_before: Option<OffsetDateTime>,
     /// Return only credentials revoked after this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub revocation_date_after: Option<OffsetDateTime>,
     /// Return only credentials revoked before this time.
     /// Timestamp in RFC3339 format (e.g. '2023-06-09T14:19:57.000Z').
     #[serde(default, deserialize_with = "deserialize_timestamp")]
     #[param(nullable = false)]
+    #[try_into(infallible)]
     pub revocation_date_before: Option<OffsetDateTime>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
-#[into(one_core::model::credential::CredentialListIncludeEntityTypeEnum)]
+#[into(ExactCredentialFilterColumn)]
+pub(crate) enum ExactCredentialFilterColumnRestEnum {
+    Name,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
+#[serde(rename_all = "camelCase")]
+#[into(CredentialListIncludeEntityTypeEnum)]
 pub(crate) enum CredentialListIncludeEntityTypeRestEnum {
     LayoutProperties,
 }
@@ -352,7 +385,7 @@ pub(crate) type GetCredentialQuery = ListQueryParamsRest<
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, ToSchema, Into)]
 #[serde(rename_all = "camelCase")]
-#[into("one_core::model::credential::SortableCredentialColumn")]
+#[into(SortableCredentialColumn)]
 pub(crate) enum SortableCredentialColumnRestEnum {
     CreatedDate,
     #[serde(rename = "schema.name")]

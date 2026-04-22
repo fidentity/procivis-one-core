@@ -11,7 +11,6 @@ use rcgen::KeyUsagePurpose;
 use resolver::{StatusListCacheEntry, StatusListResolver};
 use serde::{Deserialize, Serialize};
 use shared_types::{RevocationListEntryId, RevocationListId, RevocationMethodId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use self::resolver::StatusListCachingLoader;
@@ -24,7 +23,7 @@ use crate::model::credential::Credential;
 use crate::model::did::{DidRelations, KeyRole};
 use crate::model::identifier::{Identifier, IdentifierRelations, IdentifierType};
 use crate::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryState,
     RevocationListPurpose, RevocationListRelations, StatusListCredentialFormat,
     UpdateRevocationListEntryId, UpdateRevocationListEntryRequest,
 };
@@ -226,7 +225,7 @@ impl RevocationMethod for TokenStatusList {
             .update_entry(
                 UpdateRevocationListEntryId::Credential(credential.id),
                 UpdateRevocationListEntryRequest {
-                    status: Some(new_state.into()),
+                    state: Some(new_state.into()),
                 },
             )
             .await
@@ -362,7 +361,6 @@ impl RevocationMethod for TokenStatusList {
             .get(
                 issuer_id,
                 &IdentifierRelations {
-                    organisation: None,
                     did: Some(DidRelations {
                         keys: Some(Default::default()),
                         ..Default::default()
@@ -372,6 +370,7 @@ impl RevocationMethod for TokenStatusList {
                         key: Some(Default::default()),
                         ..Default::default()
                     }),
+                    ..Default::default()
                 },
             )
             .await
@@ -447,7 +446,7 @@ impl RevocationMethod for TokenStatusList {
                             .update_entry(
                                 UpdateRevocationListEntryId::Index(list.id, index),
                                 UpdateRevocationListEntryRequest {
-                                    status: Some(new_state.clone().into()),
+                                    state: Some(new_state.clone().into()),
                                 },
                             )
                             .await
@@ -517,7 +516,7 @@ impl RevocationMethod for TokenStatusList {
                     .update_entry(
                         UpdateRevocationListEntryId::Id(signature_id),
                         UpdateRevocationListEntryRequest {
-                            status: Some(RevocationListEntryStatus::Revoked),
+                            state: Some(RevocationListEntryState::Revoked),
                         },
                     )
                     .await
@@ -774,8 +773,8 @@ impl TokenStatusList {
         self.revocation_list_repository
             .create_revocation_list(RevocationList {
                 id: revocation_list_id,
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 formatted_list: list_credential.into_bytes(),
                 format: self.params.format,
                 r#type: self.config_id.to_owned(),
@@ -918,7 +917,7 @@ async fn generate_token_from_entries(
                 entry.index.ok_or(RevocationError::MappingError(
                     "revocation list entry index missing".to_string(),
                 ))?,
-                entry.status,
+                entry.state,
             ))
         })
         .collect::<Result<Vec<_>, RevocationError>>()?;

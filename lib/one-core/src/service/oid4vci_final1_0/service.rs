@@ -1,19 +1,21 @@
 use std::str::FromStr;
+use std::sync::Arc;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use one_crypto::utilities;
 use one_dto_mapper::convert_inner;
 use secrecy::SecretString;
-use shared_types::{CredentialId, CredentialSchemaId, InteractionId};
+use shared_types::{CredentialId, CredentialSchemaId, IdentifierId, InteractionId};
 use standardized_types::oauth2::dynamic_client_registration::TokenEndpointAuthMethod;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::OID4VCIFinal1_0Service;
 use super::dto::{
-    OAuthAuthorizationServerMetadataResponseDTO, OpenID4VCICredentialResponseDTO,
-    OpenID4VCICredentialResponseEntryDTO,
+    OAuthAuthorizationServerMetadataResponseDTO,
+    OID4VCIFinal1_0IssuerMetadataResponseEnum as IssuerMetadataResponseEnum,
+    OID4VCIFinal1_0IssuerMetadataResponseTypeEnum as IssuerMetadataResponseTypeEnum,
+    OpenID4VCICredentialResponseDTO, OpenID4VCICredentialResponseEntryDTO,
 };
 use super::error::OID4VCIFinal1_0ServiceError;
 use super::mapper::interaction_data_to_dto;
@@ -24,7 +26,7 @@ use super::validator::{
     verify_pop_signature, verify_wia_signature, verify_wua_wia_issuers_match,
 };
 use crate::config::ConfigValidationError;
-use crate::config::core_config::FormatType;
+use crate::config::core_config::{FormatType, IssuanceProtocolType};
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::exchange::{
     get_issuance_param_pre_authorization_expires_in, get_issuance_param_refresh_token_expires_in,
@@ -50,22 +52,18 @@ use crate::proto::wallet_unit::WalletUnitStatusCheckResponse;
 use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::credential_formatter::model::IdentifierDetails;
 use crate::provider::issuance_protocol::error::{IssuanceProtocolError, OpenID4VCIError};
-use crate::provider::issuance_protocol::openid4vci_final1_0::mapper::{
-    map_cryptographic_binding_methods_supported, map_proof_types_supported,
-};
 use crate::provider::issuance_protocol::openid4vci_final1_0::model::{
     OAuthAuthorizationServerMetadata, OpenID4VCICredentialRequestDTO,
     OpenID4VCICredentialRequestProofs, OpenID4VCIFinal1CredentialOfferDTO, OpenID4VCIFinal1Params,
-    OpenID4VCIIssuerInteractionDataDTO, OpenID4VCIIssuerMetadataResponseDTO,
-    OpenID4VCINonceResponseDTO, OpenID4VCINotificationEvent, OpenID4VCINotificationRequestDTO,
-    OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO, Timestamp,
+    OpenID4VCIIssuerInteractionDataDTO, OpenID4VCINonceResponseDTO, OpenID4VCINotificationEvent,
+    OpenID4VCINotificationRequestDTO, OpenID4VCITokenRequestDTO, OpenID4VCITokenResponseDTO,
+    Timestamp,
 };
 use crate::provider::issuance_protocol::openid4vci_final1_0::proof_formatter::{
     OpenID4VCIProofHolderBinding, OpenID4VCIProofJWTFormatter, OpenID4VCIVerifiedProof,
 };
 use crate::provider::issuance_protocol::openid4vci_final1_0::service::{
-    create_credential_offer, create_issuer_metadata_response, oidc_issuer_create_token,
-    parse_access_token, parse_refresh_token,
+    create_credential_offer, oidc_issuer_create_token, parse_access_token, parse_refresh_token,
 };
 use crate::provider::revocation::model::{Operation, RevocationState};
 use crate::repository::error::DataLayerError;
@@ -79,91 +77,77 @@ impl OID4VCIFinal1_0Service {
     pub async fn get_issuer_metadata(
         &self,
         protocol_id: &str,
+        identifier_id: &IdentifierId,
         credential_schema_id: &CredentialSchemaId,
-    ) -> Result<OpenID4VCIIssuerMetadataResponseDTO, OID4VCIFinal1_0ServiceError> {
+        response_type: IssuerMetadataResponseTypeEnum,
+    ) -> Result<IssuerMetadataResponseEnum, OID4VCIFinal1_0ServiceError> {
         validate_issuance_protocol_type(self.protocol_type, &self.config, protocol_id)
             .error_while("validating protocol type")?;
 
-        let protocol_base_url =
-            self.protocol_base_url
-                .as_ref()
-                .ok_or(OID4VCIFinal1_0ServiceError::MappingError(
-                    "Host URL not specified".to_string(),
-                ))?;
+        let issuance_protocol = self.protocol_provider.get_protocol(protocol_id).ok_or(
+            OID4VCIFinal1_0ServiceError::MappingError("issuance protocol not found".to_string()),
+        )?;
 
-        let schema = self
-            .credential_schema_repository
-            .get_credential_schema(
-                credential_schema_id,
-                &CredentialSchemaRelations {
-                    claim_schemas: Some(ClaimSchemaRelations::default()),
-                    organisation: Some(OrganisationRelations::default()),
+        let issuer_identifier = self.get_issuer_identifier(identifier_id).await?;
+
+        match response_type {
+            IssuerMetadataResponseTypeEnum::Model => issuance_protocol
+                .issuer_metadata(
+                    protocol_id,
+                    credential_schema_id,
+                    Some(Arc::new(issuer_identifier)),
+                )
+                .await
+                .map(Box::new)
+                .map(IssuerMetadataResponseEnum::Model)
+                .error_while("getting issuer metadata")
+                .map_err(Into::into),
+            IssuerMetadataResponseTypeEnum::Jwt => self
+                .issuer_metadata_cache
+                .get_issuer_metadata_jwt(
+                    protocol_id,
+                    credential_schema_id,
+                    issuer_identifier,
+                    issuance_protocol,
+                )
+                .await
+                .map(IssuerMetadataResponseEnum::Jwt),
+        }
+    }
+
+    pub(super) async fn get_issuer_identifier(
+        &self,
+        identifier_id: &IdentifierId,
+    ) -> Result<Identifier, OID4VCIFinal1_0ServiceError> {
+        self.identifier_repository
+            .get(
+                *identifier_id,
+                &IdentifierRelations {
+                    did: Some(DidRelations {
+                        keys: Some(Default::default()),
+                        ..Default::default()
+                    }),
+                    key: Some(Default::default()),
+                    certificates: Some(CertificateRelations {
+                        key: Some(Default::default()),
+                        ..Default::default()
+                    }),
+                    trust_information: Some(Default::default()),
+                    ..Default::default()
                 },
             )
             .await
-            .error_while("getting credential schema")?;
-
-        let Some(schema) = schema else {
-            return Err(OID4VCIFinal1_0ServiceError::MissingCredentialSchema(
-                *credential_schema_id,
-            ));
-        };
-
-        let format_type = self
-            .config
-            .format
-            .get_fields(&schema.format)
-            .error_while("getting format config")?
-            .r#type;
-        let oidc_format = match &format_type {
-            FormatType::Jwt => "jwt_vc_json",
-            FormatType::SdJwt => "vc+sd-jwt",
-            FormatType::SdJwtVc => "dc+sd-jwt",
-            FormatType::JsonLdClassic | FormatType::JsonLdBbsPlus => "ldp_vc",
-            FormatType::Mdoc => "mso_mdoc",
-        }
-        .to_string();
-
-        let formatter = self
-            .formatter_provider
-            .get_credential_formatter(&schema.format)
-            .ok_or(MissingProviderError::Formatter(schema.format.to_string()))
-            .error_while("getting formatter")?;
-
-        let format_capabilities = formatter.get_capabilities();
-        let credential_signing_alg_values_supported = format_capabilities
-            .signing_key_algorithms
-            .into_iter()
-            .filter_map(|alg_type| {
-                self.key_algorithm_provider
-                    .key_algorithm_from_type(alg_type)
-                    .and_then(|alg| alg.issuance_jose_alg_id())
-            })
-            .collect();
-
-        create_issuer_metadata_response(
-            protocol_base_url,
-            protocol_id,
-            &oidc_format,
-            &schema,
-            map_cryptographic_binding_methods_supported(
-                &self.did_method_provider.supported_method_names(),
-                &format_capabilities.holder_identifier_types,
-            ),
-            Some(map_proof_types_supported(
-                self.key_algorithm_provider
-                    .supported_verification_jose_alg_ids(),
-                schema.key_storage_security.map(|x| x.into()),
-            )),
-            credential_signing_alg_values_supported,
-        )
-        .map_err(Into::into)
+            .error_while("getting issuer identifier")?
+            .ok_or(OID4VCIFinal1_0ServiceError::IdentifierNotFound(
+                *identifier_id,
+            ))
     }
 
     pub async fn oauth_authorization_server(
         &self,
         protocol_id: &str,
         credential_schema_id: &CredentialSchemaId,
+        identifier_id: Option<&IdentifierId>,
     ) -> Result<OAuthAuthorizationServerMetadataResponseDTO, OID4VCIFinal1_0ServiceError> {
         validate_issuance_protocol_type(self.protocol_type, &self.config, protocol_id)
             .error_while("validating protocol type")?;
@@ -214,7 +198,11 @@ impl OID4VCIFinal1_0Service {
             (None, None)
         };
 
-        let credential_issuer = format!("{protocol_base_url}/{protocol_id}/{credential_schema_id}");
+        let credential_issuer = if let Some(identifier_id) = identifier_id {
+            format!("{protocol_base_url}/{protocol_id}/{identifier_id}/{credential_schema_id}")
+        } else {
+            format!("{protocol_base_url}/{protocol_id}/{credential_schema_id}")
+        };
 
         Ok(OAuthAuthorizationServerMetadata {
             issuer: credential_issuer.parse().map_err(|e| {
@@ -272,6 +260,7 @@ impl OID4VCIFinal1_0Service {
                         ..Default::default()
                     }),
                     interaction: Some(InteractionRelations::default()),
+                    issuer_identifier: Some(Default::default()),
                     ..Default::default()
                 },
             )
@@ -327,11 +316,26 @@ impl OID4VCIFinal1_0Service {
                     "Missing base_url".to_owned(),
                 ))?;
 
+        let identifier_id = if issuance_protocol_type == IssuanceProtocolType::OpenId4VciFinal1_0 {
+            Some(
+                credential
+                    .issuer_identifier
+                    .as_ref()
+                    .ok_or(OID4VCIFinal1_0ServiceError::MappingError(
+                        "Missing issuer_identifier".to_owned(),
+                    ))?
+                    .id,
+            )
+        } else {
+            None
+        };
+
         Ok(create_credential_offer(
             protocol_base_url,
             &credential.protocol,
             &interaction.id.to_string(),
             credential_schema,
+            identifier_id,
         )?)
     }
 
@@ -681,7 +685,7 @@ impl OID4VCIFinal1_0Service {
                     .update_credential(
                         credential.id,
                         UpdateCredentialRequest {
-                            issuance_date: Some(OffsetDateTime::now_utc()),
+                            issuance_date: Some(crate::clock::now_utc()),
                             holder_identifier_id: Some(holder_identifier_id),
                             wallet_unit_attestation_blob_id: wua_blob_id,
                             ..Default::default()
@@ -920,7 +924,13 @@ impl OID4VCIFinal1_0Service {
 
         let credentials = self
             .credential_repository
-            .get_credentials_by_interaction_id(&interaction_id, &CredentialRelations::default())
+            .get_credentials_by_interaction_id(
+                &interaction_id,
+                &CredentialRelations {
+                    issuer_identifier: Some(Default::default()),
+                    ..Default::default()
+                },
+            )
             .await
             .error_while("getting credentials")?;
 
@@ -931,12 +941,27 @@ impl OID4VCIFinal1_0Service {
         validate_issuance_protocol_type(self.protocol_type, &self.config, &credential.protocol)
             .error_while("validating protocol type")?;
 
+        let issuer_identifier_id = if self.protocol_type == IssuanceProtocolType::OpenId4VciFinal1_0
+        {
+            Some(
+                credential
+                    .issuer_identifier
+                    .as_ref()
+                    .ok_or(OID4VCIFinal1_0ServiceError::MappingError(
+                        "missing issuer_identifier".to_string(),
+                    ))?
+                    .id,
+            )
+        } else {
+            None
+        };
         let wallet_instance_attestation_token = self
             .validate_oauth_client_attestation(
                 oauth_client_attestation,
                 oauth_client_attestation_pop,
                 &credential_schema,
                 &credential.protocol,
+                issuer_identifier_id,
                 params.oauth_attestation_leeway,
             )
             .await?;
@@ -987,7 +1012,7 @@ impl OID4VCIFinal1_0Service {
                 refresh_token_expires_in,
             )?;
 
-            let now = OffsetDateTime::now_utc();
+            let now = crate::clock::now_utc();
 
             for credential in &credentials {
                 // If a wallet instance attestation token is provided, we create a new blob and update the credential
@@ -1117,6 +1142,7 @@ impl OID4VCIFinal1_0Service {
         oauth_client_attestation_pop: Option<&str>,
         credential_schema: &CredentialSchema,
         protocol_id: &str,
+        issuer_identifier_id: Option<IdentifierId>,
         leeway: u64,
     ) -> Result<Option<WalletInstanceAttestationDTO>, OID4VCIFinal1_0ServiceError> {
         // If the credential schema does not require client attestation, no tokens are expected
@@ -1145,11 +1171,20 @@ impl OID4VCIFinal1_0Service {
         validate_timestamps(&proof_of_key_possession, leeway)?;
 
         // Validate proof of possession audience
-        let expected_audience = self
-            .protocol_base_url
-            .as_ref()
-            .map(|base_url| format!("{base_url}/{protocol_id}/{}", credential_schema.id))
-            .ok_or(OpenID4VCIError::InvalidRequest)?;
+        let base_url =
+            self.protocol_base_url
+                .as_ref()
+                .ok_or(OID4VCIFinal1_0ServiceError::MappingError(
+                    "missing protocol_base_url".to_string(),
+                ))?;
+        let expected_audience = if let Some(issuer_identifier_id) = issuer_identifier_id {
+            format!(
+                "{base_url}/{protocol_id}/{issuer_identifier_id}/{}",
+                credential_schema.id
+            )
+        } else {
+            format!("{base_url}/{protocol_id}/{}", credential_schema.id)
+        };
         validate_pop_audience(&proof_of_key_possession, &expected_audience)?;
 
         // Verify signatures

@@ -11,9 +11,9 @@ use serde_json::Value;
 use standardized_types::jwa::EncryptionAlgorithm;
 use standardized_types::jwk::PublicJwk;
 use standardized_types::openid4vp::ResponseMode;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use url::Url;
-use utils::{interaction_data_from_openid4vp_query, validate_interaction_data};
+use utils::validate_interaction_data;
 use uuid::Uuid;
 
 use super::jwe_presentation::{self, encryption_key_from_metadata};
@@ -28,6 +28,9 @@ use crate::model::organisation::Organisation;
 use crate::model::proof::{Proof, ProofStateEnum, UpdateProofRequest};
 use crate::proto::certificate_validator::CertificateValidator;
 use crate::proto::http_client::HttpClient;
+use crate::proto::session_provider::SessionProvider;
+use crate::proto::wrp_validator::WRPValidator;
+use crate::provider::blob_storage_provider::BlobStorageProvider;
 use crate::provider::credential_formatter::provider::CredentialFormatterProvider;
 use crate::provider::did_method::provider::DidMethodProvider;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
@@ -61,6 +64,7 @@ use crate::provider::verification_protocol::openid4vp::{
 use crate::provider::verification_protocol::{
     VerificationProtocol, deserialize_interaction_data, serialize_interaction_data,
 };
+use crate::repository::history_repository::HistoryRepository;
 use crate::service::oid4vp_final1_0::proof_request::{
     generate_authorization_request_params_final1_0, select_key_agreement_key_from_proof,
 };
@@ -87,6 +91,10 @@ pub(crate) struct OpenID4VPFinal1_0 {
     key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
     key_provider: Arc<dyn KeyProvider>,
     certificate_validator: Arc<dyn CertificateValidator>,
+    history_repository: Arc<dyn HistoryRepository>,
+    session_provider: Arc<dyn SessionProvider>,
+    wrp_validator: Arc<dyn WRPValidator>,
+    blob_storage_provider: Arc<dyn BlobStorageProvider>,
     base_url: Option<String>,
     params: Params,
     config: Arc<CoreConfig>,
@@ -107,6 +115,10 @@ impl OpenID4VPFinal1_0 {
         key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
         key_provider: Arc<dyn KeyProvider>,
         certificate_validator: Arc<dyn CertificateValidator>,
+        history_repository: Arc<dyn HistoryRepository>,
+        session_provider: Arc<dyn SessionProvider>,
+        wrp_validator: Arc<dyn WRPValidator>,
+        blob_storage_provider: Arc<dyn BlobStorageProvider>,
         client: Arc<dyn HttpClient>,
         params: Params,
         config: Arc<CoreConfig>,
@@ -119,9 +131,13 @@ impl OpenID4VPFinal1_0 {
             key_algorithm_provider,
             key_provider,
             certificate_validator,
+            history_repository,
+            session_provider,
+            wrp_validator,
             client,
             params,
             config,
+            blob_storage_provider,
         }
     }
 
@@ -282,6 +298,61 @@ impl OpenID4VPFinal1_0 {
             encryption_info,
         ))
     }
+
+    async fn handle_proof_invitation(
+        &self,
+        url: Url,
+        organisation: Organisation,
+        storage_access: &StorageAccess,
+    ) -> Result<InvitationResponseDTO, VerificationProtocolError> {
+        let query = url
+            .query()
+            .ok_or(VerificationProtocolError::InvalidRequest(
+                "Query cannot be empty".to_string(),
+            ))?;
+
+        let proof_id = Uuid::new_v4().into();
+        let holder_interaction_data = {
+            let (authorization_request, verifier_details) = self
+                .request_from_openid4vp_query(query, proof_id, organisation.id)
+                .await?;
+
+            let mut interaction_data: OpenID4VPHolderInteractionData =
+                authorization_request.try_into()?;
+            interaction_data.verifier_details = verifier_details;
+            interaction_data
+        };
+
+        validate_interaction_data(&holder_interaction_data)?;
+        let data = serialize_interaction_data(&holder_interaction_data)?;
+
+        let Some(_) = holder_interaction_data.response_uri else {
+            return Err(VerificationProtocolError::Failed(
+                "response_uri is missing".to_string(),
+            ));
+        };
+
+        let now = crate::clock::now_utc();
+        let interaction =
+            create_and_store_interaction(storage_access, data, Some(organisation)).await?;
+        let interaction_id = interaction.id;
+
+        let proof = proof_from_handle_invitation(
+            &proof_id,
+            VerificationProtocolType::OpenId4VpFinal1_0.as_ref(),
+            holder_interaction_data.redirect_uri,
+            None,
+            interaction,
+            now,
+            "HTTP",
+            ProofStateEnum::Requested,
+        );
+
+        Ok(InvitationResponseDTO {
+            interaction_id,
+            proof,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -374,18 +445,8 @@ impl VerificationProtocol for OpenID4VPFinal1_0 {
             ));
         }
 
-        handle_proof_invitation(
-            url,
-            self.params.allow_insecure_http_transport,
-            &self.client,
-            storage_access,
-            Some(organisation),
-            &self.key_algorithm_provider,
-            &self.did_method_provider,
-            &self.certificate_validator,
-            &self.params,
-        )
-        .await
+        self.handle_proof_invitation(url, organisation, storage_access)
+            .await
     }
 
     async fn holder_reject_proof(&self, _proof: &Proof) -> Result<(), VerificationProtocolError> {
@@ -578,6 +639,7 @@ impl VerificationProtocol for OpenID4VPFinal1_0 {
             response_uri.clone(),
             &interaction_id,
             client_metadata,
+            vec![],
         )?;
 
         let interaction_content = OpenID4VPVerifierInteractionContent {
@@ -608,7 +670,7 @@ impl VerificationProtocol for OpenID4VPFinal1_0 {
             .params
             .verifier
             .interaction_expires_in
-            .map(|interaction_expires_in| OffsetDateTime::now_utc() + interaction_expires_in);
+            .map(|interaction_expires_in| crate::clock::now_utc() + interaction_expires_in);
 
         Ok(ShareResponse {
             url: format!(
@@ -728,7 +790,7 @@ async fn encrypted_params(
         ))?;
     let payload = JwePayload {
         aud: Some(aud),
-        exp: Some(OffsetDateTime::now_utc() + Duration::minutes(10)),
+        exp: Some(crate::clock::now_utc() + Duration::minutes(10)),
         submission_data,
         state: interaction_data.state,
     };
@@ -756,79 +818,12 @@ async fn encrypted_params(
     Ok(HashMap::from_iter([("response".to_owned(), response)]))
 }
 
-#[expect(clippy::too_many_arguments)]
-async fn handle_proof_invitation(
-    url: Url,
-    allow_insecure_http_transport: bool,
-    client: &Arc<dyn HttpClient>,
-    storage_access: &StorageAccess,
-    organisation: Option<Organisation>,
-    key_algorithm_provider: &Arc<dyn KeyAlgorithmProvider>,
-    did_method_provider: &Arc<dyn DidMethodProvider>,
-    certificate_validator: &Arc<dyn CertificateValidator>,
-    params: &Params,
-) -> Result<InvitationResponseDTO, VerificationProtocolError> {
-    let query = url
-        .query()
-        .ok_or(VerificationProtocolError::InvalidRequest(
-            "Query cannot be empty".to_string(),
-        ))?;
-
-    let holder_interaction_data = {
-        let (interaction_data, verifier_details) = interaction_data_from_openid4vp_query(
-            query,
-            client,
-            allow_insecure_http_transport,
-            key_algorithm_provider,
-            did_method_provider,
-            certificate_validator,
-            params,
-        )
-        .await?;
-
-        let mut holder_state: OpenID4VPHolderInteractionData = interaction_data.try_into()?;
-        holder_state.verifier_details = verifier_details;
-        holder_state
-    };
-
-    validate_interaction_data(&holder_interaction_data)?;
-    let data = serialize_interaction_data(&holder_interaction_data)?;
-
-    let Some(_) = holder_interaction_data.response_uri else {
-        return Err(VerificationProtocolError::Failed(
-            "response_uri is missing".to_string(),
-        ));
-    };
-
-    let now = OffsetDateTime::now_utc();
-    let interaction = create_and_store_interaction(storage_access, data, organisation).await?;
-
-    let interaction_id = interaction.id.to_owned();
-
-    let proof_id = Uuid::new_v4().into();
-    let proof = proof_from_handle_invitation(
-        &proof_id,
-        VerificationProtocolType::OpenId4VpFinal1_0.as_ref(),
-        holder_interaction_data.redirect_uri,
-        None,
-        interaction,
-        now,
-        "HTTP",
-        ProofStateEnum::Requested,
-    );
-
-    Ok(InvitationResponseDTO {
-        interaction_id,
-        proof,
-    })
-}
-
 async fn create_and_store_interaction(
     storage_access: &StorageAccess,
     data: Vec<u8>,
     organisation: Option<Organisation>,
 ) -> Result<Interaction, VerificationProtocolError> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let interaction = interaction_from_handle_invitation(Some(data), now, organisation);
 

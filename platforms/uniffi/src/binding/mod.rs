@@ -32,6 +32,7 @@ pub mod revocation;
 pub mod task;
 pub mod trust_anchor;
 pub mod trust_entity;
+pub mod verifier_instance;
 pub mod version;
 pub mod wallet_unit;
 
@@ -42,7 +43,7 @@ type CoreBuilder = Box<
 >;
 
 #[derive(uniffi::Object)]
-pub(crate) struct OneCoreBinding {
+pub(crate) struct OneCore {
     inner: RwLock<Option<one_core::OneCore>>,
     pub(crate) main_db_path: String,
     pub(crate) backup_db_path: String,
@@ -50,7 +51,9 @@ pub(crate) struct OneCoreBinding {
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
+    /// Deleting data while uninitializing the Core erases all wallet data permanently.
+    /// If data is not deleted it is reused when Core is reinitialized.
     #[uniffi::method]
     pub async fn uninitialize(&self, delete_data: bool) -> Result<(), BindingError> {
         let mut guard = self.inner.write().await;
@@ -74,7 +77,7 @@ impl OneCoreBinding {
     }
 }
 
-impl OneCoreBinding {
+impl OneCore {
     pub(crate) fn new(
         main_db_path: String,
         backup_db_path: String,

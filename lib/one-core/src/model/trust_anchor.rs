@@ -12,5 +12,11 @@ pub struct TrustAnchor {
     pub is_publisher: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactTrustAnchorFilterColumn {
+    Name,
+    Type,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct TrustAnchorRelations {}

@@ -4,11 +4,12 @@ use one_core::model::list_filter::{ComparisonType, ListFilterValue, ValueCompari
 use one_core::model::list_query::ListPagination;
 use one_core::model::trust_entry::{
     TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryRelations,
-    TrustEntryStatusEnum, UpdateTrustEntryRequest,
+    TrustEntryStateEnum, UpdateTrustEntryRequest,
 };
 use one_core::model::trust_list_publication::{
-    TrustListPublication, TrustListPublicationRelations, TrustListPublicationRoleEnum,
+    TrustListPublication, TrustListPublicationRelations,
 };
+use one_core::model::trust_list_role::TrustListRoleEnum;
 use one_core::repository::error::DataLayerError;
 use one_core::repository::identifier_repository::MockIdentifierRepository;
 use one_core::repository::trust_entry_repository::TrustEntryRepository;
@@ -28,6 +29,7 @@ struct TestSetup {
     pub trust_list_publication_id: shared_types::TrustListPublicationId,
     pub org_id: shared_types::OrganisationId,
     pub identifier_id: shared_types::IdentifierId,
+    identifier_id2: shared_types::IdentifierId,
 }
 
 async fn setup() -> TestSetup {
@@ -42,6 +44,16 @@ async fn setup() -> TestSetup {
         insert_identifier(&db, "test identifier", Uuid::new_v4(), None, org_id, false)
             .await
             .unwrap();
+    let identifier_id2: shared_types::IdentifierId = insert_identifier(
+        &db,
+        "test identifier 2",
+        Uuid::new_v4(),
+        None,
+        org_id,
+        false,
+    )
+    .await
+    .unwrap();
 
     let trust_list_publication_id: shared_types::TrustListPublicationId = Uuid::new_v4().into();
     trust_list_publication::ActiveModel {
@@ -76,6 +88,7 @@ async fn setup() -> TestSetup {
         trust_list_publication_id,
         org_id,
         identifier_id,
+        identifier_id2,
     }
 }
 
@@ -87,7 +100,7 @@ fn dummy_trust_entry(
         id: Uuid::new_v4().into(),
         created_date: get_dummy_date(),
         last_modified: get_dummy_date(),
-        status: TrustEntryStatusEnum::Active,
+        state: TrustEntryStateEnum::Active,
         metadata: vec![],
         trust_list_publication_id,
         identifier_id,
@@ -135,7 +148,7 @@ async fn test_get_trust_entry_success() {
     assert!(result.is_ok());
     let found = result.unwrap().unwrap();
     assert_eq!(found.id, id);
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
     assert_eq!(
         found.trust_list_publication_id,
         setup.trust_list_publication_id
@@ -165,7 +178,7 @@ async fn test_list_trust_entries() {
     let setup = setup().await;
 
     let entry1 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
-    let entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
+    let entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id2);
     setup.provider.create(entry1).await.unwrap();
     setup.provider.create(entry2).await.unwrap();
 
@@ -253,8 +266,8 @@ async fn test_list_trust_entries_filter_by_status() {
     let setup = setup().await;
 
     let entry1 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
-    let mut entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
-    entry2.status = TrustEntryStatusEnum::Suspended;
+    let mut entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id2);
+    entry2.state = TrustEntryStateEnum::Suspended;
     setup.provider.create(entry1).await.unwrap();
     setup.provider.create(entry2).await.unwrap();
 
@@ -268,7 +281,7 @@ async fn test_list_trust_entries_filter_by_status() {
                     page_size: 10,
                 }),
                 filtering: Some(
-                    TrustEntryFilterValue::Status(vec![TrustEntryStatusEnum::Active]).condition(),
+                    TrustEntryFilterValue::State(vec![TrustEntryStateEnum::Active]).condition(),
                 ),
                 ..Default::default()
             },
@@ -278,7 +291,7 @@ async fn test_list_trust_entries_filter_by_status() {
     assert!(result.is_ok());
     let list = result.unwrap();
     assert_eq!(list.total_items, 1);
-    assert_eq!(list.values[0].status, TrustEntryStatusEnum::Active);
+    assert_eq!(list.values[0].state, TrustEntryStateEnum::Active);
 }
 
 #[tokio::test]
@@ -294,7 +307,7 @@ async fn test_update_trust_entry_status() {
         .update(
             id,
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -307,7 +320,7 @@ async fn test_update_trust_entry_status() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.status, TrustEntryStatusEnum::Suspended);
+    assert_eq!(found.state, TrustEntryStateEnum::Suspended);
 }
 
 #[tokio::test]
@@ -338,7 +351,7 @@ async fn test_update_trust_entry_metadata() {
         .unwrap()
         .unwrap();
     assert_eq!(found.metadata, new_metadata);
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
 }
 
 #[tokio::test]
@@ -386,7 +399,7 @@ async fn test_list_trust_entries_filter_by_created_date() {
     let setup = setup().await;
 
     let entry1 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
-    let entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id);
+    let entry2 = dummy_trust_entry(setup.trust_list_publication_id, setup.identifier_id2);
     setup.provider.create(entry1).await.unwrap();
     setup.provider.create(entry2).await.unwrap();
 
@@ -431,7 +444,7 @@ async fn test_list_trust_entries_filter_by_last_modified() {
         .update(
             id,
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -507,7 +520,7 @@ async fn test_get_trust_entry_with_publication_relation() {
             created_date: get_dummy_date(),
             last_modified: get_dummy_date(),
             name: "test-publication".to_string(),
-            role: TrustListPublicationRoleEnum::Issuer,
+            role: TrustListRoleEnum::Issuer,
             r#type: "LOTE".into(),
             metadata: vec![],
             deleted_at: None,
@@ -562,7 +575,7 @@ async fn test_update_trust_entry_not_found() {
         .update(
             Uuid::new_v4().into(),
             UpdateTrustEntryRequest {
-                status: Some(TrustEntryStatusEnum::Suspended),
+                state: Some(TrustEntryStateEnum::Suspended),
                 ..Default::default()
             },
         )
@@ -591,6 +604,6 @@ async fn test_update_trust_entry_noop() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(found.status, TrustEntryStatusEnum::Active);
+    assert_eq!(found.state, TrustEntryStateEnum::Active);
     assert_eq!(found.metadata, Vec::<u8>::new());
 }

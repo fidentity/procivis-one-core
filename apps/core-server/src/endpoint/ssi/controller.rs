@@ -15,7 +15,7 @@ use one_core::service::trust_list_publication::error::TrustListPublicationServic
 use proc_macros::endpoint;
 use shared_types::{
     CertificateId, CredentialSchemaId, DidId, DidValue, OrganisationId, ProofSchemaId,
-    RevocationListId, TrustAnchorId, TrustListPublicationId,
+    RevocationListId, TrustAnchorId, TrustCollectionId, TrustListPublicationId,
 };
 
 use super::dto::{
@@ -28,6 +28,7 @@ use crate::dto::error::ErrorResponseRestDTO;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::endpoint::credential_schema::dto::CredentialSchemaResponseRestDTO;
 use crate::endpoint::proof_schema::dto::GetProofSchemaResponseRestDTO;
+use crate::endpoint::ssi::dto::TrustCollectionResponseRestDTO;
 use crate::endpoint::trust_entity::dto::GetTrustEntityResponseRestDTO;
 use crate::router::AppState;
 
@@ -276,7 +277,7 @@ pub(crate) async fn get_json_ld_context(
         Retrieve a trust list by the UUID of the trust anchor.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_list(
     state: State<AppState>,
     WithRejection(Path(trust_anchor_id), _): WithRejection<
@@ -310,7 +311,7 @@ pub(crate) async fn ssi_get_trust_list(
         Retrieve a trust entity by the value of the DID.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_get_trust_entity(
     state: State<AppState>,
     WithRejection(Path(did_value), _): WithRejection<Path<DidValue>, ErrorResponseRestDTO>,
@@ -343,7 +344,7 @@ pub(crate) async fn ssi_get_trust_entity(
         Update a trust entity by its DID value.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_patch_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -383,7 +384,7 @@ pub(crate) async fn ssi_patch_trust_entity(
         Add a trust entity to a trust anchor.
     "},
 )]
-#[deprecated = "Deprecated in favour of trust list publisher mechanism (ONE-8838)"]
+#[deprecated = "Deprecated in favor of trust list publisher mechanism (ONE-8838)"]
 pub(crate) async fn ssi_post_trust_entity(
     state: State<AppState>,
     TypedHeader(bearer): TypedHeader<Authorization<Bearer>>,
@@ -578,8 +579,8 @@ pub(crate) async fn ssi_get_trust_list_publication(
     match result {
         Ok(result) => (
             StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/jwt")],
-            result,
+            [(header::CONTENT_TYPE, result.content_type.to_string())],
+            result.content,
         )
             .into_response(),
         Err(TrustListPublicationServiceError::TrustListPublicationNotFound(_)) => {
@@ -591,4 +592,34 @@ pub(crate) async fn ssi_get_trust_list_publication(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+#[endpoint(
+    permissions = [],
+    get,
+    path = "/ssi/trust-collection/v1/{id}",
+    params(
+        ("id" = TrustCollectionId, Path, description = "Trust collection id")
+    ),
+    responses(
+        (status = 200, description = "OK", body = TrustCollectionResponseRestDTO),
+        (status = 404, description = "Trust collection not found"),
+        (status = 500, description = "Server error"),
+    ),
+    tag = "ssi",
+    summary = "Retrieve Trust collection",
+    description = indoc::formatdoc! {"
+        Retrieve a Trust collection by its UUID.
+    "},
+)]
+pub(crate) async fn ssi_get_trust_collection(
+    state: State<AppState>,
+    WithRejection(Path(id), _): WithRejection<Path<TrustCollectionId>, ErrorResponseRestDTO>,
+) -> OkOrErrorResponse<TrustCollectionResponseRestDTO> {
+    let result = state
+        .core
+        .trust_collection_service
+        .get_public_trust_collection(id)
+        .await;
+    OkOrErrorResponse::from_result(result, state, "getting trust collection data")
 }

@@ -9,12 +9,12 @@ use similar_asserts::assert_eq;
 use standardized_types::jwa::EncryptionAlgorithm;
 use standardized_types::jwk::{JwkUse, PublicJwk, PublicJwkEc};
 use standardized_types::openid4vp::{ClientMetadata, MdocAlgs, PresentationFormat, ResponseMode};
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 use url::Url;
 use uuid::Uuid;
 
 use super::OpenID4VPFinal1_0;
-use super::model::{Params, PresentationVerifierParams};
+use super::model::{HolderParams, Params, PresentationVerifierParams};
 use crate::config::core_config::FormatType;
 use crate::model::claim_schema::ClaimSchema;
 use crate::model::credential_schema::CredentialSchema;
@@ -28,6 +28,9 @@ use crate::proto::certificate_validator::MockCertificateValidator;
 use crate::proto::http_client::{
     Method, MockHttpClient, Request, RequestBuilder, Response, StatusCode,
 };
+use crate::proto::session_provider::NoSessionProvider;
+use crate::proto::wrp_validator::MockWRPValidator;
+use crate::provider::blob_storage_provider::MockBlobStorageProvider;
 use crate::provider::credential_formatter::MockCredentialFormatter;
 use crate::provider::credential_formatter::provider::MockCredentialFormatterProvider;
 use crate::provider::did_method::provider::MockDidMethodProvider;
@@ -45,12 +48,13 @@ use crate::provider::verification_protocol::dto::ShareResponse;
 use crate::provider::verification_protocol::error::VerificationProtocolError;
 use crate::provider::verification_protocol::model::CommonParams;
 use crate::provider::verification_protocol::openid4vp::model::{
-    ClientIdScheme, OpenID4VCPresentationHolderParams, OpenID4VCRedirectUriParams,
-    OpenID4VPClientMetadata, OpenID4VPHolderInteractionData,
+    ClientIdScheme, OpenID4VCRedirectUriParams, OpenID4VPClientMetadata,
+    OpenID4VPHolderInteractionData,
 };
 use crate::provider::verification_protocol::{
     FormatMapper, TypeToDescriptorMapper, VerificationProtocol, serialize_interaction_data,
 };
+use crate::repository::history_repository::MockHistoryRepository;
 use crate::service::proof::dto::ShareProofRequestParamsDTO;
 use crate::service::test_utilities::{
     dummy_claim_schema, dummy_credential_schema, dummy_identifier, generic_config,
@@ -65,6 +69,9 @@ struct TestInputs {
     pub did_method_provider: MockDidMethodProvider,
     pub certificate_validator: MockCertificateValidator,
     pub http_client: MockHttpClient,
+    pub history_repository: MockHistoryRepository,
+    pub wrp_validator: MockWRPValidator,
+    pub blob_storage_provider: MockBlobStorageProvider,
     pub params: Option<Params>,
 }
 
@@ -77,6 +84,10 @@ fn setup_protocol(inputs: TestInputs) -> OpenID4VPFinal1_0 {
         Arc::new(inputs.key_algorithm_provider),
         Arc::new(inputs.key_provider),
         Arc::new(inputs.certificate_validator),
+        Arc::new(inputs.history_repository),
+        Arc::new(NoSessionProvider),
+        Arc::new(inputs.wrp_validator),
+        Arc::new(inputs.blob_storage_provider),
         Arc::new(inputs.http_client),
         inputs.params.unwrap_or(generic_params()),
         Arc::new(generic_config().core),
@@ -88,12 +99,12 @@ fn generic_params() -> Params {
         allow_insecure_http_transport: true,
         use_request_uri: false,
         url_scheme: "openid4vp".to_string(),
-        holder: OpenID4VCPresentationHolderParams {
+        holder: HolderParams {
             supported_client_id_schemes: vec![
                 ClientIdScheme::RedirectUri,
                 ClientIdScheme::VerifierAttestation,
             ],
-            dcql_vp_token_single_presentation: false,
+            trust_ecosystems_enabled: false,
         },
         verifier: PresentationVerifierParams {
             interaction_expires_in: Some(Duration::seconds(1000)),
@@ -123,8 +134,8 @@ fn test_credential_schema(format: CredentialFormat) -> CredentialSchema {
 fn test_key(key_type: &str) -> Key {
     Key {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         public_key: vec![],
         name: "test_key".to_string(),
         key_reference: None,
@@ -142,8 +153,8 @@ fn test_verifier_proof(format: CredentialFormat, verifier_key: Option<RelatedKey
 
     Proof {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         protocol: "OPENID4VP_FINAL1".to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
@@ -153,8 +164,8 @@ fn test_verifier_proof(format: CredentialFormat, verifier_key: Option<RelatedKey
         completed_date: None,
         schema: Some(ProofSchema {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             deleted_at: None,
             name: "test-share-proof".into(),
             expire_duration: 123,
@@ -177,8 +188,8 @@ fn test_verifier_proof(format: CredentialFormat, verifier_key: Option<RelatedKey
         verifier_identifier: Some(Identifier {
             did: Some(Did {
                 id: Uuid::new_v4().into(),
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 name: "did".to_string(),
                 did: "did:example:123".parse().unwrap(),
                 did_type: DidType::Local,
@@ -242,8 +253,8 @@ fn test_holder_proof(
 ) -> Proof {
     let interaction = Interaction {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         data: Some(serialize_interaction_data(&interaction_data).unwrap()),
         organisation: None,
         nonce_id: None,
@@ -253,8 +264,8 @@ fn test_holder_proof(
 
     Proof {
         id: Uuid::new_v4().into(),
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: crate::clock::now_utc(),
+        last_modified: crate::clock::now_utc(),
         protocol: "OPENID4VP_FINAL1".to_string(),
         transport: "HTTP".to_string(),
         redirect_uri: None,
@@ -264,8 +275,8 @@ fn test_holder_proof(
         completed_date: None,
         schema: Some(ProofSchema {
             id: Uuid::new_v4().into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             deleted_at: None,
             name: "test-holder-proof".into(),
             expire_duration: 300,
@@ -489,8 +500,8 @@ async fn test_share_proof_direct_post_jwt_ecdsa() {
         role: KeyRole::KeyAgreement,
         key: Key {
             id: key_id.into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             public_key: vec![],
             name: "key".to_string(),
             key_reference: None,
@@ -570,8 +581,8 @@ async fn test_share_proof_direct_post_jwt_eddsa() {
         role: KeyRole::KeyAgreement,
         key: Key {
             id: key_id.into(),
-            created_date: OffsetDateTime::now_utc(),
-            last_modified: OffsetDateTime::now_utc(),
+            created_date: crate::clock::now_utc(),
+            last_modified: crate::clock::now_utc(),
             public_key: vec![],
             name: "key".to_string(),
             key_reference: None,

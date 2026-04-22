@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use shared_types::{CertificateId, IdentifierId, OrganisationId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::model::certificate::{
@@ -70,7 +69,7 @@ impl CertificateHistoryDecorator {
             .history_repository
             .create_history(History {
                 id: Uuid::new_v4().into(),
-                created_date: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
                 action,
                 name,
                 source: HistorySource::Core,
@@ -78,6 +77,7 @@ impl CertificateHistoryDecorator {
                 entity_id: Some(id.into()),
                 entity_type: HistoryEntityType::Certificate,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation_id),
                 user: self.session_provider.session().user(),
             })

@@ -4,6 +4,7 @@ use shared_types::{
     CertificateId, IdentifierId, KeyId, OrganisationId, TrustEntryId, TrustListPublicationId,
     TrustListPublisherId,
 };
+use tracing::info;
 
 use crate::error::ContextWithErrorCode;
 use crate::mapper::{list_response_into, list_response_try_into};
@@ -11,19 +12,20 @@ use crate::model::certificate::CertificateRelations;
 use crate::model::identifier::{Identifier, IdentifierRelations};
 use crate::model::key::KeyRelations;
 use crate::model::organisation::OrganisationRelations;
-use crate::model::trust_entry::{TrustEntry, TrustEntryListQuery, TrustEntryRelations};
+use crate::model::trust_entry::{SortableTrustEntryColumn, TrustEntry, TrustEntryRelations};
 use crate::model::trust_list_publication::{
-    TrustListPublication, TrustListPublicationListQuery, TrustListPublicationRelations,
-    TrustListPublicationRoleEnum,
+    SortableTrustListPublicationColumn, TrustListPublication, TrustListPublicationRelations,
 };
+use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::provider::trust_list_publisher::{
-    CreateTrustListRequest, TrustListPublisher, TrustListPublisherCapabilities,
+    CreateTrustListRequest, TrustListContent, TrustListPublisher, TrustListPublisherCapabilities,
 };
+use crate::service::common_dto::ListQueryDTO;
 use crate::service::trust_list_publication::TrustListPublicationService;
 use crate::service::trust_list_publication::dto::{
     CreateTrustEntryRequestDTO, CreateTrustListPublicationRequestDTO, GetTrustEntryListResponseDTO,
     GetTrustListPublicationListResponseDTO, GetTrustListPublicationResponseDTO,
-    UpdateTrustEntryRequestDTO,
+    TrustEntryFilterParamsDTO, TrustListPublicationFilterParamsDTO, UpdateTrustEntryRequestDTO,
 };
 use crate::service::trust_list_publication::error::TrustListPublicationServiceError;
 use crate::util::key_selection::{KeySelection, SelectedKey};
@@ -53,10 +55,9 @@ impl TrustListPublicationService {
             request.certificate_id,
             trust_list_publisher.get_capabilities(),
         )?;
-
-        Ok(trust_list_publisher
+        let trust_list_publication_id = trust_list_publisher
             .create_trust_list(CreateTrustListRequest {
-                name: request.name,
+                name: request.name.clone(),
                 role: request.role,
                 organisation_id: request.organisation_id,
                 identifier,
@@ -65,7 +66,13 @@ impl TrustListPublicationService {
                 params: request.params,
             })
             .await
-            .error_while("creating trust list")?)
+            .error_while("creating trust list")?;
+
+        info!(
+            "Created trust list publication `{}` ({})",
+            request.name, trust_list_publication_id,
+        );
+        Ok(trust_list_publication_id)
     }
 
     pub async fn delete_trust_list_publication(
@@ -81,8 +88,13 @@ impl TrustListPublicationService {
         self.trust_list_publication_repository
             .delete(id)
             .await
-            .error_while("deleting trust list publication")
-            .map_err(Into::into)
+            .error_while("deleting trust list publication")?;
+
+        info!(
+            "Removed trust list publication `{}` ({})",
+            trust_list.name, trust_list.id
+        );
+        Ok(())
     }
 
     pub async fn create_trust_entry(
@@ -107,10 +119,19 @@ impl TrustListPublicationService {
         )?;
         validate_organisation_matches(&identifier, trust_list_publication.organisation_id)?;
 
-        Ok(trust_list_publisher
-            .add_entry(trust_list_publication, identifier, request.params)
+        let trust_entry_id = trust_list_publisher
+            .add_entry(&trust_list_publication, &identifier, request.params)
             .await
-            .error_while("adding entry to trust list")?)
+            .error_while("adding entry to trust list")?;
+
+        info!(
+            "Created trust list publication entry ({}): identifier ({}) : trust list publication `{}` ({})",
+            trust_entry_id,
+            request.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(trust_entry_id)
     }
 
     pub async fn update_trust_entry(
@@ -133,10 +154,18 @@ impl TrustListPublicationService {
             .fetch_trust_list_provider(&trust_list_publication.r#type)
             .await?;
 
-        Ok(trust_list_publisher
-            .update_entry(trust_entry, request.status, request.params)
+        trust_list_publisher
+            .update_entry(&trust_entry, request.state, request.params)
             .await
-            .error_while("updating trust list entry")?)
+            .error_while("updating trust list entry")?;
+        info!(
+            "Updated trust list publication entry ({}): identifier `{}` : trust list publication `{}` ({})",
+            trust_entry.id,
+            trust_entry.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(())
     }
 
     pub async fn delete_trust_entry(
@@ -158,10 +187,18 @@ impl TrustListPublicationService {
             .fetch_trust_list_provider(&trust_list_publication.r#type)
             .await?;
 
-        Ok(trust_list_publisher
-            .remove_entry(trust_entry)
+        trust_list_publisher
+            .remove_entry(&trust_entry)
             .await
-            .error_while("removing entry from trust list")?)
+            .error_while("removing entry from trust list")?;
+        info!(
+            "Removed trust list publication entry ({}): identifier `{}` : trust list publication `{}` ({})",
+            trust_entry.id,
+            trust_entry.identifier_id,
+            trust_list_publication.name,
+            trust_list_publication.id
+        );
+        Ok(())
     }
 
     pub async fn get_trust_list_publication(
@@ -180,7 +217,7 @@ impl TrustListPublicationService {
     pub async fn get_trust_list_publication_content(
         &self,
         id: TrustListPublicationId,
-    ) -> Result<String, TrustListPublicationServiceError> {
+    ) -> Result<TrustListContent, TrustListPublicationServiceError> {
         let trust_list = self.fetch_trust_list_publication(id).await?;
         throw_if_org_relation_not_matching_session(
             trust_list.organisation.as_ref(),
@@ -198,14 +235,17 @@ impl TrustListPublicationService {
 
     pub async fn get_trust_list_publication_list(
         &self,
-        organisation_id: OrganisationId,
-        query: TrustListPublicationListQuery,
+        query: ListQueryDTO<
+            SortableTrustListPublicationColumn,
+            TrustListPublicationFilterParamsDTO,
+        >,
     ) -> Result<GetTrustListPublicationListResponseDTO, TrustListPublicationServiceError> {
-        throw_if_org_not_matching_session(&organisation_id, &*self.session_provider)
+        throw_if_org_not_matching_session(&query.filter.organisation_id, &*self.session_provider)
             .error_while("checking session")?;
+
         let trust_list_publication_list = self
             .trust_list_publication_repository
-            .list(query)
+            .list(query.into())
             .await
             .error_while("getting trust list publications")?;
         Ok(list_response_into(trust_list_publication_list))
@@ -214,7 +254,7 @@ impl TrustListPublicationService {
     pub async fn get_trust_entry_list(
         &self,
         trust_list_publication_id: TrustListPublicationId,
-        query: TrustEntryListQuery,
+        query: ListQueryDTO<SortableTrustEntryColumn, TrustEntryFilterParamsDTO>,
     ) -> Result<GetTrustEntryListResponseDTO, TrustListPublicationServiceError> {
         let trust_list_publication = self
             .fetch_trust_list_publication(trust_list_publication_id)
@@ -224,9 +264,10 @@ impl TrustListPublicationService {
             &*self.session_provider,
         )
         .error_while("validating organisation")?;
+
         let result = self
             .trust_entry_repository
-            .list(trust_list_publication_id, query)
+            .list(trust_list_publication_id, query.into())
             .await
             .error_while("getting trust entries")?;
         list_response_try_into(result)
@@ -277,7 +318,7 @@ impl TrustListPublicationService {
         self.trust_list_publisher_provider
             .get(trust_list_provider_id)
             .ok_or_else(|| {
-                TrustListPublicationServiceError::MissingTrustListProvider(
+                TrustListPublicationServiceError::MissingTrustListPublisher(
                     trust_list_provider_id.clone(),
                 )
             })
@@ -338,7 +379,7 @@ fn validate_organisation_matches(
 }
 
 fn validate_trust_list_role_capabilities(
-    role: &TrustListPublicationRoleEnum,
+    role: &TrustListRoleEnum,
     capabilities: TrustListPublisherCapabilities,
 ) -> Result<(), TrustListPublicationServiceError> {
     if !capabilities.supported_roles.contains(role) {
@@ -434,7 +475,7 @@ mod tests {
     use mockall::predicate;
     use shared_types::TrustListPublisherId;
     use similar_asserts::assert_eq;
-    use time::{Duration, OffsetDateTime};
+    use time::Duration;
     use uuid::Uuid;
 
     use super::*;
@@ -442,8 +483,8 @@ mod tests {
     use crate::model::identifier::{Identifier, IdentifierState, IdentifierType};
     use crate::model::key::Key;
     use crate::model::organisation::Organisation;
-    use crate::model::trust_entry::TrustEntryStatusEnum;
-    use crate::model::trust_list_publication::TrustListPublicationRoleEnum;
+    use crate::model::trust_entry::TrustEntryStateEnum;
+    use crate::model::trust_list_role::TrustListRoleEnum;
     use crate::proto::session_provider::MockSessionProvider;
     use crate::provider::trust_list_publisher::provider::MockTrustListPublisherProvider;
     use crate::provider::trust_list_publisher::{
@@ -465,7 +506,7 @@ mod tests {
         let identifier_id = Uuid::new_v4().into();
         let publisher_id: TrustListPublisherId = "LOTE".into();
         let trust_list_publication_id = Uuid::new_v4().into();
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let identifier = Identifier {
             id: identifier_id,
             created_date: now,
@@ -497,6 +538,7 @@ mod tests {
                 chain: "".to_string(),
                 fingerprint: "".to_string(),
                 state: CertificateState::Active,
+                roles: vec![],
                 key: Some(Key {
                     id: Uuid::new_v4().into(),
                     created_date: now,
@@ -509,6 +551,7 @@ mod tests {
                     organisation: None,
                 }),
             }]),
+            trust_information: None,
         };
 
         identifier_repository
@@ -524,7 +567,7 @@ mod tests {
                     crate::config::core_config::IdentifierType::Certificate,
                 ],
                 entry_identifier_types: vec![],
-                supported_roles: vec![TrustListPublicationRoleEnum::PidProvider],
+                supported_roles: vec![TrustListRoleEnum::PidProvider],
             });
 
         trust_list_publisher
@@ -557,7 +600,7 @@ mod tests {
                 key_id: None,
                 certificate_id: None,
                 name: "testName".to_string(),
-                role: TrustListPublicationRoleEnum::PidProvider,
+                role: TrustListRoleEnum::PidProvider,
                 params: Default::default(),
             })
             .await;
@@ -922,14 +965,14 @@ mod tests {
     }
 
     fn create_test_trust_entry(trust_list_publication_id: TrustListPublicationId) -> TrustEntry {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         TrustEntry {
             id: Uuid::new_v4().into(),
             created_date: now,
             last_modified: now,
             trust_list_publication_id,
             identifier_id: Uuid::new_v4().into(),
-            status: TrustEntryStatusEnum::Active,
+            state: TrustEntryStateEnum::Active,
             metadata: Default::default(),
             trust_list_publication: None,
             identifier: None,
@@ -937,7 +980,7 @@ mod tests {
     }
 
     fn create_test_key_identifier(key_type: &str) -> Identifier {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         Identifier {
             id: Uuid::new_v4().into(),
             created_date: now,
@@ -951,11 +994,12 @@ mod tests {
             did: None,
             key: Some(create_test_key(key_type)),
             certificates: None,
+            trust_information: None,
         }
     }
 
     fn create_test_did_identifier() -> Identifier {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         Identifier {
             id: Uuid::new_v4().into(),
             created_date: now,
@@ -969,11 +1013,12 @@ mod tests {
             did: None,
             key: None,
             certificates: None,
+            trust_information: None,
         }
     }
 
     fn create_test_key(key_type: &str) -> Key {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         Key {
             id: Uuid::new_v4().into(),
             created_date: now,
@@ -988,10 +1033,10 @@ mod tests {
     }
 
     fn create_test_certificate_identifier(key_type: &str) -> Identifier {
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let key = create_test_key(key_type);
         let identifier_id = Uuid::new_v4().into();
-        let certificate = crate::model::certificate::Certificate {
+        let certificate = Certificate {
             id: Uuid::new_v4().into(),
             identifier_id,
             organisation_id: None,
@@ -1003,6 +1048,7 @@ mod tests {
             fingerprint: "".to_string(),
             key: Some(key),
             state: CertificateState::Active,
+            roles: vec![],
         };
 
         Identifier {
@@ -1018,6 +1064,7 @@ mod tests {
             did: None,
             key: None,
             certificates: Some(vec![certificate]),
+            trust_information: None,
         }
     }
 }

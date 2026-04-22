@@ -3,7 +3,6 @@ use std::str::FromStr;
 use indexmap::indexset;
 use shared_types::DidValue;
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::config::core_config::{self, DatatypeConfig, DatatypeType};
@@ -24,7 +23,7 @@ use crate::service::test_utilities::{dummy_did, dummy_identifier};
 fn generate_credential_detail_response(
     claims: Vec<DetailCredentialClaimResponseDTO>,
 ) -> CredentialDetailResponseDTO<DetailCredentialClaimResponseDTO> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     CredentialDetailResponseDTO {
         id: Uuid::new_v4().into(),
@@ -108,6 +107,7 @@ fn generate_credential_matching_detail(
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         issuer_certificate: None,
         holder_identifier: Some(Identifier {
@@ -135,6 +135,7 @@ fn generate_credential_matching_detail(
             }),
             key: None,
             certificates: None,
+            trust_information: None,
         }),
         schema: Some(CredentialSchema {
             id: detail.schema.id,
@@ -167,7 +168,7 @@ fn generate_credential_matching_detail(
 
 #[test]
 fn test_from_credential_detail_response_nested_claim_mapping() {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let holder_did = DidValue::from_str("did:key:holder").unwrap();
 
     let credential_detail = generate_credential_detail_response(vec![
@@ -278,7 +279,7 @@ fn test_from_credential_detail_response_nested_claim_mapping() {
 
 #[test]
 fn test_from_credential_detail_response_nested_claim_mapping_array() {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
     let holder_did = DidValue::from_str("did:key:holder").unwrap();
 
     let mut datatype_config = DatatypeConfig::default();

@@ -15,15 +15,12 @@ pub(super) fn request_to_distinguished_name(
 ) -> Result<DistinguishedName, SignerError> {
     let mut dn = DistinguishedName::new();
     const OID_SURNAME: [u64; 4] = [2, 5, 4, 4];
+    const OID_SERIAL_NUMBER: [u64; 4] = [2, 5, 4, 5];
     const OID_GIVEN_NAME: [u64; 4] = [2, 5, 4, 42];
     const OID_ORG_ID: [u64; 4] = [2, 5, 4, 97];
     const OID_CONTENT_URL: [u64; 4] = [2, 5, 4, 81];
 
     dn.push(DnType::CountryName, request.country_name);
-    dn.push(
-        DnType::CustomDnType(OID_ORG_ID.to_vec()),
-        request.organization_identifier,
-    );
     dn.push(
         DnType::CustomDnType(OID_CONTENT_URL.to_vec()),
         request.national_registry_url,
@@ -34,6 +31,11 @@ pub(super) fn request_to_distinguished_name(
 
     match &request.policy {
         AccessCertificatePolicy::NaturalPerson => {
+            // ETSI 119 475 Table 3: identifier → serialNumber (clause 5.1.5)
+            dn.push(
+                DnType::CustomDnType(OID_SERIAL_NUMBER.to_vec()),
+                request.organization_identifier,
+            );
             if request.organization_name.is_some() {
                 return Err(SignerError::InvalidPayload(
                     "organizationName is not allowed for natural person"
@@ -59,6 +61,11 @@ pub(super) fn request_to_distinguished_name(
             dn.push(DnType::CustomDnType(OID_SURNAME.to_vec()), family_name)
         }
         AccessCertificatePolicy::LegalPerson => {
+            // ETSI 119 475 Table 1: identifier → organizationIdentifier (clause 5.1.3)
+            dn.push(
+                DnType::CustomDnType(OID_ORG_ID.to_vec()),
+                request.organization_identifier,
+            );
             if request.given_name.is_some() {
                 return Err(SignerError::InvalidPayload(
                     "givenName is not allowed for legal person"

@@ -31,25 +31,22 @@ impl SSIHolderService {
             ));
         }
 
-        if let Some((issuance_exchange, issuance_protocol)) =
+        let result = if let Some((issuance_exchange, issuance_protocol)) =
             self.issuance_protocol_provider.detect_protocol(&url).await
         {
-            let result = self
-                .handle_issuance_invitation(
-                    url,
-                    organisation,
-                    issuance_exchange,
-                    issuance_protocol,
-                    redirect_uri,
-                )
-                .await?;
-            success_log(&result);
-            return Ok(result);
-        }
+            self.handle_issuance_invitation(
+                url,
+                organisation,
+                issuance_exchange,
+                issuance_protocol,
+                redirect_uri,
+            )
+            .await?
+        } else {
+            self.handle_verification_invitation(url, organisation, transport)
+                .await?
+        };
 
-        let result = self
-            .handle_verification_invitation(url, organisation, transport)
-            .await?;
         success_log(&result);
         Ok(result)
     }

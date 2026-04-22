@@ -1,5 +1,8 @@
 use std::fmt::Display;
 
+use axum::http::HeaderMap;
+use core_server::extractor::Accept;
+use headers::HeaderMapExt;
 use one_core::provider::issuance_protocol::openid4vci_draft13::model::OpenID4VCINotificationEvent;
 use serde_json::json;
 use shared_types::{CredentialSchemaId, OrganisationId, TrustListPublicationId};
@@ -62,6 +65,14 @@ impl SSIApi {
 
     pub async fn get_client_request(&self, proof_id: impl Into<Uuid>) -> Response {
         let url = format!("/ssi/openid4vp/draft-20/{}/client-request", proof_id.into());
+        self.client.get(&url).await
+    }
+
+    pub async fn get_client_request_final1(&self, proof_id: impl Into<Uuid>) -> Response {
+        let url = format!(
+            "/ssi/openid4vp/final-1.0/{}/client-request",
+            proof_id.into()
+        );
         self.client.get(&url).await
     }
 
@@ -168,13 +179,19 @@ impl SSIApi {
     pub async fn openid_credential_issuer_final1(
         &self,
         protocol_id: &str,
+        identifier_id: impl Into<Uuid>,
         credential_schema_id: impl Into<Uuid>,
+        accept: Accept,
     ) -> Response {
         let credential_schema_id = credential_schema_id.into();
+        let identifier_id = identifier_id.into();
         let url = format!(
-            "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}"
+            "/.well-known/openid-credential-issuer/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}"
         );
-        self.client.get(&url).await
+
+        let mut headers = HeaderMap::new();
+        headers.typed_insert(accept);
+        self.client.get_with_headers(&url, headers).await
     }
 
     pub async fn get_credential_schema(&self, id: impl Into<Uuid>) -> Response {
@@ -249,11 +266,13 @@ impl SSIApi {
     pub async fn oauth_authorization_server(
         &self,
         protocol_id: &str,
+        identifier_id: impl Into<Uuid>,
         credential_schema_id: impl Into<Uuid>,
     ) -> Response {
         let credential_schema_id = credential_schema_id.into();
+        let identifier_id = identifier_id.into();
         let url = format!(
-            "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{credential_schema_id}"
+            "/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/{protocol_id}/{identifier_id}/{credential_schema_id}"
         );
         self.client.get(&url).await
     }
@@ -286,6 +305,11 @@ impl SSIApi {
 
     pub async fn get_trust_list_publication_content(&self, id: TrustListPublicationId) -> Response {
         let url = format!("/ssi/trust-list/v1/{}", id);
+        self.client.get(&url).await
+    }
+
+    pub async fn get_trust_collection(&self, trust_collection_id: impl Into<Uuid>) -> Response {
+        let url = format!("/ssi/trust-collection/v1/{}", trust_collection_id.into());
         self.client.get(&url).await
     }
 }

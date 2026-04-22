@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use self::dto::InteractionExpirationCheckResultDTO;
@@ -50,8 +49,8 @@ impl InteractionExpirationCheckProvider {
 
 #[async_trait::async_trait]
 impl Task for InteractionExpirationCheckProvider {
-    async fn run(&self) -> Result<Value, ServiceError> {
-        let now = OffsetDateTime::now_utc();
+    async fn run(&self, _params: Option<Value>) -> Result<Value, ServiceError> {
+        let now = crate::clock::now_utc();
         let updated_credentials = self
             .interaction_repository
             .update_expired_credentials()
@@ -100,6 +99,7 @@ impl Task for InteractionExpirationCheckProvider {
                     entity_id: Some((*credential_id).into()),
                     entity_type: HistoryEntityType::Credential,
                     metadata: None,
+                    metadata_blob_id: None,
                     organisation_id: schema.organisation.map(|o| o.id),
                     user: self.session_provider.session().user(),
                 })
@@ -151,6 +151,7 @@ impl Task for InteractionExpirationCheckProvider {
                     entity_id: Some((*proof_id).into()),
                     entity_type: HistoryEntityType::Proof,
                     metadata: None,
+                    metadata_blob_id: None,
                     organisation_id: organisation.map(|o| o.id),
                     user: self.session_provider.session().user(),
                 })

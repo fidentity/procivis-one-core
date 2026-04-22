@@ -1,3 +1,5 @@
+extern crate core;
+
 use std::sync::{Arc, Once};
 
 use one_crypto::initialize_crypto_provider;
@@ -27,7 +29,15 @@ use crate::proto::notification_sender::NotificationSenderImpl;
 use crate::proto::openid4vp_proof_validator::validator::OpenId4VpProofValidatorProto;
 use crate::proto::os_provider::OSInfoProviderImpl;
 use crate::proto::session_provider::SessionProvider;
+use crate::proto::trust_collection::manager::TrustCollectionManagerImpl;
+use crate::proto::trust_list_subscription_sync::{
+    TrustListSubscriptionSync, TrustListSubscriptionSyncImpl,
+};
+use crate::proto::verifier_provider_client::http_client::HTTPVerifierProviderClient;
+use crate::proto::wallet_provider_client::http_client::HTTPWalletProviderClient;
 use crate::proto::wallet_unit::HolderWalletUnitProtoImpl;
+use crate::proto::wrp_validator::validator::WRPValidatorImpl;
+use crate::proto::xades::XAdES;
 use crate::provider::blob_storage_provider::blob_storage_provider_from_config;
 use crate::provider::caching_loader::json_ld_context::{
     ContextCache, initialize_jsonld_cache_from_config,
@@ -49,10 +59,10 @@ use crate::provider::revocation::provider::revocation_method_provider_from_confi
 use crate::provider::signer::provider::signer_provider_from_config;
 use crate::provider::task::provider::task_provider_from_config;
 use crate::provider::trust_list_publisher::provider::trust_list_publisher_provider_from_config;
+use crate::provider::trust_list_subscriber::provider::trust_list_subscriber_provider_from_config;
 use crate::provider::trust_management::provider::trust_management_provider_from_config;
 use crate::provider::verification_protocol::provider::verification_protocol_provider_from_config;
 use crate::provider::verifier::provider::verifier_provider_from_config;
-use crate::provider::wallet_provider_client::http_client::HTTPWalletProviderClient;
 use crate::repository::DataRepository;
 use crate::service::backup::BackupService;
 use crate::service::cache::CacheService;
@@ -68,6 +78,7 @@ use crate::service::key::KeyService;
 use crate::service::nfc::NfcService;
 use crate::service::oid4vci_draft13::OID4VCIDraft13Service;
 use crate::service::oid4vci_final1_0::OID4VCIFinal1_0Service;
+use crate::service::oid4vci_final1_0::resolver::initialize_credential_issuer_metadata_cache_from_config;
 use crate::service::oid4vci_final1_0_swiyu::OID4VCIFinal1_0SwiyuService;
 use crate::service::oid4vp_draft20::OID4VPDraft20Service;
 use crate::service::oid4vp_draft25::OID4VPDraft25Service;
@@ -82,13 +93,16 @@ use crate::service::ssi_issuer::SSIIssuerService;
 use crate::service::statistics::StatisticsService;
 use crate::service::task::TaskService;
 use crate::service::trust_anchor::TrustAnchorService;
+use crate::service::trust_collection::TrustCollectionService;
 use crate::service::trust_entity::TrustEntityService;
 use crate::service::trust_list_publication::TrustListPublicationService;
 use crate::service::vc_api::VCAPIService;
+use crate::service::verifier_instance::VerifierInstanceService;
 use crate::service::verifier_provider::VerifierProviderService;
 use crate::service::wallet_provider::WalletProviderService;
 use crate::service::wallet_unit::WalletUnitService;
 
+pub mod clock;
 pub mod config;
 pub mod error;
 pub mod mapper;
@@ -131,11 +145,13 @@ pub struct OneCore {
     pub vc_api_service: VCAPIService,
     pub cache_service: CacheService,
     pub wallet_unit_service: WalletUnitService,
+    pub verifier_instance_service: VerifierInstanceService,
     pub signature_service: SignatureService,
     pub nfc_service: NfcService,
     pub statistics_service: StatisticsService,
     pub verifier_provider_service: VerifierProviderService,
     pub trust_list_publication_service: TrustListPublicationService,
+    pub trust_collection_service: TrustCollectionService,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -287,10 +303,12 @@ impl OneCore {
             data_provider.get_credential_schema_repository(),
         ));
 
+        let wallet_unit_client = Arc::new(HTTPWalletProviderClient::new(client.clone()));
+        let verifier_provider_client = Arc::new(HTTPVerifierProviderClient::new(client.clone()));
         let wallet_unit_proto = Arc::new(HolderWalletUnitProtoImpl::new(
             key_provider.clone(),
             key_algorithm_provider.clone(),
-            Arc::new(HTTPWalletProviderClient::new(client.clone())),
+            wallet_unit_client.clone(),
             revocation_method_provider.clone(),
             data_provider.get_holder_wallet_unit_repository(),
             certificate_validator.clone(),
@@ -324,9 +342,12 @@ impl OneCore {
             key_algorithm_provider.clone(),
             data_provider.get_identifier_repository(),
             signer_provider.clone(),
+            csr_creator.clone(),
             Arc::new(config.clone()),
             data_provider.get_tx_manager(),
         ));
+
+        let xades_proto = Arc::new(XAdES::new(crypto.clone(), certificate_validator.clone()));
 
         let presentation_formatter_provider = get_presentation_formatter_provider(
             key_algorithm_provider.clone(),
@@ -348,10 +369,38 @@ impl OneCore {
             clock.clone(),
             key_provider.clone(),
             key_algorithm_provider.clone(),
+            xades_proto.clone(),
             data_provider.get_trust_list_publication_repository(),
             data_provider.get_trust_entry_repository(),
             data_provider.get_identifier_repository(),
         )?;
+
+        let trust_list_subscriber_provider = trust_list_subscriber_provider_from_config(
+            &mut config,
+            clock.clone(),
+            client.clone(),
+            did_method_provider.clone(),
+            key_algorithm_provider.clone(),
+            certificate_validator.clone(),
+            xades_proto,
+            data_provider.get_remote_entity_cache_repository(),
+        )?;
+
+        let wrp_validator = Arc::new(WRPValidatorImpl::new(
+            data_provider.get_trust_collection_repository(),
+            data_provider.get_trust_list_subscription_repository(),
+            trust_list_subscriber_provider.clone(),
+            data_provider.get_holder_wallet_unit_repository(),
+            wallet_unit_client.clone(),
+            did_method_provider.clone(),
+            key_algorithm_provider.clone(),
+            certificate_validator.clone(),
+        ));
+
+        let trust_collection_manager = Arc::new(TrustCollectionManagerImpl::new(
+            data_provider.get_trust_collection_repository(),
+            data_provider.get_tx_manager(),
+        ));
 
         let blob_storage_provider = blob_storage_provider_from_config(
             &config.blob_storage,
@@ -387,6 +436,11 @@ impl OneCore {
             credential_schema_importer.clone(),
             credential_schema_import_parser.clone(),
             wallet_unit_proto.clone(),
+            data_provider.get_holder_wallet_unit_repository(),
+            wrp_validator.clone(),
+            data_provider.get_history_repository(),
+            session_provider.clone(),
+            data_provider.get_credential_schema_repository(),
         )?;
 
         let verification_provider = verification_protocol_provider_from_config(
@@ -406,6 +460,10 @@ impl OneCore {
             openid_metadata_cache,
             Some(mqtt_client),
             nfc_hce.clone(),
+            data_provider.get_history_repository(),
+            session_provider.clone(),
+            wrp_validator.clone(),
+            blob_storage_provider.clone(),
         )?;
 
         let config = Arc::new(config);
@@ -440,6 +498,13 @@ impl OneCore {
             notification_scheduler.clone(),
         );
 
+        let trust_list_subscription_sync: Arc<dyn TrustListSubscriptionSync> =
+            Arc::new(TrustListSubscriptionSyncImpl::new(
+                client.clone(),
+                data_provider.get_trust_list_subscription_repository(),
+                data_provider.get_tx_manager(),
+            ));
+
         let task_provider = task_provider_from_config(
             &config,
             data_provider.get_claim_repository(),
@@ -450,11 +515,20 @@ impl OneCore {
             data_provider.get_identifier_repository(),
             data_provider.get_interaction_repository(),
             data_provider.get_notification_repository(),
+            data_provider.get_trust_list_subscription_repository(),
+            data_provider.get_holder_wallet_unit_repository(),
+            data_provider.get_trust_collection_repository(),
             credential_validity_manager,
             certificate_validator.clone(),
             blob_storage_provider.clone(),
             session_provider.clone(),
             notification_sender.clone(),
+            trust_list_subscriber_provider.clone(),
+            trust_collection_manager.clone(),
+            trust_list_subscription_sync.clone(),
+            wallet_unit_client,
+            data_provider.get_verifier_instance_repository(),
+            verifier_provider_client.clone(),
         )?;
 
         let openid4vp_proof_validator = Arc::new(OpenId4VpProofValidatorProto::new(
@@ -465,6 +539,14 @@ impl OneCore {
             revocation_method_provider.clone(),
             certificate_validator.clone(),
         ));
+
+        let credential_issuer_metadata_cache =
+            initialize_credential_issuer_metadata_cache_from_config(
+                &config,
+                data_provider.get_remote_entity_cache_repository(),
+                key_provider.clone(),
+                key_algorithm_provider.clone(),
+            )?;
 
         Ok(OneCore {
             trust_anchor_service: TrustAnchorService::new(
@@ -539,34 +621,36 @@ impl OneCore {
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_credential_repository(),
                 data_provider.get_interaction_repository(),
+                data_provider.get_identifier_repository(),
                 config.clone(),
                 issuance_provider.clone(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                credential_formatter_provider.clone(),
                 revocation_method_provider.clone(),
                 certificate_validator.clone(),
                 blob_storage_provider.clone(),
                 data_provider.get_tx_manager(),
                 wallet_unit_proto.clone(),
                 identifier_creator.clone(),
+                credential_issuer_metadata_cache.clone(),
             ),
             oid4vci_final1_0_swiyu_service: OID4VCIFinal1_0SwiyuService::new(
                 core_base_url.clone(),
                 data_provider.get_credential_schema_repository(),
                 data_provider.get_credential_repository(),
                 data_provider.get_interaction_repository(),
+                data_provider.get_identifier_repository(),
                 config.clone(),
                 issuance_provider.clone(),
                 did_method_provider.clone(),
                 key_algorithm_provider.clone(),
-                credential_formatter_provider.clone(),
                 revocation_method_provider.clone(),
                 certificate_validator.clone(),
                 identifier_creator.clone(),
                 data_provider.get_tx_manager(),
                 blob_storage_provider.clone(),
                 wallet_unit_proto.clone(),
+                credential_issuer_metadata_cache,
             ),
             oid4vp_draft20_service: OID4VPDraft20Service::new(
                 data_provider.get_credential_repository(),
@@ -703,7 +787,7 @@ impl OneCore {
                 verification_provider,
                 config.clone(),
                 client.clone(),
-                blob_storage_provider,
+                blob_storage_provider.clone(),
                 session_provider.clone(),
                 identifier_creator.clone(),
             ),
@@ -712,12 +796,13 @@ impl OneCore {
                 data_provider.get_wallet_unit_repository(),
                 data_provider.get_identifier_repository(),
                 data_provider.get_history_repository(),
+                data_provider.get_trust_collection_repository(),
                 data_provider.get_tx_manager(),
                 key_provider.clone(),
                 key_algorithm_provider.clone(),
                 revocation_method_provider,
                 certificate_validator,
-                clock,
+                clock.clone(),
                 session_provider.clone(),
                 config.clone(),
                 core_base_url.clone(),
@@ -732,9 +817,18 @@ impl OneCore {
                 data_provider.get_identifier_repository(),
                 data_provider.get_key_repository(),
                 data_provider.get_organisation_repository(),
+                data_provider.get_credential_schema_repository(),
+                data_provider.get_proof_schema_repository(),
+                data_provider.get_trust_collection_repository(),
+                data_provider.get_trust_list_subscription_repository(),
+                data_provider.get_identifier_trust_information_repository(),
+                blob_storage_provider.clone(),
                 identifier_creator,
                 config.clone(),
                 session_provider.clone(),
+                trust_list_subscriber_provider.clone(),
+                data_provider.get_tx_manager(),
+                wrp_validator,
             ),
             wallet_unit_service: WalletUnitService::new(
                 data_provider.get_organisation_repository(),
@@ -746,9 +840,26 @@ impl OneCore {
                 Arc::new(HTTPWalletProviderClient::new(client)),
                 wallet_unit_proto,
                 Arc::new(OSInfoProviderImpl),
+                trust_collection_manager.clone(),
+                trust_list_subscription_sync.clone(),
+                data_provider.get_trust_collection_repository(),
+                data_provider.get_trust_list_subscription_repository(),
+                data_provider.get_tx_manager(),
                 Arc::new(DefaultClock),
                 core_base_url,
                 config,
+                session_provider.clone(),
+            ),
+            verifier_instance_service: VerifierInstanceService::new(
+                data_provider.get_organisation_repository(),
+                data_provider.get_verifier_instance_repository(),
+                data_provider.get_history_repository(),
+                verifier_provider_client,
+                trust_collection_manager,
+                data_provider.get_trust_collection_repository(),
+                data_provider.get_trust_list_subscription_repository(),
+                trust_list_subscription_sync,
+                data_provider.get_tx_manager(),
                 session_provider.clone(),
             ),
             signature_service: SignatureService::new(
@@ -756,6 +867,7 @@ impl OneCore {
                 data_provider.get_revocation_list_repository(),
                 data_provider.get_identifier_repository(),
                 data_provider.get_history_repository(),
+                blob_storage_provider.clone(),
                 session_provider.clone(),
             ),
             statistics_service: StatisticsService::new(
@@ -763,13 +875,23 @@ impl OneCore {
                 data_provider.get_organisation_repository(),
                 session_provider.clone(),
             ),
-            verifier_provider_service: VerifierProviderService::new(verifier_provider),
+            verifier_provider_service: VerifierProviderService::new(
+                verifier_provider,
+                data_provider.get_trust_collection_repository(),
+            ),
             trust_list_publication_service: TrustListPublicationService::new(
                 data_provider.get_identifier_repository(),
                 data_provider.get_trust_list_publication_repository(),
                 data_provider.get_trust_entry_repository(),
-                session_provider,
+                session_provider.clone(),
                 trust_list_publisher_provider,
+            ),
+            trust_collection_service: TrustCollectionService::new(
+                data_provider.get_trust_collection_repository(),
+                data_provider.get_trust_list_subscription_repository(),
+                trust_list_subscriber_provider,
+                session_provider,
+                clock,
             ),
         })
     }
@@ -807,7 +929,7 @@ fn initialize_rustls() -> Result<(), OneCoreInitializationError> {
     let mut result: Option<anyhow::Error> = None;
 
     RUSTLS_INITIALIZATION.call_once(|| {
-        if rustls::crypto::ring::default_provider()
+        if rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .is_err()
         {

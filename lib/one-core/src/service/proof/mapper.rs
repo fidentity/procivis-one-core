@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::dto::{
     CreateProofRequestDTO, ProofClaimDTO, ProofClaimValueDTO, ProofDetailResponseDTO,
-    ProofInputDTO, ProofListItemResponseDTO,
+    ProofFilterParamsDTO, ProofFilterValue, ProofInputDTO, ProofListItemResponseDTO,
 };
 use super::error::ProofServiceError;
 use crate::config::core_config::{CoreConfig, DatatypeType};
@@ -24,6 +24,10 @@ use crate::model::history::History;
 use crate::model::identifier::Identifier;
 use crate::model::interaction::Interaction;
 use crate::model::key::Key;
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::proof::{Proof, ProofClaim, ProofRole, ProofStateEnum};
 use crate::model::proof_schema::{ProofInputClaimSchema, ProofSchema};
 use crate::model::validity_credential::ValidityCredentialType;
@@ -754,4 +758,102 @@ pub(super) fn interaction_data_from_proof(proof: &Proof) -> Result<Value, ProofS
         .map(|interaction| serde_json::from_slice(interaction))
         .ok_or_else(|| ProofServiceError::MappingError("proof interaction is missing".into()))?
         .map_err(|err| ProofServiceError::MappingError(err.to_string()))
+}
+
+impl From<ProofFilterParamsDTO> for ListFilterCondition<ProofFilterValue> {
+    fn from(value: ProofFilterParamsDTO) -> Self {
+        let organisation_id = ProofFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let name = value.name.map(|name| {
+            ProofFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(crate::model::proof::ExactProofFilterColumn::Name),
+                value: name,
+            })
+        });
+
+        let states = value.states.map(ProofFilterValue::States);
+        let roles = value.roles.map(ProofFilterValue::Roles);
+        let proof_ids = value.ids.map(ProofFilterValue::ProofIds);
+        let proof_schema_ids = value.proof_schema_ids.map(ProofFilterValue::ProofSchemaIds);
+        let verifier_ids = value.verifier_ids.map(ProofFilterValue::VerifierIds);
+        let profiles = value.profiles.map(ProofFilterValue::Profiles);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            ProofFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            ProofFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            ProofFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            ProofFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let requested_date_after = value.requested_date_after.map(|date| {
+            ProofFilterValue::RequestedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let requested_date_before = value.requested_date_before.map(|date| {
+            ProofFilterValue::RequestedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let completed_date_after = value.completed_date_after.map(|date| {
+            ProofFilterValue::CompletedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let completed_date_before = value.completed_date_before.map(|date| {
+            ProofFilterValue::CompletedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & states
+            & roles
+            & proof_schema_ids
+            & verifier_ids
+            & proof_ids
+            & profiles
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
+            & requested_date_after
+            & requested_date_before
+            & completed_date_after
+            & completed_date_before
+    }
 }

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use one_core::model::common::ExactColumn;
-use one_core::model::proof::{ProofRole, ProofStateEnum, SortableProofColumn};
+use one_core::model::proof::{
+    ExactProofFilterColumn, ProofRole, ProofStateEnum, SortableProofColumn,
+};
 use one_core::provider::verification_protocol::dto::{
     CredentialDetailClaimExtResponseDTO, CredentialQueryFailureHintResponseDTO,
     CredentialQueryFailureReasonEnum, CredentialQueryResponseDTO, CredentialSetResponseDTO,
@@ -12,9 +13,9 @@ use one_core::provider::verification_protocol::dto::{
 use one_core::provider::verification_protocol::openid4vp::model::ClientIdScheme;
 use one_core::service::error::ServiceError;
 use one_core::service::proof::dto::{
-    GetProofListResponseDTO, ProofInputDTO, ProofListItemResponseDTO, ProposeProofRequestDTO,
-    ProposeProofResponseDTO, ShareProofRequestDTO, ShareProofRequestParamsDTO,
-    ShareProofResponseDTO,
+    GetProofListResponseDTO, ProofClaimDTO, ProofInputDTO, ProofListItemResponseDTO,
+    ProposeProofRequestDTO, ProposeProofResponseDTO, ShareProofRequestDTO,
+    ShareProofRequestParamsDTO, ShareProofResponseDTO,
 };
 use one_core::service::ssi_holder::dto::{
     PresentationSubmitCredentialRequestDTO, PresentationSubmitRequestDTO,
@@ -32,14 +33,16 @@ use super::credential_schema::{
 };
 use super::identifier::{CertificateResponseBindingDTO, GetIdentifierListItemBindingDTO};
 use super::mapper::{optional_identifier_id_string, optional_time};
-use super::proof_schema::{GetProofSchemaListItemBindingDTO, ProofRequestClaimBindingDTO};
-use crate::OneCoreBinding;
+use super::proof_schema::{GetProofSchemaListItemBindingDTO, ProofClaimSchemaBindingDTO};
+use crate::OneCore;
 use crate::error::BindingError;
 use crate::utils::{TimestampFormat, into_id};
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
-    /// For verifiers, creates a proof request.
+impl OneCore {
+    /// For verifiers, creates a proof request. Choose what information to
+    /// request via a proof schema, an identifier, and which protocol to use
+    /// for making the request.
     #[uniffi::method]
     pub async fn create_proof(
         &self,
@@ -50,6 +53,7 @@ impl OneCoreBinding {
         Ok(core.proof_service.create_proof(request).await?.to_string())
     }
 
+    /// Returns detailed information about a proof request.
     #[uniffi::method]
     pub async fn get_proof(
         &self,
@@ -60,6 +64,8 @@ impl OneCoreBinding {
         Ok(proof.into())
     }
 
+    /// Deletes an incomplete proof request. If the request is in `REQUESTED`
+    /// state the proof is retracted instead, retaining history of the interaction.
     #[uniffi::method]
     pub async fn delete_proof(&self, proof_id: String) -> Result<(), BindingError> {
         let core = self.use_core().await?;
@@ -67,20 +73,18 @@ impl OneCoreBinding {
         Ok(())
     }
 
+    /// Returns a filterable list of proof requests.
     #[uniffi::method]
-    pub async fn get_proofs(
+    pub async fn list_proofs(
         &self,
         query: ProofListQueryBindingDTO,
     ) -> Result<ProofListBindingDTO, BindingError> {
         let core = self.use_core().await?;
-        let organisation_id = into_id(query.organisation_id.clone())?;
-        let proofs = core
-            .proof_service
-            .get_proof_list(&organisation_id, query.try_into()?)
-            .await?;
+        let proofs = core.proof_service.get_proof_list(query.try_into()?).await?;
         Ok(proofs.into())
     }
 
+    /// Rejects a proof request.
     #[uniffi::method]
     pub async fn holder_reject_proof(&self, interaction_id: String) -> Result<(), BindingError> {
         let core = self.use_core().await?;
@@ -90,6 +94,8 @@ impl OneCoreBinding {
             .await?)
     }
 
+    /// Submits a presentation using Presentation Exchange as the query
+    /// language; this should be used after `getPresentationDefinition`.
     #[uniffi::method]
     pub async fn holder_submit_proof(
         &self,
@@ -108,6 +114,8 @@ impl OneCoreBinding {
         Ok(())
     }
 
+    /// Submits a presentation using DCQL as a query language; this should
+    /// be used after `getPresentationDefinitionv2`.
     #[uniffi::method]
     pub async fn holder_submit_proof_v2(
         &self,
@@ -142,6 +150,8 @@ impl OneCoreBinding {
             .into())
     }
 
+    /// Creates a share URL from a proof request. A wallet holder can use this
+    /// URL to access the request.
     #[uniffi::method]
     pub async fn share_proof(
         &self,
@@ -196,28 +206,52 @@ impl OneCoreBinding {
 /// (for QR device engagement) or NFC engagement parameters from
 /// `nfc_read_iso_mdl_engagement`.
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "CreateProofRequest")]
 pub struct CreateProofRequestBindingDTO {
+    /// Choose a proof schema to use.
     pub proof_schema_id: String,
+    /// Deprecated. Use `verifierIdentifierId`.
     pub verifier_did_id: Option<String>,
+    /// Choose the identifier to use to make the request.
     pub verifier_identifier_id: Option<String>,
+    /// Choose the protocol to use for verification. Check the
+    /// `verificationProtocol` object of your configuration for
+    /// supported options and reference the configuration instance.
     pub protocol: String,
+    /// When a shared proof is accepted, the wallet will be redirected
+    /// to the resource specified here, if redirects are enabled in the
+    /// configuration. The URI must use a scheme that is allowed by the
+    /// configuration.
     pub redirect_uri: Option<String>,
+    /// If the identifier contains multiple keys, use this to specify
+    /// which key to use. If omitted, the first suitable key is used.
     pub verifier_key: Option<String>,
+    /// If the identifier contains multiple certificates, use this to
+    /// specify which key to use. If omitted, the first suitable
+    /// certificate is used.
     pub verifier_certificate: Option<String>,
+    /// Use to specify device engagement type.
     pub iso_mdl_engagement: Option<String>,
+    /// Choose the transport protocol for the exchange. Check the
+    /// `transport` object of your configuration for supported
+    /// options and reference the configuration instance.
     pub transport: Option<Vec<String>>,
+    /// Country profile to associate with this request.
     pub profile: Option<String>,
+    /// Use for ISO mDL verification over BLE.
     pub engagement: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Into, uniffi::Enum)]
-#[into(ExactColumn)]
+#[into(ExactProofFilterColumn)]
+#[uniffi(name = "ProofListQueryExactColumn")]
 pub enum ProofListQueryExactColumnBindingEnum {
     Name,
 }
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
 #[into(SortableProofColumn)]
+#[uniffi(name = "SortableProofColumn")]
 pub enum SortableProofListColumnBinding {
     SchemaName,
     Verifier,
@@ -226,32 +260,63 @@ pub enum SortableProofListColumnBinding {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "ProofListQuery")]
 pub struct ProofListQueryBindingDTO {
+    /// Page number to retrieve (0-based indexing).
     pub page: u32,
+    /// Number of items to return per page.
     pub page_size: u32,
+    /// Specifies the organizational context for this operation.
     pub organisation_id: String,
+    /// Field value to sort results by.
     pub sort: Option<SortableProofListColumnBinding>,
+    /// Direction to sort results by.
     pub sort_direction: Option<SortDirection>,
+    /// Return only proof requests with a name starting with this string.
     pub name: Option<String>,
+    /// Filter by one or more country profiles.
     pub profiles: Option<Vec<String>>,
+    /// Filter by one or more UUIDs.
     pub ids: Option<Vec<String>>,
+    /// Filter by one or more proof request states.
     pub proof_states: Option<Vec<ProofStateBindingEnum>>,
+    /// Filter proof requests by one or more roles: requested by the
+    /// system (`VERIFIER`) or received by the system (`HOLDER`).
     pub proof_roles: Option<Vec<ProofRoleBindingEnum>>,
+    /// Filter by associated proof schemas.
     pub proof_schema_ids: Option<Vec<String>>,
+    /// Set which filters apply in an exact way.
     pub exact: Option<Vec<ProofListQueryExactColumnBindingEnum>>,
 
+    /// Return only proof requests created after this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub created_date_after: Option<String>,
+    /// Return only proof requests created before this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub created_date_before: Option<String>,
+    /// Return only proof requests last modified after this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub last_modified_after: Option<String>,
+    /// Return only proof requests last modified before this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub last_modified_before: Option<String>,
+    /// Return only proofs requested after this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub requested_date_after: Option<String>,
+    /// Return only proofs requested before this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub requested_date_before: Option<String>,
+    /// Return only proofs requested completed after this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub completed_date_after: Option<String>,
+    /// Return only proofs requested completed before this time. Timestamp in
+    /// RFC 3339 format (for example `2023-06-09T14:19:57.000Z`).
     pub completed_date_before: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProofListItemResponseDTO)]
+#[uniffi(name = "ProofListItem")]
 pub struct ProofListItemBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -261,55 +326,87 @@ pub struct ProofListItemBindingDTO {
     pub last_modified: String,
     #[from(with_fn = optional_time)]
     pub requested_date: Option<String>,
+    /// When the wallet holder submitted valid proof.
     #[from(with_fn = optional_time)]
     pub completed_date: Option<String>,
     #[from(with_fn = optional_identifier_id_string)]
     pub verifier: Option<String>,
+    /// Protocol used for verification.
     pub protocol: String,
+    /// Channel used for this request.
     pub transport: String,
+    /// Engagement method used for this request.
     pub engagement: Option<String>,
+    /// State representation of this request.
     pub state: ProofStateBindingEnum,
+    /// The role the system has in relation to this request.
     pub role: ProofRoleBindingEnum,
     #[from(with_fn = convert_inner)]
     pub schema: Option<GetProofSchemaListItemBindingDTO>,
+    /// Time at which the data shared by the wallet holder for this request
+    /// will be deleted. Determined by the `expireDuration` parameter of the
+    /// proof schema.
     #[from(with_fn = optional_time)]
     pub retain_until_date: Option<String>,
+    /// Country profile associated with this request.
     pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "ProofDetail")]
 pub struct ProofResponseBindingDTO {
     pub id: String,
     pub created_date: String,
     pub last_modified: String,
+    /// Identifier of the verifier of this request.
     pub verifier: Option<GetIdentifierListItemBindingDTO>,
     pub state: ProofStateBindingEnum,
+    /// The role the system has in relation to this request.
     pub role: ProofRoleBindingEnum,
+    /// Schema used for this request.
     pub proof_schema: Option<GetProofSchemaListItemBindingDTO>,
+    /// Protocol used for verification.
     pub protocol: String,
+    /// Engagement method used for this request.
     pub engagement: Option<String>,
+    /// Channel used for this request.
     pub transport: String,
+    /// The wallet is redirected to this resource once a shared proof
+    /// is accepted.
     pub redirect_uri: Option<String>,
+    /// Credential and claim data shared by the wallet holder.
     pub proof_inputs: Vec<ProofInputBindingDTO>,
+    /// Time at which the data shared by the wallet holder for this request
+    /// will be deleted. Determined by the `expireDuration` parameter of the
+    /// proof schema.
     pub retain_until_date: Option<String>,
+    /// When the request was shared with the wallet holder.
     pub requested_date: Option<String>,
+    /// When the wallet holder submitted valid proof.
     pub completed_date: Option<String>,
+    /// When claim data was deleted.
     pub claims_removed_at: Option<String>,
+    /// Country profile associated with this request.
     pub profile: Option<String>,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProofInputDTO)]
+#[uniffi(name = "ProofInput")]
 pub struct ProofInputBindingDTO {
+    /// Set of claims asserted by the shared credential.
     #[from(with_fn = convert_inner)]
     pub claims: Vec<ProofRequestClaimBindingDTO>,
+    /// Shared credential metadata.
     #[from(with_fn = convert_inner)]
     pub credential: Option<CredentialDetailBindingDTO>,
+    /// Credential schema metadata.
     pub credential_schema: CredentialSchemaBindingDTO,
 }
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetProofListResponseDTO)]
+#[uniffi(name = "ProofList")]
 pub struct ProofListBindingDTO {
     #[from(with_fn = convert_inner)]
     pub values: Vec<ProofListItemBindingDTO>,
@@ -320,6 +417,7 @@ pub struct ProofListBindingDTO {
 #[derive(Clone, Debug, From, Into, uniffi::Enum)]
 #[from(ProofStateEnum)]
 #[into(ProofStateEnum)]
+#[uniffi(name = "ProofState")]
 pub enum ProofStateBindingEnum {
     Created,
     Pending,
@@ -334,6 +432,7 @@ pub enum ProofStateBindingEnum {
 #[derive(Clone, Debug, Into, From, uniffi::Enum)]
 #[from(ProofRole)]
 #[into(ProofRole)]
+#[uniffi(name = "ProofRole")]
 pub enum ProofRoleBindingEnum {
     Holder,
     Verifier,
@@ -341,7 +440,9 @@ pub enum ProofRoleBindingEnum {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = PresentationSubmitCredentialRequestDTO, Error = ServiceError)]
+#[uniffi(name = "PresentationSubmitCredentialRequest")]
 pub struct PresentationSubmitCredentialRequestBindingDTO {
+    /// ID of the credential to submit.
     #[try_into(with_fn_ref = into_id)]
     pub credential_id: String,
     #[try_into(infallible)]
@@ -350,15 +451,22 @@ pub struct PresentationSubmitCredentialRequestBindingDTO {
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = PresentationSubmitV2CredentialRequestDTO, Error = ServiceError)]
+#[uniffi(name = "PresentationSubmitV2CredentialRequest")]
 pub struct PresentationSubmitV2CredentialRequestBindingDTO {
+    /// ID of the credential to submit.
     #[try_into(with_fn_ref = into_id)]
     pub credential_id: String,
+    /// Array of claim paths for claims where `userSelection: true` that the
+    /// holder chooses to share. Only include paths for optional claims the
+    /// holder selects. Omit entirely or use an empty array if withholding all
+    /// optional claims.
     #[try_into(infallible)]
     pub user_selections: Vec<String>,
 }
 
 #[derive(Clone, Debug, TryInto, uniffi::Record)]
 #[try_into(T = ProposeProofRequestDTO, Error = ServiceError)]
+#[uniffi(name = "ProposeProofRequest")]
 pub struct ProposeProofRequestBindingDTO {
     #[try_into(infallible)]
     pub protocol: String,
@@ -372,6 +480,7 @@ pub struct ProposeProofRequestBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(ProposeProofResponseDTO)]
+#[uniffi(name = "ProposeProofResponse")]
 pub struct ProposeProofResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub proof_id: String,
@@ -382,6 +491,7 @@ pub struct ProposeProofResponseBindingDTO {
 
 #[derive(Into, uniffi::Record)]
 #[into(ShareProofRequestDTO)]
+#[uniffi(name = "ShareProofRequest")]
 pub struct ShareProofRequestBindingDTO {
     #[into(with_fn = "convert_inner")]
     pub params: Option<ShareProofRequestParamsBindingDTO>,
@@ -389,13 +499,18 @@ pub struct ShareProofRequestBindingDTO {
 
 #[derive(Into, uniffi::Record)]
 #[into(ShareProofRequestParamsDTO)]
+#[uniffi(name = "ShareProofRequestParams")]
 pub struct ShareProofRequestParamsBindingDTO {
+    /// For requests made with OpenID4VC, a Client ID Scheme can be
+    /// specified here. If no scheme is specified the default scheme
+    /// from the configuration is used.
     #[into(with_fn = "convert_inner")]
     pub client_id_scheme: Option<ClientIdSchemeBindingEnum>,
 }
 
 #[derive(Clone, Debug, Into, uniffi::Enum)]
 #[into(ClientIdScheme)]
+#[uniffi(name = "ClientIdScheme")]
 pub enum ClientIdSchemeBindingEnum {
     RedirectUri,
     VerifierAttestation,
@@ -405,6 +520,7 @@ pub enum ClientIdSchemeBindingEnum {
 
 #[derive(From, uniffi::Record)]
 #[from(ShareProofResponseDTO)]
+#[uniffi(name = "ShareProofResponse")]
 pub struct ShareProofResponseBindingDTO {
     pub url: String,
     #[from(with_fn = optional_time)]
@@ -413,6 +529,7 @@ pub struct ShareProofResponseBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(PresentationDefinitionResponseDTO)]
+#[uniffi(name = "PresentationDefinition")]
 pub struct PresentationDefinitionBindingDTO {
     #[from(with_fn = convert_inner)]
     pub request_groups: Vec<PresentationDefinitionRequestGroupBindingDTO>,
@@ -422,6 +539,7 @@ pub struct PresentationDefinitionBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(PresentationDefinitionRequestGroupResponseDTO)]
+#[uniffi(name = "PresentationDefinitionRequestGroup")]
 pub struct PresentationDefinitionRequestGroupBindingDTO {
     pub id: String,
     pub name: Option<String>,
@@ -432,6 +550,7 @@ pub struct PresentationDefinitionRequestGroupBindingDTO {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "PresentationDefinitionRequestedCredential")]
 pub struct PresentationDefinitionRequestedCredentialBindingDTO {
     pub id: String,
     pub name: Option<String>,
@@ -443,6 +562,7 @@ pub struct PresentationDefinitionRequestedCredentialBindingDTO {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "PresentationDefinitionField")]
 pub struct PresentationDefinitionFieldBindingDTO {
     pub id: String,
     pub name: Option<String>,
@@ -453,6 +573,7 @@ pub struct PresentationDefinitionFieldBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Enum)]
 #[from(PresentationDefinitionRuleTypeEnum)]
+#[uniffi(name = "PresentationDefinitionRuleType")]
 pub enum PresentationDefinitionRuleTypeBindingEnum {
     All,
     Pick,
@@ -460,6 +581,7 @@ pub enum PresentationDefinitionRuleTypeBindingEnum {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(PresentationDefinitionRuleDTO)]
+#[uniffi(name = "PresentationDefinitionRule")]
 pub struct PresentationDefinitionRuleBindingDTO {
     pub r#type: PresentationDefinitionRuleTypeBindingEnum,
     pub min: Option<u32>,
@@ -469,6 +591,7 @@ pub struct PresentationDefinitionRuleBindingDTO {
 
 #[derive(Debug, From, uniffi::Record)]
 #[from(PresentationDefinitionV2ResponseDTO)]
+#[uniffi(name = "PresentationDefinitionV2")]
 pub(crate) struct PresentationDefinitionV2ResponseBindingDTO {
     #[from(with_fn = convert_inner)]
     pub credential_queries: HashMap<String, CredentialQueryResponseBindingDTO>,
@@ -478,6 +601,7 @@ pub(crate) struct PresentationDefinitionV2ResponseBindingDTO {
 
 #[derive(Debug, From, uniffi::Record)]
 #[from(CredentialQueryResponseDTO)]
+#[uniffi(name = "CredentialQuery")]
 pub(crate) struct CredentialQueryResponseBindingDTO {
     pub multiple: bool,
     pub credential_or_failure_hint: ApplicableCredentialOrFailureHintBindingEnum,
@@ -485,6 +609,7 @@ pub(crate) struct CredentialQueryResponseBindingDTO {
 
 #[derive(Debug, uniffi::Enum)]
 #[allow(clippy::large_enum_variant)]
+#[uniffi(name = "ApplicableCredentialOrFailureHint")]
 pub(crate) enum ApplicableCredentialOrFailureHintBindingEnum {
     ApplicableCredentials {
         applicable_credentials: Vec<PresentationDefinitionV2CredentialDetailBindingDTO>,
@@ -495,6 +620,7 @@ pub(crate) enum ApplicableCredentialOrFailureHintBindingEnum {
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "PresentationDefinitionV2Credential")]
 pub struct PresentationDefinitionV2CredentialDetailBindingDTO {
     pub id: String,
     pub created_date: String,
@@ -517,6 +643,7 @@ pub struct PresentationDefinitionV2CredentialDetailBindingDTO {
 
 #[derive(Clone, Debug, uniffi::Record, From)]
 #[from(CredentialDetailClaimExtResponseDTO)]
+#[uniffi(name = "PresentationDefinitionV2Claim")]
 pub struct PresentationDefinitionV2ClaimBindingDTO {
     pub path: String,
     pub schema: CredentialClaimSchemaBindingDTO,
@@ -526,6 +653,7 @@ pub struct PresentationDefinitionV2ClaimBindingDTO {
 }
 
 #[derive(Clone, Debug, uniffi::Enum)]
+#[uniffi(name = "PresentationDefinitionV2ClaimValue")]
 pub enum PresentationDefinitionV2ClaimValueBindingDTO {
     Boolean {
         value: bool,
@@ -546,6 +674,7 @@ pub enum PresentationDefinitionV2ClaimValueBindingDTO {
 
 #[derive(Debug, From, uniffi::Record)]
 #[from(CredentialQueryFailureHintResponseDTO)]
+#[uniffi(name = "CredentialQueryFailureHint")]
 pub(crate) struct CredentialQueryFailureHintResponseBindingDTO {
     pub reason: CredentialQueryFailureReasonBindingEnum,
     #[from(with_fn = "convert_inner")]
@@ -554,6 +683,7 @@ pub(crate) struct CredentialQueryFailureHintResponseBindingDTO {
 
 #[derive(Debug, From, uniffi::Enum)]
 #[from(CredentialQueryFailureReasonEnum)]
+#[uniffi(name = "CredentialQueryFailureReason")]
 pub(crate) enum CredentialQueryFailureReasonBindingEnum {
     NoCredential,
     Validity,
@@ -562,7 +692,28 @@ pub(crate) enum CredentialQueryFailureReasonBindingEnum {
 
 #[derive(Debug, From, uniffi::Record)]
 #[from(CredentialSetResponseDTO)]
+#[uniffi(name = "CredentialSet")]
 pub(crate) struct CredentialSetResponseBindingDTO {
     pub required: bool,
     pub options: Vec<Vec<String>>,
+}
+
+#[derive(Clone, Debug, From, uniffi::Record)]
+#[from(ProofClaimDTO)]
+#[uniffi(name = "ProofClaim")]
+pub struct ProofRequestClaimBindingDTO {
+    pub schema: ProofClaimSchemaBindingDTO,
+    #[from(with_fn = convert_inner)]
+    pub value: Option<ProofRequestClaimValueBindingDTO>,
+}
+
+#[derive(Clone, Debug, uniffi::Enum)]
+#[uniffi(name = "ProofClaimValue")]
+pub enum ProofRequestClaimValueBindingDTO {
+    Value {
+        value: String,
+    },
+    Claims {
+        value: Vec<ProofRequestClaimBindingDTO>,
+    },
 }

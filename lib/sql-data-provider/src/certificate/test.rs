@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use one_core::model::certificate::{Certificate, CertificateState, UpdateCertificateRequest};
+use one_core::model::certificate::{
+    Certificate, CertificateRole, CertificateState, UpdateCertificateRequest,
+};
 use one_core::repository::certificate_repository::CertificateRepository;
 use one_core::repository::key_repository::MockKeyRepository;
 use one_core::repository::organisation_repository::MockOrganisationRepository;
@@ -67,6 +69,7 @@ async fn test_create_certificate() {
         chain: "chain".to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     };
 
@@ -88,6 +91,10 @@ async fn test_get_certificate() {
         chain: "chain".to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![
+            CertificateRole::AssertionMethod,
+            CertificateRole::Authentication,
+        ],
         key: None,
     };
 
@@ -115,6 +122,7 @@ async fn test_get_certificate() {
     assert_eq!(retrieved.chain, certificate.chain);
     assert_eq!(retrieved.state, certificate.state);
     assert_eq!(retrieved.expiry_date, certificate.expiry_date);
+    assert_eq!(retrieved.roles, certificate.roles);
     assert!(retrieved.key.is_none());
 }
 
@@ -133,6 +141,7 @@ async fn test_update_certificate() {
         chain: "chain".to_string(),
         fingerprint: "fingerprint".to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: None,
     };
 

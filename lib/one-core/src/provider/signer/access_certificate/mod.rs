@@ -69,8 +69,8 @@ enum AccessCertificatePolicy {
 }
 
 impl AccessCertificatePolicy {
-    fn to_certificate_policy_extension(&self) -> CustomExtension {
-        const OID_CERTIFICATE_POLICY: [u64; 4] = [2, 5, 29, 32];
+    fn to_certificate_policies_extension(&self) -> CustomExtension {
+        const OID_CERTIFICATE_POLICIES_EXTENSION: [u64; 4] = [2, 5, 29, 32];
         const OID_CERTIFICATE_POLICY_NATURAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 0];
         const OID_CERTIFICATE_POLICY_LEGAL_PERSON: [u64; 6] = [0, 4, 0, 194112, 1, 1];
 
@@ -81,11 +81,16 @@ impl AccessCertificatePolicy {
 
         let certificate_policy_ext_content = yasna::construct_der(|writer| {
             writer.write_sequence(|writer| {
-                writer.next().write_oid(&ObjectIdentifier::from_slice(&oid));
+                writer.next().write_sequence(|writer| {
+                    writer.next().write_oid(&ObjectIdentifier::from_slice(&oid));
+                });
             });
         });
         // Not critical according to ETSI EN 319 412-2
-        CustomExtension::from_oid_content(&OID_CERTIFICATE_POLICY, certificate_policy_ext_content)
+        CustomExtension::from_oid_content(
+            &OID_CERTIFICATE_POLICIES_EXTENSION,
+            certificate_policy_ext_content,
+        )
     }
 }
 
@@ -169,8 +174,8 @@ impl Signer for AccessCertificateSigner {
 
         cert_params
             .custom_extensions
-            .push(request_data.policy.to_certificate_policy_extension());
-        cert_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+            .push(request_data.policy.to_certificate_policies_extension());
+        add_extended_key_usages(&mut cert_params);
         cert_params
             .subject_alt_names
             .push(SanType::URI(to_ia5(request_data.san_uri.clone())?));
@@ -241,12 +246,33 @@ fn authority_information_access_extension(
                 writer
                     .next()
                     .write_oid(&ObjectIdentifier::from_slice(&OID_ID_AD_CA_ISSUERS));
-                writer.next().write_tagged(Tag::context(6), |writer| {
-                    writer.write_ia5_string(&format!("{}/ssi/ca/{}", core_base_url, certificate_id))
-                });
+                writer
+                    .next()
+                    .write_tagged_implicit(Tag::context(6), |writer| {
+                        writer.write_ia5_string(&format!(
+                            "{}/ssi/ca/{}",
+                            core_base_url, certificate_id
+                        ))
+                    });
             });
         });
     });
     // Non-critical
     CustomExtension::from_oid_content(&OID_AUTHORITY_INFORMATION_ACCESS, authority_info_access)
+}
+
+fn add_extended_key_usages(params: &mut CertificateParams) {
+    const OID_MDL_READER_AUTH: [u64; 6] = [1, 0, 18013, 5, 1, 6];
+    const OID_MDOC_READER_AUTH: [u64; 6] = [1, 0, 23220, 4, 1, 6];
+    params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::ClientAuth);
+    params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::Other(OID_MDL_READER_AUTH.to_vec()));
+    params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::Other(
+            OID_MDOC_READER_AUTH.to_vec(),
+        ));
 }

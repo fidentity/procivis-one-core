@@ -15,7 +15,7 @@ use shared_types::{
     BlobId, CertificateId, ClaimId, ClaimSchemaId, CredentialId, CredentialSchemaId, DidId,
     DidValue, EntityId, HistoryId, IdentifierId, InteractionId, KeyId, NonceId, OrganisationId,
     ProofId, ProofSchemaId, RevocationListEntryId, RevocationListId, RevocationMethodId,
-    WalletUnitAttestedKeyId, WalletUnitId,
+    TrustCollectionId, WalletUnitAttestedKeyId, WalletUnitId,
 };
 use similar_asserts::assert_eq;
 use standardized_types::jwk::PublicJwk;
@@ -32,11 +32,12 @@ use crate::entity::interaction::InteractionType;
 use crate::entity::key_did::KeyRole;
 use crate::entity::proof::{ProofRequestState, ProofRole};
 use crate::entity::revocation_list::{RevocationListFormat, RevocationListPurpose};
-use crate::entity::revocation_list_entry::{RevocationListEntryStatus, RevocationListEntryType};
+use crate::entity::revocation_list_entry::{RevocationListEntryState, RevocationListEntryType};
 use crate::entity::{
     blob, claim, claim_schema, credential, credential_schema, did, identifier, interaction, key,
     key_did, organisation, proof, proof_claim, proof_input_claim_schema, proof_input_schema,
-    proof_schema, revocation_list, revocation_list_entry, wallet_unit, wallet_unit_attested_key,
+    proof_schema, revocation_list, revocation_list_entry, trust_collection, wallet_unit,
+    wallet_unit_attested_key,
 };
 use crate::{DataLayer, db_conn};
 
@@ -56,7 +57,7 @@ pub async fn insert_credential(
     credential_blob_id: BlobId,
     role: CredentialRole,
 ) -> Result<Credential, DbErr> {
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     blob::ActiveModel {
         id: Set(credential_blob_id),
@@ -372,6 +373,25 @@ pub async fn insert_organisation_to_database(
     Ok(organisation.id)
 }
 
+pub async fn insert_blob_to_database(
+    database: &DatabaseConnection,
+    id: Option<BlobId>,
+    r#type: BlobType,
+    value: Option<Vec<u8>>,
+) -> Result<BlobId, DbErr> {
+    let id = id.unwrap_or(Uuid::new_v4().into());
+    let blob = blob::ActiveModel {
+        id: Set(id),
+        created_date: Set(get_dummy_date()),
+        last_modified: Set(get_dummy_date()),
+        value: Set(value.unwrap_or_default()),
+        r#type: Set(r#type),
+    }
+    .insert(database)
+    .await?;
+    Ok(blob.id)
+}
+
 pub async fn insert_key_to_database(
     database: &DatabaseConnection,
     key_type: String,
@@ -447,7 +467,7 @@ pub async fn insert_did(
     did_type: DidType,
     deactivated: impl Into<Option<bool>>,
 ) -> Result<DidId, DbErr> {
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let did = did::ActiveModel {
         id: Set(did_id),
@@ -494,7 +514,7 @@ pub async fn insert_identifier(
     organisation_id: OrganisationId,
     remote: impl Into<bool>,
 ) -> Result<IdentifierId, DbErr> {
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let identifier = identifier::ActiveModel {
         id: Set(identifier_id.into()),
@@ -522,7 +542,7 @@ pub async fn insert_interaction(
     nonce_id: Option<NonceId>,
     interaction_type: InteractionType,
 ) -> Result<InteractionId, DbErr> {
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let interaction = interaction::ActiveModel {
         id: Set(Uuid::new_v4().into()),
@@ -566,7 +586,7 @@ pub async fn insert_history(
     organisation_id: OrganisationId,
     name: String,
 ) -> Result<HistoryId, DbErr> {
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let model = history::ActiveModel {
         id: Set(Uuid::new_v4().into()),
@@ -581,6 +601,7 @@ pub async fn insert_history(
         target: Set(None),
         //TODO: pass user
         user: Set(None),
+        metadata_blob_id: Set(None),
     }
     .insert(database)
     .await?;
@@ -597,7 +618,7 @@ pub async fn insert_revocation_list(
     issuer_certificate_id: Option<CertificateId>,
 ) -> Result<RevocationListId, DbErr> {
     let id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let _model = revocation_list::ActiveModel {
         id: Set(id),
@@ -623,7 +644,7 @@ pub async fn insert_revocation_list_entry(
     credential_id: Option<CredentialId>,
 ) -> Result<RevocationListEntryId, DbErr> {
     let id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
 
     let _model = revocation_list_entry::ActiveModel {
         id: Set(id),
@@ -636,7 +657,7 @@ pub async fn insert_revocation_list_entry(
             .map(|_| RevocationListEntryType::Credential)
             .unwrap_or(RevocationListEntryType::WalletUnitAttestedKey)),
         signature_type: Set(None),
-        status: Set(RevocationListEntryStatus::Active),
+        state: Set(RevocationListEntryState::Active),
         serial: Set(None),
     }
     .insert(database)
@@ -660,8 +681,8 @@ pub fn dummy_organisation(id: Option<OrganisationId>) -> Organisation {
     Organisation {
         name: format!("{id}"),
         id,
-        created_date: OffsetDateTime::now_utc(),
-        last_modified: OffsetDateTime::now_utc(),
+        created_date: one_core::clock::now_utc(),
+        last_modified: one_core::clock::now_utc(),
         deactivated_at: None,
         wallet_provider: None,
         wallet_provider_issuer: None,
@@ -719,6 +740,25 @@ pub async fn insert_wallet_unit_attested_key_to_database(
     .unwrap();
 
     id
+}
+
+pub async fn insert_trust_collection_to_database(
+    database: &DatabaseConnection,
+    organisation_id: OrganisationId,
+) -> Result<TrustCollectionId, DbErr> {
+    let id = Uuid::new_v4().into();
+    let collection = trust_collection::ActiveModel {
+        id: Set(id),
+        name: Set(id.to_string()),
+        created_date: Set(get_dummy_date()),
+        last_modified: Set(get_dummy_date()),
+        remote_trust_collection_url: NotSet,
+        deactivated_at: NotSet,
+        organisation_id: Set(organisation_id),
+    }
+    .insert(database)
+    .await?;
+    Ok(collection.id)
 }
 
 pub fn random_jwk_string() -> String {

@@ -1,14 +1,34 @@
 use shared_types::{CertificateId, IdentifierId, KeyId, OrganisationId};
 use time::OffsetDateTime;
 
-use crate::model::certificate::CertificateState;
-use crate::service::key::dto::KeyListItemResponseDTO;
+use crate::model::certificate::{CertificateRole, CertificateState};
+use crate::service::key::dto::{
+    KeyGenerateCSRRequestProfile, KeyGenerateCSRRequestSubjectDTO, KeyListItemResponseDTO,
+};
 
 #[derive(Clone, Debug)]
 pub struct CreateCertificateRequestDTO {
     pub name: Option<String>,
-    pub chain: String,
+    pub chain: Option<String>,
     pub key_id: KeyId,
+    pub content: Option<CreateCertificateContentDTO>,
+    pub roles: Vec<CertificateRole>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateCertificateContentDTO {
+    pub profile: KeyGenerateCSRRequestProfile,
+    pub subject: KeyGenerateCSRRequestSubjectDTO,
+    pub certificate_authority: CreateCertificateCaDTO,
+    pub signer: String,
+    pub validity_start: Option<OffsetDateTime>,
+    pub validity_end: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateCertificateCaDTO {
+    pub identifier_id: IdentifierId,
+    pub certificate_id: Option<CertificateId>,
 }
 
 #[derive(Clone, Debug)]
@@ -18,6 +38,7 @@ pub struct CertificateX509AttributesDTO {
     pub not_after: OffsetDateTime,
     pub issuer: String,
     pub subject: String,
+    /// hex-encoded SHA256 hash of DER content
     pub fingerprint: String,
     pub extensions: Vec<CertificateX509ExtensionDTO>,
 }
@@ -41,4 +62,5 @@ pub struct CertificateResponseDTO {
     pub key: Option<KeyListItemResponseDTO>,
     pub x509_attributes: CertificateX509AttributesDTO,
     pub organisation_id: Option<OrganisationId>,
+    pub roles: Vec<CertificateRole>,
 }

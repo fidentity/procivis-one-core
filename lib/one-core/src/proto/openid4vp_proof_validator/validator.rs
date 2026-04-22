@@ -11,7 +11,7 @@ use standardized_types::x509::AuthorityKeyIdentifier;
 use crate::config::core_config::{DidType, FormatType, VerificationProtocolType};
 use crate::mapper::NESTED_CLAIM_MARKER;
 use crate::mapper::oidc::map_from_oidc_format_to_core_detailed;
-use crate::mapper::x509::get_akis_for_pem_chain;
+use crate::mapper::x509::pem_chain_to_authority_key_identifiers;
 use crate::model::did::KeyRole;
 use crate::model::proof::{Proof, ProofStateEnum};
 use crate::model::proof_schema::ProofInputSchema;
@@ -847,11 +847,12 @@ fn check_issuer_is_trusted_authority(
         ));
     };
 
-    let issuer_akis = get_akis_for_pem_chain(issuer_certificate.chain.as_bytes()).map_err(|e| {
-        OpenID4VCError::ValidationError(format!(
-            "Failed to retrieve Authority Key Identifier for credential issuer: {e}"
-        ))
-    })?;
+    let issuer_akis =
+        pem_chain_to_authority_key_identifiers(&issuer_certificate.chain).map_err(|e| {
+            OpenID4VCError::ValidationError(format!(
+                "Failed to retrieve Authority Key Identifier for credential issuer: {e}"
+            ))
+        })?;
 
     let trusted_akis = get_trusted_akis(authorities);
 

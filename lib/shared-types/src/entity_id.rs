@@ -5,7 +5,8 @@ use crate::macros::impls_for_uuid_newtype;
 use crate::{
     CertificateId, CredentialId, CredentialSchemaId, DidId, HolderWalletUnitId, IdentifierId,
     KeyId, NotificationId, OrganisationId, ProofId, ProofSchemaId, TrustAnchorId, TrustEntityId,
-    TrustListPublicationId, WalletUnitAttestationId, WalletUnitId,
+    TrustListPublicationId, TrustListSubscriptionId, VerifierInstanceId, WalletUnitAttestationId,
+    WalletUnitId,
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -18,6 +19,7 @@ impls_for_uuid_newtype!(EntityId);
 
 #[cfg(feature = "sea-orm")]
 use crate::macros::impls_for_seaorm_newtype;
+use crate::trust_collection_id::TrustCollectionId;
 
 #[cfg(feature = "sea-orm")]
 impls_for_seaorm_newtype!(EntityId);
@@ -48,3 +50,6 @@ impl_from_other_type!(WalletUnitAttestationId);
 impl_from_other_type!(HolderWalletUnitId);
 impl_from_other_type!(NotificationId);
 impl_from_other_type!(TrustListPublicationId);
+impl_from_other_type!(TrustCollectionId);
+impl_from_other_type!(TrustListSubscriptionId);
+impl_from_other_type!(VerifierInstanceId);

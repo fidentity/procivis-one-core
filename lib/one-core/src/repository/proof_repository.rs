@@ -4,7 +4,9 @@ use super::error::DataLayerError;
 use crate::model::claim::Claim;
 use crate::model::common::LockType;
 use crate::model::history::HistoryErrorMetadata;
-use crate::model::proof::{GetProofList, GetProofQuery, Proof, ProofRelations, UpdateProofRequest};
+use crate::model::proof::{
+    GetProofList, Proof, ProofListQuery, ProofRelations, UpdateProofRequest,
+};
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
 #[async_trait::async_trait]
@@ -26,7 +28,7 @@ pub trait ProofRepository: Send + Sync {
 
     async fn get_proof_list(
         &self,
-        query_params: GetProofQuery,
+        query_params: ProofListQuery,
     ) -> Result<GetProofList, DataLayerError>;
 
     async fn set_proof_claims(

@@ -12,7 +12,6 @@ use super::dto::{
 };
 use crate::dto::common::{EntityResponseRestDTO, GetProofSchemaListResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -29,9 +28,12 @@ use crate::router::AppState;
     ),
     summary = "Create proof schema",
     description = indoc::formatdoc! {"
-        Creates a proof schema, for creating proof requests.
+        Creates a proof schema, which defines the claims to request from a holder
+        during verification. Proof schemas reference credential schemas already
+        created in your system — create those first before building a proof schema
+        that includes their claims.
 
-        Related guide: [Proof schemas](/proof-schemas)
+        Related guide: [Proof schemas](https://docs.procivis.ch/proof-schemas)
     "},
 )]
 pub(crate) async fn post_proof_schema(
@@ -73,12 +75,11 @@ pub(crate) async fn get_proof_schemas(
     WithRejection(Qs(query), _): WithRejection<Qs<GetProofSchemaQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetProofSchemaListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .proof_schema_service
-                .get_proof_schema_list(&organisation_id, query.try_into()?)
+                .get_proof_schema_list(query.try_into()?)
                 .await
                 .error_while("getting proof schema list")?,
         )

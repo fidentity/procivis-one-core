@@ -1,10 +1,10 @@
-use one_core::model::certificate::CertificateState;
+use one_core::model::certificate::{CertificateRole, CertificateState};
 use one_core::service::certificate::dto::{
     CertificateResponseDTO, CertificateX509AttributesDTO, CertificateX509ExtensionDTO,
 };
 use one_dto_mapper::{From, Into, TryFrom, convert_inner, try_convert_inner};
 use proc_macros::options_not_nullable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shared_types::{CertificateId, IdentifierId, OrganisationId};
 use time::OffsetDateTime;
 use utoipa::ToSchema;
@@ -42,6 +42,17 @@ pub(crate) struct CertificateResponseRestDTO {
     pub x509_attributes: CertificateX509AttributesRestDTO,
     #[try_from(infallible)]
     pub organisation_id: Option<OrganisationId>,
+    #[try_from(infallible, with_fn = "convert_inner")]
+    pub roles: Vec<CertificateRoleRestEnum>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ToSchema, Into, From)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[into(CertificateRole)]
+#[from(CertificateRole)]
+pub enum CertificateRoleRestEnum {
+    Authentication,
+    AssertionMethod,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema, From, Into)]

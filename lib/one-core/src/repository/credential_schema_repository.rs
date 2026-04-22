@@ -2,8 +2,8 @@ use shared_types::{CredentialSchemaId, OrganisationId};
 
 use super::error::DataLayerError;
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, GetCredentialSchemaQuery,
-    UpdateCredentialSchemaRequest,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
+    GetCredentialSchemaList, UpdateCredentialSchemaRequest,
 };
 
 #[cfg_attr(any(test, feature = "mock"), mockall::automock)]
@@ -27,7 +27,7 @@ pub trait CredentialSchemaRepository: Send + Sync {
 
     async fn get_credential_schema_list(
         &self,
-        query_params: GetCredentialSchemaQuery,
+        query_params: CredentialSchemaListQuery,
         relations: &CredentialSchemaRelations,
     ) -> Result<GetCredentialSchemaList, DataLayerError>;
 

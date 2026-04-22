@@ -14,7 +14,6 @@ use super::dto::{
 };
 use crate::dto::common::{EntityResponseRestDTO, GetProofsResponseRestDTO};
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -138,7 +137,7 @@ pub(crate) async fn get_proof_details(
     `REQUESTED` state then the proof is retracted instead, retaining history
     of the interaction.
 
-    Related guide: [Manage proof requests](/verify/manage-proofs)
+    Related guide: [Managing Proof Requests](https://docs.procivis.ch/verify/manage-proofs)
 "},
 )]
 pub(crate) async fn delete_proof(
@@ -167,12 +166,11 @@ pub(crate) async fn get_proofs(
     WithRejection(Qs(query), _): WithRejection<Qs<GetProofQuery>, ErrorResponseRestDTO>,
 ) -> OkOrErrorResponse<GetProofsResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)?;
         Ok::<_, ServiceError>(
             state
                 .core
                 .proof_service
-                .get_proof_list(&organisation_id, query.try_into()?)
+                .get_proof_list(query.try_into()?)
                 .await
                 .error_while("getting proof list")?,
         )
@@ -199,11 +197,10 @@ pub(crate) async fn get_proofs(
     which verification protocol to use.
 
     The `protocol` and `transport` values must reference specific configuration
-    instances from your system configuration. This is because the system allows
-    multiple configurations of the same type. For `protocol`, reference a configured
+    instances from your system configuration. For `protocol`, reference a configured
     instance of `verificationProtocol`.
 
-    Related guide: [Verify workflow](/verify)
+    Related guide: [Verifying Presentations](https://docs.procivis.ch/verify)
 "},
 )]
 pub(crate) async fn post_proof(

@@ -91,6 +91,7 @@ impl NotificationSenderImpl {
             Ok::<_, http_client::Error>(
                 self.client
                     .post(url)
+                    .header("Content-Type", "application/json")
                     .body(payload)
                     .timeout(params.request_timeout)
                     .send()
@@ -188,7 +189,7 @@ impl NotificationSenderImpl {
             self.history_repository
                 .create_history(History {
                     id: Uuid::new_v4().into(),
-                    created_date: OffsetDateTime::now_utc(),
+                    created_date: crate::clock::now_utc(),
                     action,
                     name: "".to_string(),
                     target: notification.history_target,
@@ -196,6 +197,7 @@ impl NotificationSenderImpl {
                     entity_id: Some(notification.id.into()),
                     entity_type: HistoryEntityType::Notification,
                     metadata,
+                    metadata_blob_id: None,
                     organisation_id: Some(notification.organisation_id),
                     user: self.session_provider.session().user(),
                 })
@@ -257,7 +259,7 @@ mod tests {
             exponential_factor: 2.0,
         };
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
 
         assert_time_equal(
             calculate_next_try_date(now, 0, &params),

@@ -36,7 +36,6 @@ pub(crate) struct BLEOpenID4VPInteractionDataVerifier {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
-#[expect(clippy::large_enum_variant)]
 pub(crate) enum BLEVerifierProtocolData {
     V1 {
         request: OpenID4VP20AuthorizationRequest,
@@ -140,14 +139,8 @@ mod tests {
             protocol_data: BLEVerifierProtocolData::V2 {
                 request: AuthorizationRequest {
                     client_id: "client_id".to_string(),
-                    state: None,
-                    nonce: None,
-                    response_type: None,
-                    response_mode: None,
-                    response_uri: None,
-                    client_metadata: None,
-                    redirect_uri: None,
                     dcql_query: Some(dcql_query.clone()),
+                    ..Default::default()
                 },
                 submission: None,
                 dcql_query: dcql_query.to_owned(),

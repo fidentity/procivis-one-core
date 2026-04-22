@@ -19,11 +19,10 @@ use crate::config::ConfigValidationError;
 use crate::config::core_config::{FormatType, Params};
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::model::claim_schema::ClaimSchemaRelations;
-use crate::model::credential_schema::CredentialSchemaRelations;
+use crate::model::credential_schema::{CredentialSchemaListQuery, CredentialSchemaRelations};
 use crate::model::list_filter::{ListFilterValue, StringMatch};
 use crate::service::credential_schema::dto::{
     CredentialSchemaFilterValue, CredentialSchemaListIncludeEntityTypeEnum,
-    GetCredentialSchemaQueryDTO,
 };
 
 pub const W3C_SCHEMA_TYPE: &str = "ProcivisOneSchema2024";
@@ -178,7 +177,7 @@ impl SSIIssuerService {
         let mut schema_list = self
             .credential_schema_repository
             .get_credential_schema_list(
-                GetCredentialSchemaQueryDTO {
+                CredentialSchemaListQuery {
                     pagination: None,
                     sorting: None,
                     filtering: Some(

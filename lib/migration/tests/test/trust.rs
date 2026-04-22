@@ -181,7 +181,7 @@ async fn test_db_schema_trust_entity() {
 async fn test_db_schema_trust_list_publication() {
     let schema = get_schema().await;
 
-    let trust_list_publication = schema.table("trust_list_publication").columns(&[
+    let mut columns = vec![
         "id",
         "created_date",
         "last_modified",
@@ -196,7 +196,18 @@ async fn test_db_schema_trust_list_publication() {
         "identifier_id",
         "key_id",
         "certificate_id",
-    ]);
+    ];
+    if schema.backend() == DbBackend::MySql {
+        columns.extend(["deactivated_at_materialized"]);
+    }
+    let trust_list_publication = schema
+        .table("trust_list_publication")
+        .columns(&columns)
+        .index(
+            "index-TrustPublication-Name-Org-DeactivatedAt-Unique",
+            true,
+            &["name", "organisation_id", "deactivated_at_materialized"],
+        );
     trust_list_publication
         .column("id")
         .r#type(ColumnType::Uuid)
@@ -279,15 +290,22 @@ async fn test_db_schema_trust_list_publication() {
 async fn test_db_schema_trust_entry() {
     let schema = get_schema().await;
 
-    let trust_entry = schema.table("trust_entry").columns(&[
-        "id",
-        "created_date",
-        "last_modified",
-        "status",
-        "metadata",
-        "trust_list_publication_id",
-        "identifier_id",
-    ]);
+    let trust_entry = schema
+        .table("trust_entry")
+        .columns(&[
+            "id",
+            "created_date",
+            "last_modified",
+            "state",
+            "metadata",
+            "trust_list_publication_id",
+            "identifier_id",
+        ])
+        .index(
+            "index-TrustEntry-IdentifierId-Publication-Unique",
+            true,
+            &["identifier_id", "trust_list_publication_id"],
+        );
     trust_entry
         .column("id")
         .r#type(ColumnType::Uuid)
@@ -305,7 +323,7 @@ async fn test_db_schema_trust_entry() {
         .nullable(false)
         .default(None);
     trust_entry
-        .column("status")
+        .column("state")
         .r#type(ColumnType::String(None))
         .nullable(false)
         .default(None);
@@ -330,4 +348,150 @@ async fn test_db_schema_trust_entry() {
         .nullable(false)
         .default(None)
         .foreign_key("fk-TrustEntry-IdentifierId", "identifier", "id");
+}
+
+#[tokio::test]
+async fn test_db_schema_trust_collection() {
+    let schema = get_schema().await;
+
+    let mut columns = vec![
+        "id",
+        "created_date",
+        "last_modified",
+        "deactivated_at",
+        "name",
+        "organisation_id",
+        "remote_trust_collection_url",
+    ];
+    if schema.backend() == DbBackend::MySql {
+        columns.push("deactivated_at_materialized");
+    }
+    let trust_entry = schema.table("trust_collection").columns(&columns).index(
+        "index-TrustCol-Name-Org-DeactivatedAt-Unique",
+        true,
+        &["name", "organisation_id", "deactivated_at_materialized"],
+    );
+    trust_entry
+        .column("id")
+        .r#type(ColumnType::Uuid)
+        .nullable(false)
+        .default(None)
+        .primary_key();
+    trust_entry
+        .column("created_date")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("last_modified")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("deactivated_at")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(true);
+    trust_entry
+        .column("name")
+        .r#type(ColumnType::String(None))
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("remote_trust_collection_url")
+        .r#type(ColumnType::Text)
+        .nullable(true);
+    trust_entry
+        .column("organisation_id")
+        .r#type(ColumnType::Uuid)
+        .nullable(false)
+        .default(None)
+        .foreign_key("fk-TrustCollection-OrganisationId", "organisation", "id");
+}
+
+#[tokio::test]
+async fn test_db_schema_trust_subscription() {
+    let schema = get_schema().await;
+
+    let mut columns = vec![
+        "id",
+        "created_date",
+        "last_modified",
+        "deactivated_at",
+        "name",
+        "reference",
+        "type",
+        "state",
+        "role",
+        "trust_collection_id",
+    ];
+    if schema.backend() == DbBackend::MySql {
+        columns.push("deactivated_at_materialized");
+    }
+    let trust_entry = schema
+        .table("trust_list_subscription")
+        .columns(&columns)
+        .index(
+            "index-TrustListSubscription-Name-Col-DeactivatedAt-Unique",
+            true,
+            &["name", "trust_collection_id", "deactivated_at_materialized"],
+        )
+        .index(
+            "index-TrustListSubscription-Reference-Col-DeactivatedAt-Unique",
+            true,
+            &[
+                "reference",
+                "trust_collection_id",
+                "deactivated_at_materialized",
+            ],
+        );
+    trust_entry
+        .column("id")
+        .r#type(ColumnType::Uuid)
+        .nullable(false)
+        .default(None)
+        .primary_key();
+    trust_entry
+        .column("created_date")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("last_modified")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("deactivated_at")
+        .r#type(ColumnType::TimestampMilliseconds)
+        .nullable(true);
+    trust_entry
+        .column("name")
+        .r#type(ColumnType::String(None))
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("reference")
+        .r#type(ColumnType::Text)
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("role")
+        .r#type(ColumnType::String(None))
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("state")
+        .r#type(ColumnType::String(None))
+        .nullable(false)
+        .default(None);
+    trust_entry
+        .column("trust_collection_id")
+        .r#type(ColumnType::Uuid)
+        .nullable(false)
+        .default(None)
+        .foreign_key(
+            "fk-TrustListSubscription-TrustCollectionId",
+            "trust_collection",
+            "id",
+        );
 }

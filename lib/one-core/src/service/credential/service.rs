@@ -1,13 +1,12 @@
 use one_dto_mapper::convert_inner;
-use shared_types::{CredentialId, OrganisationId};
+use shared_types::CredentialId;
 use uuid::Uuid;
 
 use super::CredentialService;
 use super::dto::{
     CreateCredentialRequestDTO, CredentialAttestationBlobs, CredentialDetailResponseDTO,
     CredentialRevocationCheckResponseDTO, DetailCredentialClaimResponseDTO,
-    GetCredentialListResponseDTO, GetCredentialQueryDTO, ShareCredentialResponseDTO,
-    SuspendCredentialRequestDTO,
+    GetCredentialListResponseDTO, ShareCredentialResponseDTO, SuspendCredentialRequestDTO,
 };
 use super::error::CredentialServiceError;
 use super::mapper::{
@@ -20,11 +19,12 @@ use super::validator::{
 use crate::config::validator::protocol::validate_protocol_did_compatibility;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::mapper::list_response_try_into;
-use crate::model::certificate::CertificateRelations;
+use crate::model::certificate::{CertificateRelations, CertificateRole};
 use crate::model::claim::ClaimRelations;
 use crate::model::claim_schema::ClaimSchemaRelations;
 use crate::model::credential::{
-    Credential, CredentialRelations, CredentialRole, CredentialStateEnum, UpdateCredentialRequest,
+    Credential, CredentialListIncludeEntityTypeEnum, CredentialRelations, CredentialRole,
+    CredentialStateEnum, SortableCredentialColumn, UpdateCredentialRequest,
 };
 use crate::model::credential_schema::CredentialSchemaRelations;
 use crate::model::did::{DidRelations, KeyRole};
@@ -36,10 +36,12 @@ use crate::provider::blob_storage_provider::BlobStorageType;
 use crate::provider::issuance_protocol::model::ShareResponse;
 use crate::provider::revocation::model::RevocationState;
 use crate::repository::error::DataLayerError;
+use crate::service::common_dto::ListQueryDTO;
+use crate::service::credential::dto::CredentialFilterParamsDTO;
 use crate::service::credential_schema::validator::validate_key_storage_security_supported;
-use crate::service::error::MissingProviderError;
+use crate::service::error::{BusinessLogicError, MissingProviderError};
 use crate::util::interactions::{add_new_interaction, clear_previous_interaction};
-use crate::util::key_selection::{KeyFilter, KeySelection, SelectedKey};
+use crate::util::key_selection::{CertificateFilter, KeyFilter, KeySelection, SelectedKey};
 use crate::validator::{
     throw_if_credential_schema_not_in_session_org, throw_if_org_not_matching_session,
     throw_if_org_relation_not_matching_session,
@@ -152,12 +154,14 @@ impl CredentialService {
             algorithms: Some(formatter_capabilities.signing_key_algorithms.clone()),
             ..Default::default()
         };
+        let certificate_filter = CertificateFilter::role_filter(CertificateRole::AssertionMethod);
         let selection = issuer_identifier
             .select_key(KeySelection {
                 key: request.issuer_key,
                 did: request.issuer_did,
                 certificate: request.issuer_certificate,
                 key_filter: Some(key_filter),
+                certificate_filter: Some(certificate_filter),
             })
             .error_while("selecting key")?;
 
@@ -418,17 +422,33 @@ impl CredentialService {
     ///
     /// # Arguments
     ///
-    /// * `query` - query parameters
+    /// * `filter_params` - query parameters
     pub async fn get_credential_list(
         &self,
-        organisation_id: &OrganisationId,
-        query: GetCredentialQueryDTO,
+        filter_params: ListQueryDTO<
+            SortableCredentialColumn,
+            CredentialFilterParamsDTO,
+            CredentialListIncludeEntityTypeEnum,
+        >,
     ) -> Result<GetCredentialListResponseDTO, CredentialServiceError> {
-        throw_if_org_not_matching_session(organisation_id, &*self.session_provider)
-            .error_while("checking session")?;
+        if filter_params.filter.name.is_some()
+            && filter_params.filter.search_type.is_some()
+            && filter_params.filter.search_text.is_some()
+        {
+            return Err(BusinessLogicError::GeneralInputValidationError
+                .error_while("validating credential filter")
+                .into());
+        }
+
+        throw_if_org_not_matching_session(
+            &filter_params.filter.organisation_id,
+            &*self.session_provider,
+        )
+        .error_while("checking session")?;
+
         let result = self
             .credential_repository
-            .get_credential_list(query)
+            .get_credential_list(filter_params.into())
             .await
             .error_while("getting credentials")?;
 

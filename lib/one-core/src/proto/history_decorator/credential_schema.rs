@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use shared_types::{CredentialSchemaId, OrganisationId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::model::credential_schema::{
-    CredentialSchema, CredentialSchemaRelations, GetCredentialSchemaList, GetCredentialSchemaQuery,
-    UpdateCredentialSchemaRequest,
+    CredentialSchema, CredentialSchemaListQuery, CredentialSchemaRelations,
+    GetCredentialSchemaList, UpdateCredentialSchemaRequest,
 };
 use crate::model::history::{History, HistoryAction, HistoryEntityType, HistorySource};
 use crate::model::organisation::Organisation;
@@ -85,7 +84,7 @@ impl CredentialSchemaRepository for CredentialSchemaHistoryDecorator {
 
     async fn get_credential_schema_list(
         &self,
-        query_params: GetCredentialSchemaQuery,
+        query_params: CredentialSchemaListQuery,
         relations: &CredentialSchemaRelations,
     ) -> Result<GetCredentialSchemaList, DataLayerError> {
         self.inner
@@ -142,7 +141,7 @@ impl CredentialSchemaHistoryDecorator {
             .history_repository
             .create_history(History {
                 id: Uuid::new_v4().into(),
-                created_date: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
                 action,
                 name: credential_schema.name.to_owned(),
                 source: HistorySource::Core,
@@ -150,6 +149,7 @@ impl CredentialSchemaHistoryDecorator {
                 entity_id: Some(credential_schema.id.into()),
                 entity_type: HistoryEntityType::CredentialSchema,
                 metadata: None,
+                metadata_blob_id: None,
                 organisation_id: Some(organisation.id),
                 user: self.session_provider.session().user(),
             })

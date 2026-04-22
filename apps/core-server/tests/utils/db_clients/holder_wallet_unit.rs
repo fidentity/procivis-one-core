@@ -15,7 +15,7 @@ pub struct HolderWalletUnitsDB {
 }
 
 #[derive(Default)]
-pub struct TestHolderWalletUnit {
+pub struct TestHolderWalletUnitParams {
     pub status: Option<WalletUnitStatus>,
     pub wallet_provider_type: Option<WalletProviderType>,
     pub wallet_provider_name: Option<String>,
@@ -31,8 +31,8 @@ impl HolderWalletUnitsDB {
     pub async fn create(
         &self,
         organisation: Organisation,
-        authentication_key: Key,
-        test_holder_wallet_unit: TestHolderWalletUnit,
+        authentication_key: Option<Key>,
+        test_holder_wallet_unit: TestHolderWalletUnitParams,
     ) -> HolderWalletUnit {
         let wallet_unit = CreateHolderWalletUnitRequest {
             id: Uuid::new_v4().into(),

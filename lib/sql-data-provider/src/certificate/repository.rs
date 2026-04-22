@@ -7,7 +7,6 @@ use one_core::repository::certificate_repository::CertificateRepository;
 use one_core::repository::error::DataLayerError;
 use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, Set, Unchanged};
 use shared_types::CertificateId;
-use time::OffsetDateTime;
 
 use super::CertificateProvider;
 use crate::common::list_query_with_base_model;
@@ -21,7 +20,7 @@ impl CertificateProvider {
         model: certificate::Model,
         relations: &CertificateRelations,
     ) -> Result<Certificate, DataLayerError> {
-        let mut result: Certificate = model.clone().into();
+        let mut result: Certificate = model.clone().try_into()?;
 
         if let Some(key_relations) = &relations.key
             && let Some(key_id) = &model.key_id
@@ -111,7 +110,7 @@ impl CertificateRepository for CertificateProvider {
     ) -> Result<(), DataLayerError> {
         let update_model = certificate::ActiveModel {
             id: Unchanged(*id),
-            last_modified: Set(OffsetDateTime::now_utc()),
+            last_modified: Set(one_core::clock::now_utc()),
             name: request.name.map(Set).unwrap_or_default(),
             state: request
                 .state

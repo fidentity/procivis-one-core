@@ -54,13 +54,14 @@ async fn test_get_issuer_configuration_final1_0() {
     let db_conn = fixtures::create_db(&config).await;
     let organisation = fixtures::create_organisation(&db_conn).await;
     let credential_schema = fixtures::create_credential_schema(&db_conn, &organisation, None).await;
+    let identifier = fixtures::create_identifier(&db_conn, &organisation, None).await;
 
     // WHEN
     let _handle = run_server(listener, config, &db_conn).await;
 
     let url = format!(
-        "{base_url}/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}",
-        credential_schema.id
+        "{base_url}/.well-known/oauth-authorization-server/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}/{}",
+        identifier.id, credential_schema.id
     );
 
     let resp = utils::client().get(url).send().await.unwrap();
@@ -71,8 +72,8 @@ async fn test_get_issuer_configuration_final1_0() {
     let resp: Value = resp.json().await.unwrap();
 
     let issuer = format!(
-        "{base_url}/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}",
-        credential_schema.id
+        "{base_url}/ssi/openid4vci/final-1.0/OPENID4VCI_FINAL1/{}/{}",
+        identifier.id, credential_schema.id
     );
 
     assert_eq!(issuer, resp["issuer"].as_str().unwrap());

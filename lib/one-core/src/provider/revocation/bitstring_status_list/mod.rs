@@ -8,7 +8,6 @@ use futures::FutureExt;
 use resolver::{StatusListCacheEntry, StatusListResolver};
 use serde::{Deserialize, Serialize};
 use shared_types::{CredentialId, RevocationListEntryId, RevocationListId, RevocationMethodId};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use self::model::StatusPurpose;
@@ -21,7 +20,7 @@ use crate::model::credential::Credential;
 use crate::model::did::KeyRole;
 use crate::model::identifier::{Identifier, IdentifierType};
 use crate::model::revocation_list::{
-    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryStatus,
+    RevocationList, RevocationListEntityId, RevocationListEntry, RevocationListEntryState,
     RevocationListPurpose, StatusListCredentialFormat, UpdateRevocationListEntryId,
     UpdateRevocationListEntryRequest,
 };
@@ -211,7 +210,7 @@ impl RevocationMethod for BitstringStatusList {
             .update_entry(
                 UpdateRevocationListEntryId::Credential(credential.id),
                 UpdateRevocationListEntryRequest {
-                    status: Some(new_state.into()),
+                    state: Some(new_state.into()),
                 },
             )
             .await
@@ -658,8 +657,8 @@ impl BitstringStatusList {
         self.revocation_list_repository
             .create_revocation_list(RevocationList {
                 id: revocation_list_id,
-                created_date: OffsetDateTime::now_utc(),
-                last_modified: OffsetDateTime::now_utc(),
+                created_date: crate::clock::now_utc(),
+                last_modified: crate::clock::now_utc(),
                 formatted_list: list_credential.into_bytes(),
                 format: self.params.format,
                 r#type: self.config_id.to_owned(),
@@ -757,7 +756,7 @@ async fn generate_bitstring_from_entries(
                 entry.index.ok_or(RevocationError::MappingError(
                     "revocation list entry index missing".to_string(),
                 ))?,
-                get_revocation_entry_state(entry.status, purpose),
+                get_revocation_entry_state(entry.state, purpose),
             ))
         })
         .collect::<Result<Vec<_>, RevocationError>>()?;
@@ -779,15 +778,15 @@ fn get_revocation_list_url(
 }
 
 fn get_revocation_entry_state(
-    entry_status: RevocationListEntryStatus,
+    entry_status: RevocationListEntryState,
     purpose: RevocationListPurpose,
 ) -> bool {
     match purpose {
-        RevocationListPurpose::Revocation => entry_status == RevocationListEntryStatus::Revoked,
-        RevocationListPurpose::Suspension => entry_status == RevocationListEntryStatus::Suspended,
+        RevocationListPurpose::Revocation => entry_status == RevocationListEntryState::Revoked,
+        RevocationListPurpose::Suspension => entry_status == RevocationListEntryState::Suspended,
         RevocationListPurpose::RevocationAndSuspension => matches!(
             entry_status,
-            RevocationListEntryStatus::Revoked | RevocationListEntryStatus::Suspended
+            RevocationListEntryState::Revoked | RevocationListEntryState::Suspended
         ),
     }
 }

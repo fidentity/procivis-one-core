@@ -3,7 +3,6 @@ use std::sync::Arc;
 use dto::{CertificateCheckFailureDTO, CertificateCheckResultDTO};
 use serde_json::Value;
 use shared_types::{CertificateId, IdentifierId};
-use time::OffsetDateTime;
 
 use super::Task;
 use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin};
@@ -41,7 +40,7 @@ impl CertificateCheck {
 
 #[async_trait::async_trait]
 impl Task for CertificateCheck {
-    async fn run(&self) -> Result<Value, ServiceError> {
+    async fn run(&self, _params: Option<Value>) -> Result<Value, ServiceError> {
         let expired_certificates = self.check_expired_certificates().await?;
         let revoked_certificates = self.check_revoked_certificates().await?;
 
@@ -139,7 +138,7 @@ impl CertificateCheck {
                     CertificateFilterValue::State(CertificateState::Active).condition()
                         & CertificateFilterValue::ExpiryDate(ValueComparison {
                             comparison: ComparisonType::LessThan,
-                            value: OffsetDateTime::now_utc(),
+                            value: crate::clock::now_utc(),
                         }),
                 ),
                 ..Default::default()

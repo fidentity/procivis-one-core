@@ -23,7 +23,9 @@ use self::proofs::ProofsApi;
 use self::ssi::SSIApi;
 use self::tasks::TasksApi;
 use self::trust_anchors::TrustAnchorsApi;
+use self::trust_collections::TrustCollectionsApi;
 use self::trust_entity::TrustEntitiesApi;
+use self::verifier_instance::VerifierIntanceApi;
 use self::wallet_units::WalletUnitsApi;
 use super::field_match::FieldHelpers;
 use crate::utils::api_clients::cache::CacheApi;
@@ -52,7 +54,9 @@ pub mod signatures;
 pub mod ssi;
 pub mod tasks;
 pub mod trust_anchors;
+pub mod trust_collections;
 pub mod trust_entity;
+pub mod verifier_instance;
 pub mod wallet_units;
 
 pub mod holder_wallet_unit;
@@ -77,6 +81,19 @@ impl HttpClient {
 
         let resp = http_client()
             .get(url)
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .unwrap();
+
+        Response { resp }
+    }
+
+    pub async fn get_with_headers(&self, url: &str, headers: HeaderMap) -> Response {
+        let url = format!("{}{url}", self.base_url);
+        let resp = http_client()
+            .get(url)
+            .headers(headers)
             .bearer_auth(&self.token)
             .send()
             .await
@@ -208,6 +225,7 @@ pub struct Client {
     pub config: ConfigApi,
     pub cache: CacheApi,
     pub trust_anchors: TrustAnchorsApi,
+    pub trust_collections: TrustCollectionsApi,
     pub trust_entities: TrustEntitiesApi,
     pub jsonld: JsonLdApi,
     pub other: OtherApi,
@@ -215,6 +233,7 @@ pub struct Client {
     pub certificates: CertificatesApi,
     pub wallet_provider: WalletProviderApi,
     pub wallet_units: WalletUnitsApi,
+    pub verifier_instances: VerifierIntanceApi,
     pub holder_wallet_units: HolderWalletUnitsApi,
     pub signatures: SignaturesApi,
     pub statistics: StatisticsApi,
@@ -246,6 +265,7 @@ impl Client {
             config: ConfigApi::new(client.clone()),
             cache: CacheApi::new(client.clone()),
             trust_anchors: TrustAnchorsApi::new(client.clone()),
+            trust_collections: TrustCollectionsApi::new(client.clone()),
             trust_entities: TrustEntitiesApi::new(client.clone()),
             jsonld: JsonLdApi::new(client.clone()),
             other: OtherApi::new(client.clone()),
@@ -254,6 +274,7 @@ impl Client {
             wallet_provider: WalletProviderApi::new(client.clone()),
             wallet_units: WalletUnitsApi::new(client.clone()),
             holder_wallet_units: HolderWalletUnitsApi::new(client.clone()),
+            verifier_instances: VerifierIntanceApi::new(client.clone()),
             signatures: SignaturesApi::new(client.clone()),
             statistics: StatisticsApi::new(client.clone()),
             trust_list_publication: TrustListPublicationApi::new(client.clone()),

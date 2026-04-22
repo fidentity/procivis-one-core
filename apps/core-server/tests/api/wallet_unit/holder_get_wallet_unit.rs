@@ -1,18 +1,17 @@
 use one_core::model::wallet_unit::{WalletProviderType, WalletUnitStatus};
 use similar_asserts::assert_eq;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::fixtures::TestingKeyParams;
 use crate::utils::context::TestContext;
-use crate::utils::db_clients::holder_wallet_unit::TestHolderWalletUnit;
+use crate::utils::db_clients::holder_wallet_unit::TestHolderWalletUnitParams;
 use crate::utils::field_match::FieldHelpers;
 
 #[tokio::test]
 async fn test_get_wallet_unit_holder_details_successfully() {
     // GIVEN
     let (context, org) = TestContext::new_with_organisation(None).await;
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let key = context
         .db
         .keys
@@ -35,8 +34,8 @@ async fn test_get_wallet_unit_holder_details_successfully() {
         .holder_wallet_units
         .create(
             org,
-            key.clone(),
-            TestHolderWalletUnit {
+            Some(key.clone()),
+            TestHolderWalletUnitParams {
                 status: Some(WalletUnitStatus::Active),
                 wallet_provider_type: Some(WalletProviderType::ProcivisOne),
                 wallet_provider_name: Some("PROCIVIS_ONE".to_string()),

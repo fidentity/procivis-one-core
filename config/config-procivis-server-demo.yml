@@ -18,11 +18,17 @@ walletProvider:
           minimum: "v1.50.0"
         eudiWalletInfo:
           providerName: "Procivis One Demo"
+        featureFlags:
+          trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 verifierProvider:
   PROCIVIS_ONE:
     params:
       public:
         verifierName: "Procivis One Demo Verifier"
+        featureFlags:
+          trustEcosystemsEnabled: true
+        legacyTrustManagementEnabled: true
 keyStorage:
   AZURE_VAULT:
     params:

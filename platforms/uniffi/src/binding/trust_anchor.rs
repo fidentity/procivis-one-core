@@ -1,3 +1,4 @@
+use one_core::model::trust_anchor::ExactTrustAnchorFilterColumn;
 use one_core::service::trust_anchor::dto::{
     CreateTrustAnchorRequestDTO, GetTrustAnchorDetailResponseDTO, GetTrustAnchorsResponseDTO,
     SortableTrustAnchorColumn, TrustAnchorsListItemResponseDTO,
@@ -5,13 +6,13 @@ use one_core::service::trust_anchor::dto::{
 use one_dto_mapper::{From, Into, convert_inner};
 use shared_types::TrustAnchorId;
 
-use super::OneCoreBinding;
+use super::OneCore;
 use super::common::SortDirection;
 use crate::error::BindingError;
 use crate::utils::{TimestampFormat, into_id};
 
 #[uniffi::export(async_runtime = "tokio")]
-impl OneCoreBinding {
+impl OneCore {
     #[uniffi::method]
     pub async fn create_trust_anchor(
         &self,
@@ -67,6 +68,7 @@ impl OneCoreBinding {
 
 #[derive(Clone, Debug, Into, uniffi::Record)]
 #[into(CreateTrustAnchorRequestDTO)]
+#[uniffi(name = "CreateTrustAnchorRequest")]
 pub struct CreateTrustAnchorRequestBindingDTO {
     pub name: String,
     pub r#type: String,
@@ -76,6 +78,7 @@ pub struct CreateTrustAnchorRequestBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetTrustAnchorDetailResponseDTO)]
+#[uniffi(name = "TrustAnchorDetail")]
 pub struct GetTrustAnchorResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -91,19 +94,23 @@ pub struct GetTrustAnchorResponseBindingDTO {
 
 #[derive(Clone, Debug, Eq, PartialEq, Into, uniffi::Enum)]
 #[into(SortableTrustAnchorColumn)]
+#[uniffi(name = "SortableTrustAnchorColumn")]
 pub enum SortableTrustAnchorColumnBindings {
     Name,
     CreatedDate,
     Type,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Enum)]
+#[derive(Clone, Debug, Eq, PartialEq, Into, uniffi::Enum)]
+#[into(ExactTrustAnchorFilterColumn)]
+#[uniffi(name = "TrustAnchorListQueryExactColumn")]
 pub enum ExactTrustAnchorFilterColumnBindings {
     Name,
     Type,
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
+#[uniffi(name = "TrustAnchorListQuery")]
 pub struct ListTrustAnchorsFiltersBindings {
     pub page: u32,
     pub page_size: u32,
@@ -125,6 +132,7 @@ pub struct ListTrustAnchorsFiltersBindings {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(TrustAnchorsListItemResponseDTO)]
+#[uniffi(name = "TrustAnchorListItem")]
 pub struct TrustAnchorsListItemResponseBindingDTO {
     #[from(with_fn_ref = "ToString::to_string")]
     pub id: String,
@@ -143,6 +151,7 @@ pub struct TrustAnchorsListItemResponseBindingDTO {
 
 #[derive(Clone, Debug, From, uniffi::Record)]
 #[from(GetTrustAnchorsResponseDTO)]
+#[uniffi(name = "TrustAnchorList")]
 pub struct TrustAnchorsListBindingDTO {
     #[from(with_fn = convert_inner)]
     pub values: Vec<TrustAnchorsListItemResponseBindingDTO>,

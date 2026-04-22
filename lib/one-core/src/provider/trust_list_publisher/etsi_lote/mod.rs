@@ -11,9 +11,10 @@ use shared_types::{TrustEntryId, TrustListPublicationId, TrustListPublisherId};
 use standardized_types::etsi_119_602::{
     ListAndSchemeInformation, LoTEPayload, LoTEType, MultiLangString, MultiLangUri, PkiObject,
     ServiceDigitalIdentity, ServiceInformation, TrustedEntity, TrustedEntityInformation,
-    TrustedEntityService,
+    TrustedEntityService, xml,
 };
 use standardized_types::jades::JadesHeader;
+use strum::Display;
 use time::OffsetDateTime;
 
 use crate::config::core_config::{IdentifierType, KeyAlgorithmType};
@@ -24,20 +25,21 @@ use crate::model::identifier::{Identifier, IdentifierRelations};
 use crate::model::key::KeyRelations;
 use crate::model::list_filter::ListFilterValue;
 use crate::model::trust_entry::{
-    TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryStatusEnum,
+    TrustEntry, TrustEntryFilterValue, TrustEntryListQuery, TrustEntryStateEnum,
     UpdateTrustEntryRequest,
 };
 use crate::model::trust_list_publication::{
-    TrustListPublication, TrustListPublicationRelations, TrustListPublicationRoleEnum,
-    UpdateTrustListPublicationRequest,
+    TrustListPublication, TrustListPublicationRelations, UpdateTrustListPublicationRequest,
 };
+use crate::model::trust_list_role::TrustListRoleEnum;
 use crate::proto::certificate_validator::parse::extract_leaf_pem_from_chain;
 use crate::proto::clock::Clock;
+use crate::proto::xades::XAdESProto;
 use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::trust_list_publisher::error::TrustListPublisherError;
 use crate::provider::trust_list_publisher::{
-    CreateTrustListRequest, TrustListPublisher, TrustListPublisherCapabilities,
+    CreateTrustListRequest, TrustListContent, TrustListPublisher, TrustListPublisherCapabilities,
 };
 use crate::repository::identifier_repository::IdentifierRepository;
 use crate::repository::trust_entry_repository::TrustEntryRepository;
@@ -50,6 +52,7 @@ pub(crate) struct EtsiLotePublisher {
     pub clock: Arc<dyn Clock>,
     pub key_provider: Arc<dyn KeyProvider>,
     pub key_algorithm_provider: Arc<dyn KeyAlgorithmProvider>,
+    pub xades_proto: Arc<dyn XAdESProto>,
     pub trust_list_publication_repository: Arc<dyn TrustListPublicationRepository>,
     pub trust_entry_repository: Arc<dyn TrustEntryRepository>,
     pub identifier_repository: Arc<dyn IdentifierRepository>,
@@ -61,6 +64,18 @@ pub(crate) struct EtsiLotePublisher {
 pub(crate) struct EtsiLoteParams {
     #[serde_as(as = "DurationSeconds<i64>")]
     pub refresh_interval_seconds: time::Duration,
+    pub content_type: LoteContentType,
+}
+
+#[derive(Clone, Debug, Display, Deserialize, PartialEq)]
+
+pub enum LoteContentType {
+    #[strum(to_string = "application/xml")]
+    #[serde(rename = "application/xml")]
+    Xml,
+    #[strum(to_string = "application/jwt")]
+    #[serde(rename = "application/jwt")]
+    Jwt,
 }
 
 #[async_trait::async_trait]
@@ -77,12 +92,12 @@ impl TrustListPublisher for EtsiLotePublisher {
                 IdentifierType::CertificateAuthority,
             ],
             supported_roles: vec![
-                TrustListPublicationRoleEnum::PidProvider,
-                TrustListPublicationRoleEnum::WalletProvider,
-                TrustListPublicationRoleEnum::WrpAcProvider,
-                TrustListPublicationRoleEnum::WrpRcProvider,
-                TrustListPublicationRoleEnum::PubEeaProvider,
-                TrustListPublicationRoleEnum::NationalRegistryRegistrar,
+                TrustListRoleEnum::PidProvider,
+                TrustListRoleEnum::WalletProvider,
+                TrustListRoleEnum::WrpAcProvider,
+                TrustListRoleEnum::WrpRcProvider,
+                TrustListRoleEnum::PubEeaProvider,
+                TrustListRoleEnum::NationalRegistryRegistrar,
             ],
         }
     }
@@ -148,8 +163,8 @@ impl TrustListPublisher for EtsiLotePublisher {
 
     async fn add_entry(
         &self,
-        publication: TrustListPublication,
-        identifier: Identifier,
+        publication: &TrustListPublication,
+        identifier: &Identifier,
         params: Option<serde_json::Value>,
     ) -> Result<TrustEntryId, TrustListPublisherError> {
         let entry_params = params
@@ -163,7 +178,7 @@ impl TrustListPublisher for EtsiLotePublisher {
             id: entry_id,
             created_date: self.clock.now_utc(),
             last_modified: self.clock.now_utc(),
-            status: TrustEntryStatusEnum::Active,
+            state: TrustEntryStateEnum::Active,
             metadata,
             trust_list_publication_id: publication.id,
             identifier_id: identifier.id,
@@ -183,8 +198,8 @@ impl TrustListPublisher for EtsiLotePublisher {
 
     async fn update_entry(
         &self,
-        entry: TrustEntry,
-        state: Option<TrustEntryStatusEnum>,
+        entry: &TrustEntry,
+        state: Option<TrustEntryStateEnum>,
         params: Option<serde_json::Value>,
     ) -> Result<(), TrustListPublisherError> {
         if state.is_none() && params.is_none() {
@@ -198,13 +213,7 @@ impl TrustListPublisher for EtsiLotePublisher {
             .transpose()?;
 
         self.trust_entry_repository
-            .update(
-                entry.id,
-                UpdateTrustEntryRequest {
-                    status: state,
-                    metadata,
-                },
-            )
+            .update(entry.id, UpdateTrustEntryRequest { state, metadata })
             .await
             .error_while("updating trust entry")?;
 
@@ -213,7 +222,7 @@ impl TrustListPublisher for EtsiLotePublisher {
         Ok(())
     }
 
-    async fn remove_entry(&self, entry: TrustEntry) -> Result<(), TrustListPublisherError> {
+    async fn remove_entry(&self, entry: &TrustEntry) -> Result<(), TrustListPublisherError> {
         self.trust_entry_repository
             .delete(entry.id)
             .await
@@ -227,15 +236,19 @@ impl TrustListPublisher for EtsiLotePublisher {
     async fn generate_trust_list_content(
         &self,
         publication: TrustListPublication,
-    ) -> Result<String, TrustListPublisherError> {
+    ) -> Result<TrustListContent, TrustListPublisherError> {
         let refresh_interval = self.params.refresh_interval_seconds;
 
-        if publication.last_modified + refresh_interval > self.clock.now_utc() {
-            return Ok(String::from_utf8(publication.content)?);
-        }
+        let content = if publication.last_modified + refresh_interval > self.clock.now_utc() {
+            publication.content
+        } else {
+            self.sign_trust_list(publication.id).await?
+        };
 
-        let content = self.sign_trust_list(publication.id).await?;
-        Ok(String::from_utf8(content)?)
+        Ok(TrustListContent {
+            content: String::from_utf8(content)?,
+            content_type: self.params.content_type.clone(),
+        })
     }
 }
 
@@ -255,8 +268,6 @@ impl EtsiLotePublisher {
             now,
         )?;
 
-        let payload_json = serde_json::to_vec(&payload)?;
-
         let key = publication.key.as_ref().ok_or_else(|| {
             TrustListPublisherError::MissingRelation("publication missing key".to_string())
         })?;
@@ -272,7 +283,23 @@ impl EtsiLotePublisher {
             .get_signature_provider(key, None, self.key_algorithm_provider.clone())
             .error_while("getting signature provider")?;
 
-        sign_jades_compact(&payload_json, &*signer, x5c, self.clock.now_utc()).await
+        match self.params.content_type {
+            LoteContentType::Xml => {
+                let xml_payload = xml::LoTEPayload::from(payload);
+                let unsigned_xml = quick_xml::se::to_string(&xml_payload)?;
+
+                let signed_document = self
+                    .xades_proto
+                    .create_enveloped_signature(&unsigned_xml, &*signer, x5c)
+                    .await?;
+
+                Ok(signed_document.into_bytes())
+            }
+            LoteContentType::Jwt => {
+                let payload_json = serde_json::to_vec(&payload)?;
+                sign_jades_compact(&payload_json, &*signer, x5c, self.clock.now_utc()).await
+            }
+        }
     }
 
     async fn sign_trust_list(
@@ -314,8 +341,7 @@ impl EtsiLotePublisher {
                 publication_id,
                 TrustEntryListQuery {
                     filtering: Some(
-                        TrustEntryFilterValue::Status(vec![TrustEntryStatusEnum::Active])
-                            .condition(),
+                        TrustEntryFilterValue::State(vec![TrustEntryStateEnum::Active]).condition(),
                     ),
                     ..Default::default()
                 },
@@ -397,10 +423,15 @@ fn build_trusted_entity(
 
     let services = lote_type
         .service_type_identifiers()
+        .ok_or_else(|| {
+            TrustListPublisherError::UnsupportedRole(format!(
+                "Unknown service type identifiers for LoTE type `{lote_type}`"
+            ))
+        })?
         .into_iter()
         .map(|(uri, display_name)| TrustedEntityService {
             service_information: ServiceInformation {
-                service_type_identifier: uri.to_string(),
+                service_type_identifier: Some(uri.to_string()),
                 service_name: params.service.name.clone().unwrap_or_else(|| {
                     vec![MultiLangString {
                         lang: "en".into(),
@@ -445,7 +476,8 @@ fn build_lote_payload(
     refresh_interval: time::Duration,
     now: OffsetDateTime,
 ) -> Result<LoTEPayload, TrustListPublisherError> {
-    let lote_type = LoTEType::try_from(&publication.role)?;
+    let now = now.truncate_to_second();
+    let lote_type = LoTEType::try_from(&publication.role).error_while("mapping trust list role")?;
     let list_params: dto::CreateTrustListParams = serde_json::from_slice(&publication.metadata)?;
 
     let sequence_number = u64::from(publication.sequence_number);
@@ -453,7 +485,7 @@ fn build_lote_payload(
     let scheme_info = ListAndSchemeInformation {
         lote_version_identifier: 1,
         lote_sequence_number: sequence_number,
-        lote_type: lote_type.to_string(),
+        lote_type: Some(lote_type.clone()),
         scheme_operator_name: list_params.scheme_operator_name.unwrap_or_else(|| {
             vec![MultiLangString {
                 lang: "en".into(),
@@ -461,14 +493,28 @@ fn build_lote_payload(
             }]
         }),
         scheme_information_uri: list_params.scheme_information_uri,
-        status_determination_approach: lote_type.status_determination_approach().to_string(),
+        status_determination_approach: lote_type
+            .status_determination_approach()
+            .ok_or_else(|| {
+                TrustListPublisherError::UnsupportedRole(format!(
+                    "Unknown status determination approach for LoTE type `{lote_type}`"
+                ))
+            })?
+            .to_string(),
         scheme_type_community_rules: Some(vec![MultiLangUri {
             lang: "en".into(),
-            uri_value: lote_type.scheme_type_community_rules().to_string(),
+            uri_value: lote_type
+                .scheme_type_community_rules()
+                .ok_or_else(|| {
+                    TrustListPublisherError::UnsupportedRole(format!(
+                        "Unknown scheme type community rules for LoTE type `{lote_type}`"
+                    ))
+                })?
+                .to_string(),
         }]),
         scheme_territory: list_params
             .scheme_territory
-            .unwrap_or_else(|| lote_type.scheme_territory().to_string()),
+            .or(Some(lote_type.scheme_territory().to_string())),
         scheme_operator_address: list_params.scheme_operator_address,
         scheme_name: list_params.scheme_name.or_else(|| {
             Some(vec![MultiLangString {
@@ -481,8 +527,8 @@ fn build_lote_payload(
         pointers_to_other_lote: list_params.pointers_to_other_lote,
         distribution_points: list_params.distribution_points,
         scheme_extensions: list_params.scheme_extensions,
-        list_issue_date_time: format_iso8601(now)?,
-        next_update: format_iso8601(now + refresh_interval)?,
+        list_issue_date_time: now,
+        next_update: now + refresh_interval,
     };
 
     let trusted_entities: Vec<TrustedEntity> = entries
@@ -497,11 +543,6 @@ fn build_lote_payload(
         list_and_scheme_information: scheme_info,
         trusted_entities_list: (!trusted_entities.is_empty()).then_some(trusted_entities),
     })
-}
-
-fn format_iso8601(dt: OffsetDateTime) -> Result<String, TrustListPublisherError> {
-    let format = time::format_description::well_known::Rfc3339;
-    Ok(dt.format(&format)?)
 }
 
 /// Produce a JAdES Baseline B-B compact JWS (ETSI TS 119 182-1 V1.2.1).

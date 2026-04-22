@@ -14,7 +14,6 @@ use super::dto::{
 };
 use crate::dto::common::EntityResponseRestDTO;
 use crate::dto::error::ErrorResponseRestDTO;
-use crate::dto::mapper::fallback_organisation_id_from_session;
 use crate::dto::response::{CreatedOrErrorResponse, EmptyOrErrorResponse, OkOrErrorResponse};
 use crate::extractor::Qs;
 use crate::router::AppState;
@@ -29,8 +28,11 @@ use crate::router::AppState;
     security(
         ("bearer" = [])
     ),
-    summary = "Create a trust list publication",
-    description = "Create a trust list publication.",
+    summary = "Publish a trust list",
+    description = indoc::formatdoc! {"
+    Publish a trust list using a configured `trustListPublisher` instance.
+    The published list is accessible at `/ssi/trust-list/v1/{{id}}`.
+"},
 )]
 pub(crate) async fn post_trust_list_publication(
     state: State<AppState>,
@@ -65,8 +67,11 @@ pub(crate) async fn post_trust_list_publication(
     security(
         ("bearer" = [])
     ),
-    summary = "Retrieve an trust list publication",
-    description = "Returns detailed information about an trust list publication.",
+    summary = "Retrieve a trust list publication",
+    description = indoc::formatdoc! {"
+    Returns the content, configuration, and status of a trust list
+    publication managed by this system.
+    "},
 )]
 pub(crate) async fn get_trust_list_publication(
     state: State<AppState>,
@@ -101,7 +106,7 @@ pub(crate) async fn get_trust_list_publication(
         ("bearer" = [])
     ),
     summary = "List trust list publications",
-    description = "Returns a list of trust list publications in an organization.",
+    description = "Returns a list of trust list publications managed by this system.",
 )]
 pub(crate) async fn get_trust_list_publications(
     state: State<AppState>,
@@ -111,26 +116,18 @@ pub(crate) async fn get_trust_list_publications(
     >,
 ) -> OkOrErrorResponse<GetTrustListPublicationListResponseRestDTO> {
     let result = async {
-        let organisation_id = fallback_organisation_id_from_session(query.filter.organisation_id)
-            .error_while("fallback organisation id")?;
-        state
-            .core
-            .trust_list_publication_service
-            .get_trust_list_publication_list(
-                organisation_id,
-                query.try_into().error_while("mapping query")?,
-            )
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_list_publication_service
+                .get_trust_list_publication_list(query.try_into()?)
+                .await
+                .error_while("getting trust list publications")?,
+        )
     }
     .await;
 
-    match result {
-        Err(error) => {
-            tracing::error!("Error while getting trust list publications: {:?}", error);
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => OkOrErrorResponse::ok(GetTrustListPublicationListResponseRestDTO::from(value)),
-    }
+    OkOrErrorResponse::from_result(result, state, "getting trust list publications")
 }
 
 #[endpoint(
@@ -146,7 +143,11 @@ pub(crate) async fn get_trust_list_publications(
         ("bearer" = [])
     ),
     summary = "Delete a trust list publication",
-    description = "Delete a trust list publication.",
+    description = indoc::formatdoc! {"
+    Deletes a trust list publication. The publication record is retained and
+    retrievable by ID, but all entries are permanently removed. Use the retrieve
+    endpoint to confirm deletion details, including the `deletedAt` timestamp.
+    "},
 )]
 pub(crate) async fn delete_trust_list_publication(
     state: State<AppState>,
@@ -181,7 +182,11 @@ pub(crate) async fn delete_trust_list_publication(
         ("bearer" = [])
     ),
     summary = "Create a trust entry",
-    description = "Create a trust entry in a trust list publication.",
+    description = indoc::formatdoc! {"
+    Adds a trusted entity to a trust list publication. The trusted entity's
+    certificate must first be uploaded as an identifier, which is then
+    referenced in the request via `identifierId`.
+    "},
 )]
 pub(crate) async fn post_trust_entry(
     state: State<AppState>,
@@ -222,8 +227,12 @@ pub(crate) async fn post_trust_entry(
     security(
         ("bearer" = [])
     ),
-    summary = "Update trust entry",
-    description = "Update trust entry",
+    summary = "Update a trust entry",
+    description = indoc::formatdoc! {"
+    Updates the entity or service information of a trusted entity in a trust list
+    publication. Only the fields provided in the request body are updated; all
+    other fields remain unchanged.
+    "},
 )]
 pub(crate) async fn patch_trust_entry(
     state: State<AppState>,
@@ -263,8 +272,8 @@ pub(crate) async fn patch_trust_entry(
     security(
         ("bearer" = [])
     ),
-    summary = "Delete trust entry",
-    description = "Delete trust entry",
+    summary = "Delete a trust entry",
+    description = "Permanently removes a trusted entity from a trust list publication.",
 )]
 pub(crate) async fn delete_trust_entry(
     state: State<AppState>,
@@ -301,7 +310,7 @@ pub(crate) async fn delete_trust_entry(
         ("bearer" = [])
     ),
     summary = "List trust list publication entries",
-    description = "Returns a list of trust list publications in an organization.",
+    description = "Returns a filterable list of trusted entities in a trust list publication.",
 )]
 pub(crate) async fn get_trust_list_publication_entries(
     state: State<AppState>,
@@ -312,23 +321,16 @@ pub(crate) async fn get_trust_list_publication_entries(
     >,
 ) -> OkOrErrorResponse<GetTrustEntryListResponseRestDTO> {
     let result = async {
-        let query = query.try_into().error_while("mapping query")?;
-        state
-            .core
-            .trust_list_publication_service
-            .get_trust_entry_list(id, query)
-            .await
+        Ok::<_, ServiceError>(
+            state
+                .core
+                .trust_list_publication_service
+                .get_trust_entry_list(id, query.try_into()?)
+                .await
+                .error_while("getting trust list publication entries")?,
+        )
     }
     .await;
 
-    match result {
-        Err(error) => {
-            tracing::error!(
-                "Error while getting trust list publication entries: {:?}",
-                error
-            );
-            OkOrErrorResponse::from_error(&error, state.config.hide_error_response_cause)
-        }
-        Ok(value) => OkOrErrorResponse::ok(GetTrustEntryListResponseRestDTO::from(value)),
-    }
+    OkOrErrorResponse::from_result(result, state, "getting trust list publication entries")
 }

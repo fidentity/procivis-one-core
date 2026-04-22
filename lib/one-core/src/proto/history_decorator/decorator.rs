@@ -10,7 +10,9 @@ use super::organisation::OrganisationHistoryDecorator;
 use super::proof::ProofHistoryDecorator;
 use super::proof_schema::ProofSchemaHistoryDecorator;
 use super::trust_entity::TrustEntityHistoryDecorator;
+use crate::proto::history_decorator::trust_collection::TrustCollectionHistoryDecorator;
 use crate::proto::history_decorator::trust_list_publication::TrustListPublicationHistoryDecorator;
+use crate::proto::history_decorator::trust_list_subscription::TrustListSubscriptionHistoryDecorator;
 use crate::proto::session_provider::SessionProvider;
 use crate::proto::transaction_manager::TransactionManager;
 use crate::repository::DataRepository;
@@ -25,6 +27,7 @@ use crate::repository::did_repository::DidRepository;
 use crate::repository::history_repository::HistoryRepository;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::repository::identifier_repository::IdentifierRepository;
+use crate::repository::identifier_trust_information_repository::IdentifierTrustInformationRepository;
 use crate::repository::interaction_repository::InteractionRepository;
 use crate::repository::key_repository::KeyRepository;
 use crate::repository::notification_repository::NotificationRepository;
@@ -34,10 +37,13 @@ use crate::repository::proof_schema_repository::ProofSchemaRepository;
 use crate::repository::remote_entity_cache_repository::RemoteEntityCacheRepository;
 use crate::repository::revocation_list_repository::RevocationListRepository;
 use crate::repository::trust_anchor_repository::TrustAnchorRepository;
+use crate::repository::trust_collection_repository::TrustCollectionRepository;
 use crate::repository::trust_entity_repository::TrustEntityRepository;
 use crate::repository::trust_entry_repository::TrustEntryRepository;
 use crate::repository::trust_list_publication_repository::TrustListPublicationRepository;
+use crate::repository::trust_list_subscription_repository::TrustListSubscriptionRepository;
 use crate::repository::validity_credential_repository::ValidityCredentialRepository;
+use crate::repository::verifier_instance_repository::VerifierInstanceRepository;
 use crate::repository::wallet_unit_attestation_repository::WalletUnitAttestationRepository;
 use crate::repository::wallet_unit_attested_key_repository::WalletUnitAttestedKeyRepository;
 use crate::repository::wallet_unit_repository::WalletUnitRepository;
@@ -58,6 +64,8 @@ struct DecoratedDataProvider {
     proof_repository: Arc<dyn ProofRepository>,
     trust_entity_repository: Arc<dyn TrustEntityRepository>,
     trust_list_publication_repository: Arc<dyn TrustListPublicationRepository>,
+    trust_collection_repository: Arc<dyn TrustCollectionRepository>,
+    trust_list_subscription_repository: Arc<dyn TrustListSubscriptionRepository>,
 }
 
 impl DataRepository for DecoratedDataProvider {
@@ -80,6 +88,12 @@ impl DataRepository for DecoratedDataProvider {
     fn get_identifier_repository(&self) -> Arc<dyn IdentifierRepository> {
         self.identifier_repository.clone()
     }
+    fn get_identifier_trust_information_repository(
+        &self,
+    ) -> Arc<dyn IdentifierTrustInformationRepository> {
+        self.data_provider
+            .get_identifier_trust_information_repository()
+    }
     fn get_key_repository(&self) -> Arc<dyn KeyRepository> {
         self.key_repository.clone()
     }
@@ -94,6 +108,12 @@ impl DataRepository for DecoratedDataProvider {
     }
     fn get_trust_list_publication_repository(&self) -> Arc<dyn TrustListPublicationRepository> {
         self.trust_list_publication_repository.clone()
+    }
+    fn get_trust_collection_repository(&self) -> Arc<dyn TrustCollectionRepository> {
+        self.trust_collection_repository.clone()
+    }
+    fn get_trust_list_subscription_repository(&self) -> Arc<dyn TrustListSubscriptionRepository> {
+        self.trust_list_subscription_repository.clone()
     }
 
     // non-decorated
@@ -138,6 +158,9 @@ impl DataRepository for DecoratedDataProvider {
     }
     fn get_holder_wallet_unit_repository(&self) -> Arc<dyn HolderWalletUnitRepository> {
         self.data_provider.get_holder_wallet_unit_repository()
+    }
+    fn get_verifier_instance_repository(&self) -> Arc<dyn VerifierInstanceRepository> {
+        self.data_provider.get_verifier_instance_repository()
     }
     fn get_wallet_unit_attestation_repository(&self) -> Arc<dyn WalletUnitAttestationRepository> {
         self.data_provider.get_wallet_unit_attestation_repository()
@@ -221,6 +244,18 @@ pub(crate) fn decorate_data_provider(
     let trust_list_publication_repository = Arc::new(TrustListPublicationHistoryDecorator {
         inner: data_provider.get_trust_list_publication_repository(),
         history_repository: data_provider.get_history_repository(),
+        session_provider: session_provider.clone(),
+    });
+
+    let trust_collection_repository = Arc::new(TrustCollectionHistoryDecorator {
+        inner: data_provider.get_trust_collection_repository(),
+        history_repository: data_provider.get_history_repository(),
+        session_provider: session_provider.clone(),
+    });
+
+    let trust_list_subscription_repository = Arc::new(TrustListSubscriptionHistoryDecorator {
+        inner: data_provider.get_trust_list_subscription_repository(),
+        history_repository: data_provider.get_history_repository(),
         session_provider,
     });
 
@@ -237,5 +272,7 @@ pub(crate) fn decorate_data_provider(
         proof_repository,
         trust_entity_repository,
         trust_list_publication_repository,
+        trust_collection_repository,
+        trust_list_subscription_repository,
     })
 }

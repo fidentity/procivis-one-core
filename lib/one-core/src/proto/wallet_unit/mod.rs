@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use shared_types::HolderWalletUnitId;
-use time::{Duration, OffsetDateTime};
+use time::Duration;
 
 use crate::error::{ContextWithErrorCode, ErrorCode, ErrorCodeMixin, NestedError};
 use crate::mapper::x509::x5c_into_pem_chain;
@@ -15,6 +15,8 @@ use crate::proto::certificate_validator::{
 use crate::proto::jwt::mapper::{bin_to_b64url_string, string_to_b64url_string};
 use crate::proto::jwt::model::JWTPayload;
 use crate::proto::jwt::{Jwt, JwtPublicKeyInfo};
+use crate::proto::wallet_provider_client::WalletProviderClient;
+use crate::proto::wallet_provider_client::dto::IssueWalletAttestationResponse;
 use crate::provider::credential_formatter::model::{
     CertificateDetails, CredentialStatus, IdentifierDetails,
 };
@@ -24,8 +26,6 @@ use crate::provider::key_algorithm::provider::KeyAlgorithmProvider;
 use crate::provider::key_storage::provider::KeyProvider;
 use crate::provider::revocation::model::RevocationState;
 use crate::provider::revocation::provider::RevocationMethodProvider;
-use crate::provider::wallet_provider_client::WalletProviderClient;
-use crate::provider::wallet_provider_client::dto::IssueWalletAttestationResponse;
 use crate::repository::holder_wallet_unit_repository::HolderWalletUnitRepository;
 use crate::service::error::MissingProviderError;
 use crate::service::wallet_provider::dto::{
@@ -164,7 +164,7 @@ impl HolderWalletUnitProtoImpl {
 
         let public_key = key_handle.public_key_as_jwk().error_while("creating JWK")?;
 
-        let now = OffsetDateTime::now_utc();
+        let now = crate::clock::now_utc();
         let jwt = Jwt::new(
             "JWT".to_string(),
             jose_alg,

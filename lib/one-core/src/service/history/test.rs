@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use super::HistoryService;
-use super::dto::CreateHistoryRequestDTO;
+use super::dto::{CreateHistoryRequestDTO, HistoryFilterParamsDTO};
 use super::error::HistoryServiceError;
-use crate::model::history::{GetHistoryList, HistoryAction, HistoryEntityType, HistorySource};
+use crate::model::history::{
+    GetHistoryList, HistoryAction, HistoryEntityType, HistorySource, SortableHistoryColumn,
+};
 use crate::proto::session_provider::NoSessionProvider;
 use crate::repository::history_repository::MockHistoryRepository;
+use crate::service::common_dto::ListQueryDTO;
 
 fn setup_service(history_repository: MockHistoryRepository) -> HistoryService {
     HistoryService::new(Arc::new(history_repository), Arc::new(NoSessionProvider))
@@ -27,7 +30,16 @@ async fn test_get_list_success() {
 
     let service = setup_service(history_repository);
 
-    service.get_history_list(Default::default()).await.unwrap();
+    let query: ListQueryDTO<SortableHistoryColumn, HistoryFilterParamsDTO> = ListQueryDTO {
+        page: 0,
+        page_size: 10,
+        sort: None,
+        sort_direction: None,
+        filter: HistoryFilterParamsDTO::default(),
+        include: None,
+    };
+
+    service.get_history_list(query).await.unwrap();
 }
 
 #[tokio::test]

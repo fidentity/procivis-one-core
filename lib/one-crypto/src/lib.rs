@@ -16,6 +16,7 @@ use sha2::Sha256;
 use thiserror::Error;
 
 use crate::hasher::sha256::SHA256;
+use crate::hasher::sha512::SHA512;
 
 pub mod encryption;
 pub mod hasher;
@@ -126,7 +127,10 @@ pub trait CryptoProvider: Send + Sync {
 }
 
 pub fn initialize_crypto_provider() -> Arc<dyn CryptoProvider> {
-    let hashers: Vec<(String, Arc<dyn Hasher>)> = vec![("sha-256".to_string(), Arc::new(SHA256))];
+    let hashers: Vec<(String, Arc<dyn Hasher>)> = vec![
+        ("sha-256".to_string(), Arc::new(SHA256)),
+        ("sha-512".to_string(), Arc::new(SHA512)),
+    ];
 
     Arc::new(CryptoProviderImpl::new(HashMap::from_iter(hashers)))
 }

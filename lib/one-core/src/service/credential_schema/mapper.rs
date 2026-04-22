@@ -1,59 +1,111 @@
+use dcql::CredentialMeta;
 use one_dto_mapper::convert_inner;
 use shared_types::{CredentialSchemaId, OrganisationId};
-use time::OffsetDateTime;
+use url::Url;
 use uuid::Uuid;
 
 use super::dto::{
     CreateCredentialSchemaRequestDTO, CredentialClaimSchemaDTO, CredentialClaimSchemaRequestDTO,
     CredentialSchemaBackgroundPropertiesRequestDTO, CredentialSchemaCodePropertiesDTO,
-    CredentialSchemaDetailResponseDTO, CredentialSchemaFilterValue,
-    CredentialSchemaLogoPropertiesRequestDTO, GetCredentialSchemaQueryDTO,
+    CredentialSchemaDcqlResponseDTO, CredentialSchemaDetailResponseDTO,
+    CredentialSchemaFilterParamsDTO, CredentialSchemaFilterValue,
+    CredentialSchemaLogoPropertiesRequestDTO,
 };
 use super::error::CredentialSchemaServiceError;
+use crate::config::core_config::{CoreConfig, FormatType};
 use crate::mapper::credential_schema_claim::from_jwt_request_claim_schema;
 use crate::mapper::{NESTED_CLAIM_MARKER, remove_first_nesting_layer};
-use crate::model::credential_schema::CredentialSchema;
-use crate::model::list_filter::{ListFilterValue, StringMatch, StringMatchType};
+use crate::model::credential_schema::{
+    CredentialSchema, CredentialSchemaExactColumn, CredentialSchemaListQuery,
+};
+use crate::model::list_filter::{
+    ComparisonType, ListFilterCondition, ListFilterValue, StringMatch, StringMatchType,
+    ValueComparison,
+};
 use crate::model::list_query::ListPagination;
 use crate::model::organisation::Organisation;
+use crate::provider::credential_formatter::model::Context;
 
-impl TryFrom<CredentialSchema> for CredentialSchemaDetailResponseDTO {
-    type Error = CredentialSchemaServiceError;
+pub(crate) fn schema_to_detail_response_dto(
+    value: CredentialSchema,
+    config: &CoreConfig,
+) -> Result<CredentialSchemaDetailResponseDTO, CredentialSchemaServiceError> {
+    let dcql = map_dcql_format_meta(&value, config);
+    let claim_schemas = value
+        .claim_schemas
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|schema| !schema.metadata)
+        .collect::<Vec<_>>();
+    let claim_schemas = renest_claim_schemas(convert_inner(claim_schemas))?;
 
-    fn try_from(value: CredentialSchema) -> Result<Self, Self::Error> {
-        let claim_schemas = value
-            .claim_schemas
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|schema| !schema.metadata)
-            .collect::<Vec<_>>();
-        let claim_schemas = renest_claim_schemas(convert_inner(claim_schemas))?;
+    let organisation_id = match value.organisation {
+        None => Err(CredentialSchemaServiceError::MappingError(
+            "Organisation has not been fetched".to_string(),
+        )),
+        Some(value) => Ok(value.id),
+    }?;
+    Ok(CredentialSchemaDetailResponseDTO {
+        id: value.id,
+        created_date: value.created_date,
+        last_modified: value.last_modified,
+        name: value.name,
+        format: value.format,
+        imported_source_url: value.imported_source_url,
+        revocation_method: value.revocation_method,
+        organisation_id,
+        claims: claim_schemas,
+        key_storage_security: value.key_storage_security,
+        schema_id: value.schema_id,
+        layout_type: Some(value.layout_type),
+        layout_properties: value.layout_properties.map(|item| item.into()),
+        allow_suspension: value.allow_suspension,
+        requires_wallet_instance_attestation: value.requires_wallet_instance_attestation,
+        transaction_code: convert_inner(value.transaction_code),
+        dcql,
+    })
+}
 
-        let organisation_id = match value.organisation {
-            None => Err(CredentialSchemaServiceError::MappingError(
-                "Organisation has not been fetched".to_string(),
-            )),
-            Some(value) => Ok(value.id),
-        }?;
+fn map_dcql_format_meta(
+    value: &CredentialSchema,
+    config: &CoreConfig,
+) -> Option<CredentialSchemaDcqlResponseDTO> {
+    // Ignore failures here, as we don't want to fail the whole request if we can't map the format.
+    // This would happen e.g., if a provider is renamed and the schema is still using the old name.
+    let format_type = config.format.get_type(&value.format).ok()?;
+    let dcql = CredentialSchemaDcqlResponseDTO {
+        meta: schema_to_dcql_meta(value, &format_type),
+        format: format_type.into(),
+    };
+    Some(dcql)
+}
 
-        Ok(Self {
-            id: value.id,
-            created_date: value.created_date,
-            last_modified: value.last_modified,
-            name: value.name,
-            format: value.format,
-            imported_source_url: value.imported_source_url,
-            revocation_method: value.revocation_method,
-            organisation_id,
-            claims: claim_schemas,
-            key_storage_security: value.key_storage_security,
-            schema_id: value.schema_id,
-            layout_type: Some(value.layout_type),
-            layout_properties: value.layout_properties.map(|item| item.into()),
-            allow_suspension: value.allow_suspension,
-            requires_wallet_instance_attestation: value.requires_wallet_instance_attestation,
-            transaction_code: convert_inner(value.transaction_code),
-        })
+fn schema_to_dcql_meta(schema: &CredentialSchema, format_type: &FormatType) -> CredentialMeta {
+    match format_type {
+        FormatType::SdJwtVc => CredentialMeta::SdJwtVc {
+            vct_values: vec![schema.schema_id.clone()],
+        },
+        FormatType::Mdoc => CredentialMeta::MsoMdoc {
+            doctype_value: schema.schema_id.clone(),
+        },
+        FormatType::Jwt
+        | FormatType::SdJwt
+        | FormatType::JsonLdClassic
+        | FormatType::JsonLdBbsPlus => {
+            // This is a terrible heuristic, but until proper support for JSON-LD contexts is added, this is the best we can do.
+            let context = if let Ok(url) = Url::parse(&schema.schema_id)
+                && url.path().starts_with("/ssi/schema/v1/")
+            {
+                schema
+                    .schema_id
+                    .replace("/ssi/schema/v1/", "/ssi/context/v1/")
+            } else {
+                schema.schema_id.clone()
+            };
+            CredentialMeta::W3cVc {
+                type_values: vec![vec![Context::CredentialsV2.to_string(), context]],
+            }
+        }
     }
 }
 
@@ -61,8 +113,8 @@ pub(super) fn create_unique_name_check_request(
     name: &str,
     schema_id: Option<String>,
     organisation_id: OrganisationId,
-) -> Result<GetCredentialSchemaQueryDTO, CredentialSchemaServiceError> {
-    Ok(GetCredentialSchemaQueryDTO {
+) -> Result<CredentialSchemaListQuery, CredentialSchemaServiceError> {
+    Ok(CredentialSchemaListQuery {
         pagination: Some(ListPagination {
             page: 0,
             page_size: 1,
@@ -96,7 +148,7 @@ pub(super) fn from_create_request_with_id(
         return Err(CredentialSchemaServiceError::MissingClaimSchemas);
     }
 
-    let now = OffsetDateTime::now_utc();
+    let now = crate::clock::now_utc();
 
     let claim_schemas = unnest_claim_schemas(request.claims);
 
@@ -237,5 +289,87 @@ impl From<CredentialSchemaBackgroundPropertiesRequestDTO>
             color: value.color,
             image: value.image,
         }
+    }
+}
+
+impl From<CredentialSchemaFilterParamsDTO> for ListFilterCondition<CredentialSchemaFilterValue> {
+    fn from(value: CredentialSchemaFilterParamsDTO) -> Self {
+        let exact = value.exact.unwrap_or_default();
+        let get_string_match_type = |column| {
+            if exact.contains(&column) {
+                StringMatchType::Equals
+            } else {
+                StringMatchType::StartsWith
+            }
+        };
+
+        let organisation_id =
+            CredentialSchemaFilterValue::OrganisationId(value.organisation_id).condition();
+
+        let name = value.name.map(|name| {
+            CredentialSchemaFilterValue::Name(StringMatch {
+                r#match: get_string_match_type(CredentialSchemaExactColumn::Name),
+                value: name,
+            })
+        });
+
+        let schema_id = value.schema_id.map(|schema_id| {
+            CredentialSchemaFilterValue::SchemaId(StringMatch {
+                r#match: get_string_match_type(CredentialSchemaExactColumn::SchemaId),
+                value: schema_id,
+            })
+        });
+
+        let formats = value.formats.map(CredentialSchemaFilterValue::Formats);
+
+        let key_storage_security = value
+            .key_storage_security
+            .map(CredentialSchemaFilterValue::KeyStorageSecurity);
+
+        let requires_wia = value
+            .requires_wallet_instance_attestation
+            .map(CredentialSchemaFilterValue::RequiresWalletInstanceAttestation);
+
+        let credential_schema_ids = value
+            .credential_schema_ids
+            .map(CredentialSchemaFilterValue::CredentialSchemaIds);
+
+        let created_date_after = value.created_date_after.map(|date| {
+            CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let created_date_before = value.created_date_before.map(|date| {
+            CredentialSchemaFilterValue::CreatedDate(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        let last_modified_after = value.last_modified_after.map(|date| {
+            CredentialSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::GreaterThanOrEqual,
+                value: date,
+            })
+        });
+        let last_modified_before = value.last_modified_before.map(|date| {
+            CredentialSchemaFilterValue::LastModified(ValueComparison {
+                comparison: ComparisonType::LessThanOrEqual,
+                value: date,
+            })
+        });
+
+        organisation_id
+            & name
+            & schema_id
+            & formats
+            & key_storage_security
+            & requires_wia
+            & credential_schema_ids
+            & created_date_after
+            & created_date_before
+            & last_modified_after
+            & last_modified_before
     }
 }

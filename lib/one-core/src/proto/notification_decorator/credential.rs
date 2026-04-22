@@ -6,7 +6,7 @@ use shared_types::{ClaimId, CredentialId, InteractionId};
 use crate::config::core_config::CoreConfig;
 use crate::error::{ContextWithErrorCode, ErrorCodeMixinExt};
 use crate::model::credential::{
-    Credential, CredentialRelations, CredentialStateEnum, GetCredentialList, GetCredentialQuery,
+    Credential, CredentialListQuery, CredentialRelations, CredentialStateEnum, GetCredentialList,
     UpdateCredentialRequest,
 };
 use crate::model::credential_schema::CredentialSchemaRelations;
@@ -151,7 +151,7 @@ impl CredentialRepository for CredentialNotificationDecorator {
 
     async fn get_credential_list(
         &self,
-        query_params: GetCredentialQuery,
+        query_params: CredentialListQuery,
     ) -> Result<GetCredentialList, DataLayerError> {
         self.inner.get_credential_list(query_params).await
     }

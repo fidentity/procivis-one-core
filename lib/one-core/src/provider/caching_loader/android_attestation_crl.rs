@@ -121,8 +121,7 @@ impl Resolver for AndroidAttestationCrlResolver {
             .find_map(|directive| directive.strip_prefix("max-age="))
             .and_then(|age| age.parse::<usize>().ok());
 
-        let expiry_date =
-            max_age.map(|age| OffsetDateTime::now_utc() + Duration::seconds(age as _));
+        let expiry_date = max_age.map(|age| crate::clock::now_utc() + Duration::seconds(age as _));
 
         Ok(ResolveResult::NewValue {
             content: response.body,
@@ -149,7 +148,7 @@ impl Resolver for MockAndroidAttestationCrlResolver {
         _last_modified: Option<&OffsetDateTime>,
     ) -> Result<ResolveResult, Self::Error> {
         Ok(ResolveResult::NewValue {
-            content: serde_json::to_vec(&self.crl).map_err(Self::Error::InvalidResponseBody)?,
+            content: serde_json::to_vec(&self.crl)?,
             media_type: Some("application/json".to_string()),
             expiry_date: None,
         })

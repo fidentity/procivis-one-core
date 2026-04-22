@@ -4,12 +4,12 @@ use one_core::model::certificate::{Certificate, CertificateState};
 use one_core::model::identifier::{Identifier, IdentifierType};
 use one_core::model::key::Key;
 use one_core::model::organisation::Organisation;
-use one_core::model::trust_entry::TrustEntryStatusEnum;
-use one_core::model::trust_list_publication::TrustListPublicationRoleEnum;
-use time::{Duration, OffsetDateTime};
+use one_core::model::trust_entry::TrustEntryStateEnum;
+use one_core::model::trust_list_role::TrustListRoleEnum;
+use time::Duration;
 use uuid::Uuid;
 
-use crate::fixtures::TestingIdentifierParams;
+use crate::fixtures::{TestingIdentifierParams, create_cert_identifier};
 use crate::utils::context::TestContext;
 use crate::utils::db_clients::certificates::TestingCertificateParams;
 
@@ -18,12 +18,13 @@ async fn test_get_trust_list_publication_entries() {
     // given
     let (context, organisation, identifier, certificate, key) =
         TestContext::new_with_certificate_identifier(None).await;
+    let identifier2 = create_cert_identifier(&context, &organisation, Default::default()).await;
     let trust_list_publication = context
         .db
         .trust_list_publications
         .create(
             "test_trust_list_publication",
-            TrustListPublicationRoleEnum::PidProvider,
+            TrustListRoleEnum::PidProvider,
             "LOTE_PUBLISHER".into(),
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             organisation.clone(),
@@ -37,7 +38,7 @@ async fn test_get_trust_list_publication_entries() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             identifier.clone(),
@@ -48,10 +49,10 @@ async fn test_get_trust_list_publication_entries() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Suspended,
+            TrustEntryStateEnum::Suspended,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
-            identifier.clone(),
+            identifier2.clone(),
         )
         .await;
 
@@ -82,7 +83,7 @@ async fn test_get_trust_list_publication_entries_empty() {
         .trust_list_publications
         .create(
             "test_trust_list_publication",
-            TrustListPublicationRoleEnum::PidProvider,
+            TrustListRoleEnum::PidProvider,
             "LOTE_PUBLISHER".into(),
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             organisation.clone(),
@@ -136,7 +137,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .trust_list_publications
         .create(
             "test_trust_list_publication",
-            TrustListPublicationRoleEnum::PidProvider,
+            TrustListRoleEnum::PidProvider,
             "LOTE_PUBLISHER".into(),
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             organisation.clone(),
@@ -157,7 +158,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             f_identifier,
@@ -168,7 +169,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             a_identifier,
@@ -179,7 +180,7 @@ async fn test_get_trust_list_publication_entries_sorted_by_identifier() {
         .db
         .trust_entries
         .create(
-            TrustEntryStatusEnum::Active,
+            TrustEntryStateEnum::Active,
             serde_json::to_vec(&serde_json::Value::Object(serde_json::Map::new())).unwrap(),
             trust_list_publication.clone(),
             z_identifier,
@@ -213,7 +214,7 @@ async fn create_dummy_certificate_identifier(
     identifier_name: impl Into<String>,
 ) -> (Identifier, Certificate) {
     let identifier_id = Uuid::new_v4().into();
-    let now = OffsetDateTime::now_utc();
+    let now = one_core::clock::now_utc();
     let certificate = Certificate {
         id: Uuid::new_v4().into(),
         identifier_id,
@@ -225,6 +226,7 @@ async fn create_dummy_certificate_identifier(
         chain: "".to_string(),
         fingerprint: Uuid::new_v4().to_string(),
         state: CertificateState::Active,
+        roles: vec![],
         key: Some(key.clone()),
     };
 

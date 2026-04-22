@@ -1,3 +1,4 @@
+use identifier_trust_information::IdentifierTrustInformationDB;
 use identifiers::IdentifiersDB;
 use one_core::repository::DataRepository;
 use sql_data_provider::{DataLayer, DbConn};
@@ -18,10 +19,13 @@ use self::trust_anchors::TrustAnchorDB;
 use self::trust_entities::TrustEntityDB;
 use self::trust_entry::TrustEntryDB;
 use self::trust_list_publication::TrustListPublicationDB;
+use self::trust_list_subscription::TrustListSubscriptionDB;
 use crate::utils::db_clients::blobs::BlobsDB;
 use crate::utils::db_clients::holder_wallet_unit::HolderWalletUnitsDB;
 use crate::utils::db_clients::remote_entity_cache::RemoteEntityCacheDB;
+use crate::utils::db_clients::trust_collections::TrustCollectionDB;
 use crate::utils::db_clients::validity_credentials::ValidityCredentialsDB;
+use crate::utils::db_clients::verifier_instances::VerifierInstancesDB;
 use crate::utils::db_clients::wallet_unit_attestations::WalletUnitAttestationsDB;
 use crate::utils::db_clients::wallet_units::WalletUnitsDB;
 
@@ -32,6 +36,7 @@ pub mod credentials;
 pub mod dids;
 pub mod histories;
 pub mod holder_wallet_unit;
+pub mod identifier_trust_information;
 pub mod identifiers;
 pub mod interactions;
 pub mod keys;
@@ -42,10 +47,13 @@ pub mod proofs;
 pub mod remote_entity_cache;
 pub mod revocation_lists;
 pub mod trust_anchors;
+pub mod trust_collections;
 pub mod trust_entities;
 pub mod trust_entry;
 pub mod trust_list_publication;
+pub mod trust_list_subscription;
 pub mod validity_credentials;
+pub mod verifier_instances;
 pub mod wallet_unit_attestations;
 pub mod wallet_units;
 
@@ -54,6 +62,7 @@ pub struct DbClient {
     pub dids: DidsDB,
     pub certificates: CertificatesDB,
     pub identifiers: IdentifiersDB,
+    pub identifier_trust_information: IdentifierTrustInformationDB,
     pub credential_schemas: CredentialSchemasDB,
     pub credentials: CredentialsDB,
     pub histories: HistoriesDB,
@@ -68,10 +77,13 @@ pub struct DbClient {
     pub trust_anchors: TrustAnchorDB,
     pub trust_entities: TrustEntityDB,
     pub trust_list_publications: TrustListPublicationDB,
+    pub trust_list_subscriptions: TrustListSubscriptionDB,
+    pub trust_collections: TrustCollectionDB,
     pub trust_entries: TrustEntryDB,
     pub blobs: BlobsDB,
     pub wallet_units: WalletUnitsDB,
     pub holder_wallet_units: HolderWalletUnitsDB,
+    pub verifier_instances: VerifierInstancesDB,
     #[expect(unused)]
     pub wallet_unit_attestations: WalletUnitAttestationsDB,
     pub db_conn: DbConn,
@@ -86,6 +98,9 @@ impl DbClient {
             dids: DidsDB::new(layer.get_did_repository()),
             certificates: CertificatesDB::new(layer.get_certificate_repository()),
             identifiers: IdentifiersDB::new(layer.get_identifier_repository()),
+            identifier_trust_information: IdentifierTrustInformationDB::new(
+                layer.get_identifier_trust_information_repository(),
+            ),
             credential_schemas: CredentialSchemasDB::new(layer.get_credential_schema_repository()),
             credentials: CredentialsDB::new(layer.get_credential_repository()),
             histories: HistoriesDB::new(layer.get_history_repository()),
@@ -104,12 +119,17 @@ impl DbClient {
             trust_list_publications: TrustListPublicationDB::new(
                 layer.get_trust_list_publication_repository(),
             ),
+            trust_list_subscriptions: TrustListSubscriptionDB::new(
+                layer.get_trust_list_subscription_repository(),
+            ),
             trust_entries: TrustEntryDB::new(layer.get_trust_entry_repository()),
+            trust_collections: TrustCollectionDB::new(layer.get_trust_collection_repository()),
             blobs: BlobsDB::new(layer.get_blob_repository()),
             wallet_units: WalletUnitsDB::new(layer.get_wallet_unit_repository()),
             holder_wallet_units: HolderWalletUnitsDB::new(
                 layer.get_holder_wallet_unit_repository(),
             ),
+            verifier_instances: VerifierInstancesDB::new(layer.get_verifier_instance_repository()),
             wallet_unit_attestations: WalletUnitAttestationsDB::new(
                 layer.get_wallet_unit_attestation_repository(),
             ),

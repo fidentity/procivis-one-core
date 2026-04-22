@@ -23,3 +23,4 @@ pub mod mapper;
 pub mod oauth2;
 pub mod openid4vp;
 pub mod x509;
+pub mod xades;

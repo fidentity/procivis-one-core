@@ -1,11 +1,12 @@
 use serde::Serialize;
-use shared_types::{HolderWalletUnitId, OrganisationId, WalletUnitId};
+use shared_types::{HolderWalletUnitId, OrganisationId, TrustCollectionId, WalletUnitId};
 use time::OffsetDateTime;
 
 pub use crate::model::wallet_unit::{
     WalletProviderType, WalletUnit, WalletUnitOs, WalletUnitStatus,
 };
 use crate::service::key::dto::KeyListItemResponseDTO;
+use crate::service::wallet_provider::dto::ProviderTrustCollectionDTO;
 
 #[derive(Debug, Clone)]
 pub struct HolderRegisterWalletUnitRequestDTO {
@@ -26,7 +27,7 @@ pub(super) struct NoncePayload {
     pub nonce: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone)]
 pub struct HolderWalletUnitResponseDTO {
     pub id: HolderWalletUnitId,
     pub created_date: OffsetDateTime,
@@ -36,5 +37,27 @@ pub struct HolderWalletUnitResponseDTO {
     pub wallet_provider_type: WalletProviderType,
     pub wallet_provider_name: String,
     pub status: WalletUnitStatus,
-    pub authentication_key: KeyListItemResponseDTO,
+    pub authentication_key: Option<KeyListItemResponseDTO>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HolderWalletUnitRegisterResponseDTO {
+    pub id: HolderWalletUnitId,
+    pub status: WalletUnitStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct EditHolderWalletUnitRequestDTO {
+    pub trust_collections: Vec<TrustCollectionId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustCollectionsDetailResponseDTO {
+    pub trust_collections: Vec<TrustCollectionInfoDTO>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustCollectionInfoDTO {
+    pub selected: bool,
+    pub collection: ProviderTrustCollectionDTO,
 }

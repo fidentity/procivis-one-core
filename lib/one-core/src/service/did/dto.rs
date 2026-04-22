@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use shared_types::{DidId, DidValue, KeyId, OrganisationId};
 use time::OffsetDateTime;
 
-use crate::model::common::{GetListQueryParams, GetListResponse};
-use crate::model::did::{Did, DidType, SortableDidColumn};
+use crate::model::common::GetListResponse;
+use crate::model::did::{Did, DidType, ExactDidFilterColumn, KeyRole};
 use crate::service::key::dto::KeyListItemResponseDTO;
 
 #[derive(Clone, Debug)]
@@ -49,7 +49,21 @@ pub struct DidListItemResponseDTO {
 }
 
 pub type GetDidListResponseDTO = GetListResponse<DidListItemResponseDTO>;
-pub type GetDidQueryDTO = GetListQueryParams<SortableDidColumn>;
+
+#[derive(Clone, Debug)]
+pub struct DidFilterParamsDTO {
+    pub name: Option<String>,
+    pub did: Option<String>,
+    pub r#type: Option<DidType>,
+    pub exact: Option<Vec<ExactDidFilterColumn>>,
+    pub deactivated: Option<bool>,
+    pub key_algorithms: Option<Vec<String>>,
+    pub key_roles: Option<Vec<KeyRole>>,
+    pub key_storages: Option<Vec<String>>,
+    pub key_ids: Option<Vec<KeyId>>,
+    pub did_methods: Option<Vec<String>>,
+    pub organisation_id: OrganisationId,
+}
 
 #[derive(Clone, Debug)]
 pub struct CreateDidRequestDTO {

@@ -1,0 +1,66 @@
+# ---------- Planner Stage ----------
+FROM rust:1.94-bookworm AS planner
+
+WORKDIR /app
+
+# cargo-chef installieren
+RUN cargo install cargo-chef
+
+# Gesamten Workspace kopieren
+COPY . .
+
+# Dependency-Rezept erzeugen
+RUN cargo chef prepare --recipe-path recipe.json
+
+
+# ---------- Builder Stage ----------
+FROM rust:1.94-bookworm AS builder
+
+WORKDIR /app
+
+# System Dependencies (falls benötigt, z.B. OpenSSL)
+RUN apt-get update && \
+    apt-get install -y pkg-config libssl-dev build-essential ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# cargo-chef installieren
+RUN cargo install cargo-chef
+
+# Rezept übernehmen und Dependencies bauen (cached Layer!)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Jetzt echten Source kopieren
+COPY . .
+
+# Finaler Build (nur dein Code wird neu gebaut)
+RUN cargo build --release
+
+
+# ---------- Runtime Stage ----------
+FROM debian:bookworm-slim
+
+ARG GID=1000
+ARG UID=1000
+ARG USER=rust
+
+WORKDIR /app
+
+# Minimale Runtime Dependencies
+RUN apt-get update && \
+    apt-get install -y ca-certificates && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g "$GID" "$USER" && \
+    useradd -r -u "$UID" -g "$USER" "$USER"
+
+# Binary kopieren
+COPY --from=builder --chmod=555 /app/target/release/core-server /app/core-server
+
+# Config (falls vorhanden)
+COPY --chmod=555 config /app/config
+
+EXPOSE 3000
+
+USER $USER
+
+ENTRYPOINT ["/app/core-server", "--config", "config/config-procivis-base.yml", "--config", "config/config-local.yml"]
